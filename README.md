@@ -1,33 +1,31 @@
 # GenRec
 
-A PyTorch benchmark for generative recommendation systems, including RQVAE, TIGER, and COBRA.
+A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
 **Validation Set Metrics**
 
-### Beauty
+### [Amazon 2014 Beauty](https://wandb.ai/luckyqueen/amazon_beauty_tiger_training)
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
 | TIGER (Paper) | 0.0454 | 0.0648 | 0.0321 | 0.0384 |
 | TIGER (Ours) | 0.0465 | 0.0721 | 0.0297 | 0.0378 |
 
-### Sports
+### [Amazon 2014 Sports](https://wandb.ai/luckyqueen/amazon_sports_tiger_training)
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
 | TIGER (Paper) | 0.0264 | 0.0400 | 0.0181 | 0.0225 |
 | TIGER (Ours) | 0.0266 | 0.0414 | 0.0176 | 0.0224 |
 
-### Toys
+### [Amazon 2014 Toys](https://wandb.ai/luckyqueen/amazon_toys_tiger_training/)
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
 | TIGER (Paper) | 0.0521 | 0.0712 | 0.0371 | 0.0432 |
 | TIGER (Ours) | 0.0420 | 0.0647 | 0.0280 | 0.0350 |
-
-**Experiment Tracking:** [Beauty](https://wandb.ai/luckyqueen/amazon_beauty_tiger_training) | [Sports](https://wandb.ai/luckyqueen/amazon_sports_tiger_training) | [Toys](https://wandb.ai/luckyqueen/amazon_toys_tiger_training/)
 
 ## Installation
 
@@ -90,6 +88,19 @@ python trainer.py config.gin --gin "train.epochs=200" --gin "train.batch_size=12
 
 # Set wandb run name
 python trainer.py config.gin --gin 'train.wandb_run_name="my_experiment"'
+```
+
+## Citation
+
+If you find this project useful, please cite:
+
+```bibtex
+@software{genrec2025,
+  title = {GenRec: A Model Zoo for Generative Recommendation},
+  author = {Qi Lu},
+  year = {2025},
+  url = {https://github.com/phonism/genrec}
+}
 ```
 
 ## References
