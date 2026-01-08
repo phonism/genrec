@@ -16,9 +16,9 @@ from typing import NamedTuple, Optional
 from collections import defaultdict
 from einops import rearrange
 
-from generative_recommenders.modules.normalize import RMSNorm, RootMeanSquareLayerNorm
-from generative_recommenders.modules.embedding import SemIdEmbedding, UserIdEmbedding
-from generative_recommenders.modules.transformer import TransformerEncoderDecoder
+from genrec.modules.normalize import RMSNorm, RootMeanSquareLayerNorm
+from genrec.modules.embedding import SemIdEmbedding, UserIdEmbedding
+from genrec.modules.transformer import TransformerEncoderDecoder
 
 
 class TrieNode(defaultdict):
@@ -99,7 +99,7 @@ class Tiger(nn.Module):
         self.bos_embedding = nn.Parameter(torch.randn(embedding_dim))
         self.norm = RMSNorm(embedding_dim)
         self.norm_context = RMSNorm(embedding_dim)
-        self.drop = nn.Dropout(p=0.5)
+        self.drop = nn.Dropout(p=dropout)
         self.sem_id_embedding = SemIdEmbedding(
             num_embeddings=num_item_embeddings,
             sem_ids_dim=sem_id_dim,
@@ -125,11 +125,9 @@ class Tiger(nn.Module):
             norm_cls=RootMeanSquareLayerNorm,
         )
         self.out_proj = nn.Linear(attn_dim, embedding_dim, bias=False)
-        self.output_head = nn.Linear(attn_dim, num_item_embeddings, bias=False)
-        self.output_heads = nn.ModuleList([
-            nn.Linear(attn_dim, num_item_embeddings, bias=False)
-            for _ in range(self.sem_id_dim + 1)
-        ])
+        # vocab_size = num_item_embeddings * sem_id_dim + 1 (matching embedding layer)
+        self.vocab_size = num_item_embeddings * sem_id_dim + 1
+        self.output_head = nn.Linear(attn_dim, self.vocab_size, bias=False)
 
     
     def forward(
@@ -215,9 +213,11 @@ class Tiger(nn.Module):
         """
 
         if target_input_ids is not None and target_input_ids.shape[1] == self.sem_id_dim:
+            # Convert to full vocab indices: token_type * num_embeddings + input_id
+            target_vocab_ids = target_token_type_ids * self.num_item_embeddings + target_input_ids
             loss = F.cross_entropy(
                 loss_logits.reshape(-1, loss_logits.size(-1)),
-                target_input_ids.reshape(-1),
+                target_vocab_ids.reshape(-1),
                 reduction="none"
             ).reshape(B, -1)
             loss = loss.sum(dim=1).mean()
@@ -241,6 +241,57 @@ class Tiger(nn.Module):
         """
         return list(node.keys())
 
+    def _encode_context(
+        self,
+        user_input_ids: torch.Tensor,
+        item_input_ids: torch.Tensor,
+        token_type_ids: torch.Tensor,
+        seq_mask: Optional[torch.Tensor] = None,
+    ) -> tuple:
+        """Encode context (user + item history) once for reuse during generation."""
+        user_emb = self.user_id_embedding(user_input_ids)
+        item_emb = self.sem_id_embedding(item_input_ids, token_type_ids)
+        encoder_input = torch.cat([user_emb, item_emb], dim=1)
+
+        encoder_mask = torch.cat([
+            torch.ones((seq_mask.size(0), 1), dtype=seq_mask.dtype, device=seq_mask.device),
+            seq_mask
+        ], dim=1)
+        f_mask = encoder_mask == 0
+
+        encoder_input = self.in_proj_context(self.drop(self.norm_context(encoder_input)))
+        memory = self.transformer.encoder(encoder_input, key_padding_mask=f_mask)
+        return memory, f_mask
+
+    def _decode_step(
+        self,
+        memory: torch.Tensor,
+        memory_mask: torch.Tensor,
+        tgt_ids: Optional[torch.Tensor],
+        tgt_type: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Single decode step with cached encoder output."""
+        B = memory.size(0)
+        if tgt_ids is None:
+            decoder_input = self.bos_embedding.repeat(B, 1, 1)
+        else:
+            target_emb = self.sem_id_embedding(tgt_ids, tgt_type)
+            decoder_input = torch.cat([self.bos_embedding.repeat(B, 1, 1), target_emb], dim=1)
+
+        decoder_input = self.in_proj(self.drop(self.norm(decoder_input)))
+
+        causal_mask = nn.Transformer.generate_square_subsequent_mask(
+            decoder_input.shape[1], device=decoder_input.device
+        )
+        decoder_out = self.transformer.decoder(
+            decoder_input,
+            memory=memory,
+            attn_mask=causal_mask,
+            memory_key_padding_mask=memory_mask,
+        )
+        logits = self.output_head(decoder_out)
+        return logits[:, -1, :]
+
     def generate(
         self,
         user_input_ids: torch.Tensor,
@@ -250,25 +301,34 @@ class Tiger(nn.Module):
         temperature: float = 0.2,
         n_top_k_candidates: int = 10,
         valid_item_ids: Optional[torch.Tensor] = None,
+        use_trie: bool = True,
     ) -> "TigerGenerationOutput":
         """
-        Generate
+        Generate semantic IDs with beam search and encoder caching.
+
+        Args:
+            use_trie: If True, use trie constraint for valid item IDs. If False, skip trie (faster).
         """
+        # Beam search with encoder caching
         B, K = user_input_ids.size(0), n_top_k_candidates
         device = user_input_ids.device
 
-        beam_seqs  = torch.empty(B, K, 0, dtype=torch.long, device=device)
+        # Encode context once
+        memory, memory_mask = self._encode_context(
+            user_input_ids, item_input_ids, token_type_ids, seq_mask
+        )
+        # Expand for beam search
+        memory = memory.unsqueeze(1).expand(-1, K, -1, -1).reshape(B * K, memory.size(1), -1)
+        memory_mask = memory_mask.unsqueeze(1).expand(-1, K, -1).reshape(B * K, -1)
+
+        beam_seqs = torch.empty(B, K, 0, dtype=torch.long, device=device)
         beam_logps = torch.zeros(B, K, device=device)
 
-        enc_user = user_input_ids.unsqueeze(1).expand(-1, K, -1)
-        enc_item = item_input_ids.unsqueeze(1).expand(-1, K, -1)
-        enc_type = token_type_ids.unsqueeze(1).expand(-1, K, -1)
-        seq_mask = seq_mask.unsqueeze(1).expand(-1, K, -1) if seq_mask is not None else None
-
-        # Trie
-        if self.trie_root is None:
-            self.trie_root = build_trie(valid_item_ids.to("cpu"))
-        beam_nodes = [[self.trie_root for _ in range(K)] for _ in range(B)]
+        # Trie (only build if use_trie=True)
+        if use_trie:
+            if self.trie_root is None:
+                self.trie_root = build_trie(valid_item_ids.to("cpu"))
+            beam_nodes = [[self.trie_root for _ in range(K)] for _ in range(B)]
 
         R = 6
         KK = min(K * R, self.num_item_embeddings)
@@ -279,32 +339,36 @@ class Tiger(nn.Module):
                 tgt_ids_, tgt_type_ = None, None
             else:
                 tgt_ids_ = tgt_ids
-                tgt_type_ = torch.arange(tgt_ids.size(1), device=device).unsqueeze(0).repeat(B * K, 1)
+                tgt_type_ = torch.arange(tgt_ids.size(1), device=device).unsqueeze(0).expand(B * K, -1)
 
-            logits = self.forward(
-                user_input_ids=enc_user.reshape(B * K, -1),
-                item_input_ids=enc_item.reshape(B * K, -1),
-                token_type_ids=enc_type.reshape(B * K, -1),
-                target_input_ids=tgt_ids_,
-                target_token_type_ids=tgt_type_,
-                seq_mask=seq_mask.reshape(B * K, -1) if seq_mask is not None else None,
-            ).logits[:, -1, :]
+            logits = self._decode_step(memory, memory_mask, tgt_ids_, tgt_type_)
 
-            legal_mask = torch.full_like(logits, False, dtype=torch.bool)
-            for b in range(B):
-                for k in range(K):
-                    idx = b * K + k
-                    valid_set = self.next_valid_tokens(beam_nodes[b][k])
-                    if valid_set:
-                        legal_mask[idx, list(valid_set)] = True
-            logits = logits.masked_fill(~legal_mask, -1e32)
+            # Convert trie's raw token IDs to vocab indices based on current step
+            vocab_offset = step * self.num_item_embeddings
 
-            log_probs = torch.log_softmax(logits / temperature, dim=-1)  # (B*K,V)
-            
+            if use_trie:
+                # Apply trie constraint
+                legal_mask = torch.full_like(logits, False, dtype=torch.bool)
+                for b in range(B):
+                    for k in range(K):
+                        idx = b * K + k
+                        valid_set = self.next_valid_tokens(beam_nodes[b][k])
+                        if valid_set:
+                            valid_vocab_ids = [vocab_offset + tok for tok in valid_set]
+                            legal_mask[idx, valid_vocab_ids] = True
+                logits = logits.masked_fill(~legal_mask, -1e32)
+            else:
+                # No trie constraint - only mask to current step's vocab range
+                mask = torch.full_like(logits, float('-inf'))
+                mask[:, vocab_offset:vocab_offset + self.num_item_embeddings] = 0
+                logits = logits + mask
+
+            log_probs = torch.log_softmax(logits / temperature, dim=-1)
+
             probs = torch.softmax(logits / temperature, dim=-1)
             cand_token = torch.multinomial(probs, num_samples=KK)
             cand_logp = torch.gather(log_probs, 1, cand_token)
-            #cand_logp, cand_token = torch.topk(log_probs, KK, dim=-1)    # (B*K,KK)
+            cand_token = cand_token - vocab_offset
             cand_logp = cand_logp.view(B, K, KK)
             cand_token = cand_token.view(B, K, KK)
 
@@ -314,7 +378,8 @@ class Tiger(nn.Module):
 
             new_seqs = []
             new_scores = []
-            new_nodes = []
+            if use_trie:
+                new_nodes = []
 
             for b in range(B):
                 scores_b, order_b = total_logp[b].sort(descending=True)
@@ -341,13 +406,15 @@ class Tiger(nn.Module):
 
                     new_seqs.append(seq)
                     new_scores.append(scores_b[j])
-                    parent_node = beam_nodes[b][p]
-                    new_nodes.append(parent_node.get(tid, DEAD_NODE))
+                    if use_trie:
+                        parent_node = beam_nodes[b][p]
+                        new_nodes.append(parent_node.get(tid, DEAD_NODE))
 
                 while len(picked_idx) < K:
                     new_seqs.append(torch.zeros_like(seq))
                     new_scores.append(torch.tensor(-1e32, device=device))
-                    new_nodes.append(self.trie_root)
+                    if use_trie:
+                        new_nodes.append(self.trie_root)
                     picked_idx.append(-1)
 
             lens = torch.tensor([s.size(0) for s in new_seqs], device=device)
@@ -359,7 +426,8 @@ class Tiger(nn.Module):
 
             beam_seqs = padded.view(B, K, max_L)
             beam_logps = torch.stack(new_scores).view(B, K)
-            beam_nodes = [new_nodes[i * K:(i + 1) * K] for i in range(B)]
+            if use_trie:
+                beam_nodes = [new_nodes[i * K:(i + 1) * K] for i in range(B)]
 
         return TigerGenerationOutput(
             sem_ids=beam_seqs,

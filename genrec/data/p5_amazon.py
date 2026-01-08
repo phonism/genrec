@@ -22,8 +22,8 @@ from typing import Callable
 from typing import Optional, List
 from einops import rearrange
 from sentence_transformers import SentenceTransformer
-from generative_recommenders.models.rqvae import RqVae
-from generative_recommenders.data.schemas import SeqBatch, FUT_SUFFIX, SeqData
+from genrec.models.rqvae import RqVae
+from genrec.data.schemas import SeqBatch, FUT_SUFFIX, SeqData
 from torch.utils.data import Dataset
 
 

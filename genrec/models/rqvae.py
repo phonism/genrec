@@ -11,14 +11,14 @@ from torch.nn import functional as F
 from enum import Enum
 from einops import rearrange
 from functools import cached_property
-from generative_recommenders.modules.encoder import MLP
-from generative_recommenders.modules.loss import CategoricalReconstuctionLoss
-from generative_recommenders.modules.loss import ReconstructionLoss
-from generative_recommenders.modules.loss import QuantizeLoss
-from generative_recommenders.modules.normalize import l2norm
-from generative_recommenders.modules.gumbel import gumbel_softmax_sample
-from generative_recommenders.modules.kmeans import kmeans_init_
-from generative_recommenders.modules.normalize import L2NormalizationLayer
+from genrec.modules.encoder import MLP
+from genrec.modules.loss import CategoricalReconstuctionLoss
+from genrec.modules.loss import ReconstructionLoss
+from genrec.modules.loss import QuantizeLoss
+from genrec.modules.normalize import l2norm
+from genrec.modules.gumbel import gumbel_softmax_sample
+from genrec.modules.kmeans import kmeans_init_
+from genrec.modules.normalize import L2NormalizationLayer
 
 
 torch.set_float32_matmul_precision('high')
@@ -348,7 +348,13 @@ class RqVae(nn.Module):
         """
         state = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state["model"])
-        print(f"---Loaded RQVAE Iter {state['iter']}---")
+        # Handle both iter-based and epoch-based checkpoints
+        if "iter" in state:
+            print(f"---Loaded RQVAE Iter {state['iter']}---")
+        elif "epoch" in state:
+            print(f"---Loaded RQVAE Epoch {state['epoch']}---")
+        else:
+            print(f"---Loaded RQVAE from {path}---")
 
     def encode(self, x: Tensor) -> Tensor:
         """
@@ -377,7 +383,7 @@ class RqVae(nn.Module):
         for layer in self.layers:
             residuals.append(res)
             quantized = layer(res, temperature=gumbel_t)
-            quantize_loss += quantized.loss
+            quantize_loss = quantize_loss + quantized.loss
             emb, id = quantized.embeddings, quantized.ids
             res = res - emb
             sem_ids.append(id)

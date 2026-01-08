@@ -1,0 +1,52 @@
+# TIGER config for Amazon dataset
+
+import genrec.data.amazon
+import genrec.models.tiger
+
+# Training settings
+train.epochs=100
+train.learning_rate=1e-4
+train.num_warmup_steps=100
+train.weight_decay=0.035
+train.batch_size=256
+train.gradient_accumulate_every=1
+
+# Model architecture (aligned with paper)
+train.embedding_dim=128
+train.attn_dim=384
+train.dropout=0.1
+train.num_heads=6
+train.n_layers=8
+train.num_item_embeddings=256
+train.num_user_embeddings=10000
+train.sem_id_dim=3
+train.max_seq_len=20
+
+# Dataset
+train.dataset=@AmazonSeqDataset
+train.dataset_folder="dataset/amazon"
+AmazonSeqDataset.split="beauty"
+AmazonSeqDataset.encoder_model_name="/root/workspace/models_hub/sentence-t5-xl"
+AmazonSeqDataset.add_disambiguation=False  # Disabled - 4th code hurts performance
+
+# RQVAE config (must match pretrained model)
+AmazonSeqDataset.rqvae_input_dim=768
+AmazonSeqDataset.rqvae_embed_dim=32
+AmazonSeqDataset.rqvae_hidden_dims=[512, 256, 128, 64]
+AmazonSeqDataset.rqvae_codebook_size=256
+AmazonSeqDataset.rqvae_n_layers=3
+
+# Pretrained RQVAE checkpoint path (overridden by --split flag)
+train.pretrained_rqvae_path="./out/rqvae/amazon/beauty/checkpoint_epoch_999.pt"
+
+# Checkpointing and evaluation (epoch-based)
+train.save_every_epoch=50
+train.eval_valid_every_epoch=1
+train.eval_test_every_epoch=10
+train.save_dir_root="out/tiger/amazon/beauty/"
+
+# Logging
+train.wandb_logging=True
+train.wandb_project="amazon_beauty_tiger_training"
+train.wandb_log_interval=1
+train.do_eval=True

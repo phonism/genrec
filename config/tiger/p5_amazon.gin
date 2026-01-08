@@ -1,4 +1,4 @@
-import generative_recommenders.data.p5_amazon
+import genrec.data.p5_amazon
 
 train.epochs=5000
 train.learning_rate=3e-4
@@ -6,9 +6,9 @@ train.num_warmup_steps=100
 train.weight_decay=0.035
 train.batch_size=256
 train.embedding_dim=128
-train.attn_dim=512
-train.dropout=0.3
-train.num_heads=8
+train.attn_dim=384
+train.dropout=0.1
+train.num_heads=6
 train.n_layers=8
 train.num_item_embeddings=256
 train.num_user_embeddings=2000
@@ -18,7 +18,7 @@ train.save_model_every=3000000
 train.eval_every=10000
 train.max_seq_len=512
 train.pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt"
-train.dataset_folder="dataset/amazon"
+train.dataset_folder="dataset/p5_amazon"
 train.dataset=@P5AmazonReviewsSeqDataset
 train.save_dir_root="out/tiger/p5_amazon/beauty/"
 train.wandb_logging=True

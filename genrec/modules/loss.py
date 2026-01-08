@@ -31,7 +31,7 @@ class CategoricalReconstuctionLoss(nn.Module):
         super().__init__()
         self.reconstruction_loss = ReconstructionLoss()
         self.n_cat_feats = n_cat_feats
-    
+
     def forward(self, x_hat: Tensor, x: Tensor) -> Tensor:
         """
         Args:
@@ -65,10 +65,10 @@ class QuantizeLoss(nn.Module):
     def forward(self, query: Tensor, value: Tensor) -> Tensor:
         """
         Forward pass
-        
+
         Args:
-            query (Tensor): quantized embeddings
-            value (Tensor): embedding values
+            query (Tensor): encoder output (to be quantized)
+            value (Tensor): quantized embeddings from codebook
         Returns:
             Tensor: quantization loss
         """

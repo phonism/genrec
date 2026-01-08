@@ -3,16 +3,12 @@ Customisable Transformer encoder-decoder implementation.
 """
 from __future__ import annotations
 from typing import Optional, Callable, List, Tuple
-import torch
-import math
-from torch import nn, Tensor
-
-from generative_recommenders.modules.normalize import RMSNorm, RootMeanSquareLayerNorm
-
 import math
 import torch
+import torch.nn.functional as F
 from torch import nn, Tensor
-from typing import Optional, Tuple
+
+from genrec.modules.normalize import RMSNorm, RootMeanSquareLayerNorm
 
 def _relative_position_bucket(
     relative_positions: Tensor,
@@ -165,33 +161,32 @@ class T5Attention(nn.Module):
 
 class FeedForward(nn.Module):
     """
-    Position-wise feed-forward network with configurable hidden dims and activation.
+    Position-wise feed-forward network (T5-style: dense -> relu -> dropout -> dense).
     """
     def __init__(
         self,
         dim: int,
-        hidden_dims: int | List[int] = 2048,
+        hidden_dim: int = 2048,
         dropout: float = 0.1,
     ) -> None:
         """
         Initialize the feed-forward network.
         """
         super().__init__()
-        if isinstance(hidden_dims, int):
-            hidden_dims = [hidden_dims]
-        layers: list[nn.Module] = []
-        in_dim = dim
-        for h in hidden_dims:
-            layers += [nn.Linear(in_dim, h, bias=False), nn.SiLU(), nn.Dropout(dropout)]
-            in_dim = h
-        layers.append(nn.Linear(in_dim, dim, bias=False))
-        self.net = nn.Sequential(*layers)
+        # T5 style: wi -> relu -> dropout -> wo
+        self.wi = nn.Linear(dim, hidden_dim, bias=False)
+        self.wo = nn.Linear(hidden_dim, dim, bias=False)
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: Tensor) -> Tensor:  
+    def forward(self, x: Tensor) -> Tensor:
         """
         Forward pass through the feed-forward network.
         """
-        return self.net(x)
+        x = self.wi(x)
+        x = F.relu(x)
+        x = self.dropout(x)
+        x = self.wo(x)
+        return x
 
 
 class MultiHeadAttention(nn.Module):
@@ -289,7 +284,7 @@ class TransformerBlock(nn.Module):
             self.norm_cross = norm_cls(dim)
             self.dropout_cross = nn.Dropout(dropout)
 
-        self.ff = FeedForward(dim, ff_hidden_dim, dropout)
+        self.ff = FeedForward(dim, hidden_dim=ff_hidden_dim, dropout=dropout)
         self.norm2 = norm_cls(dim)
         self.dropout2 = nn.Dropout(dropout)
 

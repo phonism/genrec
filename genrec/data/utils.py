@@ -1,7 +1,7 @@
 """
 Data utils
 """
-from generative_recommenders.data.schemas import SeqBatch
+from genrec.data.schemas import SeqBatch
 
 
 def cycle(dataloader):

@@ -4,7 +4,7 @@ utils
 import argparse
 import gin
 import torch
-from generative_recommenders.data.schemas import TokenizedSeqBatch
+from genrec.data.schemas import TokenizedSeqBatch
 from einops import rearrange
 from torch import Tensor
 
@@ -82,14 +82,49 @@ def maybe_repeat_interleave(x, repeats, dim):
     return x.repeat_interleave(repeats, dim=dim)
 
 
-def parse_config():
+def parse_config(trainer_type: str = "tiger"):
     """
     Parse the gin config file and set the parameters.
+    Supports command line overrides via --gin_bindings or convenience flags.
+
+    Args:
+        trainer_type: "tiger" or "rqvae" - affects default path patterns for --split
+
+    Examples:
+        python trainer.py config.gin --split sports
+        python trainer.py config.gin --gin "train.epochs=500" --gin "train.batch_size=128"
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("config_path", type=str, help="Path to gin config file.")
+    parser.add_argument("--split", type=str, default=None,
+                        help="Dataset split (beauty, sports, toys). Overrides config.")
+    parser.add_argument("--gin", action="append", default=[],
+                        help="Gin parameter overrides (can be specified multiple times).")
     args = parser.parse_args()
+
+    # Parse base config
     gin.parse_config_file(args.config_path)
+
+    # Apply --split convenience override
+    if args.split:
+        if trainer_type == "tiger":
+            split_bindings = [
+                f'AmazonSeqDataset.split="{args.split}"',
+                f'train.save_dir_root="out/tiger/amazon/{args.split}/"',
+                f'train.pretrained_rqvae_path="./out/rqvae/amazon/{args.split}/checkpoint_epoch_1999.pt"',
+                f'train.wandb_project="amazon_{args.split}_tiger_training"',
+            ]
+        else:  # rqvae
+            split_bindings = [
+                f'AmazonItemDataset.split="{args.split}"',
+                f'train.save_dir_root="out/rqvae/amazon/{args.split}"',
+                f'train.wandb_project="amazon_{args.split}_rqvae_training"',
+            ]
+        gin.parse_config(split_bindings)
+
+    # Apply additional gin bindings
+    if args.gin:
+        gin.parse_config(args.gin)
 
 
 @torch.no_grad
