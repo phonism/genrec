@@ -8,7 +8,7 @@ A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
-**Validation Set Metrics**
+**Metrics**
 
 ![Recall@10 Comparison](assets/recall10_comparison.png)
 
