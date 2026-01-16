@@ -3,12 +3,15 @@ Trainer for the COBRA model.
 COBRA: Sparse Meets Dense - Unified Generative Recommendations with Cascaded Sparse-Dense Representations
 """
 import argparse
+import logging
 import os
 import gin
 import torch
 import wandb
 
 from accelerate import Accelerator
+
+logger = logging.getLogger(__name__)
 from genrec.models.cobra import Cobra
 from genrec.modules.utils import parse_config
 from genrec.modules.metrics import TopKAccumulator
@@ -127,7 +130,7 @@ def train(
     num_warmup_steps: int = 500,
     max_seq_len: int = 20,
     pretrained_rqvae_path: str = "./out/rqvae/amazon/beauty/checkpoint.pt",
-    encoder_model_name: str = "/root/workspace/models_hub/sentence-t5-xl",
+    encoder_model_name: str = "sentence-transformers/sentence-t5-xl",
     resume_from_checkpoint: str = None,
     # Loss weights
     sparse_loss_weight: float = 1.0,
@@ -221,9 +224,9 @@ def train(
         train_dataloader, valid_dataloader, test_dataloader
     )
 
-    print(f"train_dataloader: {len(train_dataloader)}")
-    print(f"valid_dataloader: {len(valid_dataloader)}")
-    print(f"test_dataloader: {len(test_dataloader)}")
+    logger.info(f"train_dataloader: {len(train_dataloader)}")
+    logger.info(f"valid_dataloader: {len(valid_dataloader)}")
+    logger.info(f"test_dataloader: {len(test_dataloader)}")
 
     # Create model
     model = Cobra(
@@ -262,7 +265,7 @@ def train(
     )
 
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"Device: {device}, Num Parameters: {num_params:,}")
+    logger.info(f"Device: {device}, Num Parameters: {num_params:,}")
 
     if accelerator.is_main_process:
         pbar = tqdm(total=total_steps, dynamic_ncols=True)
@@ -270,13 +273,13 @@ def train(
     # Resume from checkpoint
     start_epoch = 0
     if resume_from_checkpoint is not None:
-        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
+        logger.info(f"Resuming from checkpoint: {resume_from_checkpoint}")
         checkpoint = torch.load(resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = checkpoint["epoch"] + 1
-        print(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
+        logger.info(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
 
     def save_checkpoint(epoch, path):
         """Save checkpoint in dict format."""
@@ -288,7 +291,7 @@ def train(
         }
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save(state, path)
-        print(f"Saved checkpoint to {path}")
+        logger.info(f"Saved checkpoint to {path}")
 
     # Training loop
     model.train()
@@ -360,7 +363,7 @@ def train(
         # End of epoch logging
         epoch_acc = epoch_acc_correct / max(epoch_acc_total, 1)
         epoch_recall = epoch_recall_correct / max(epoch_recall_total, 1)
-        print(f"\nEpoch {epoch} - acc: {epoch_acc:.4f}, recall: {epoch_recall:.4f}")
+        logger.info(f"Epoch {epoch} - acc: {epoch_acc:.4f}, recall: {epoch_recall:.4f}")
 
         log_dict = {"epoch": epoch} if wandb_logging else None
         if wandb_logging and accelerator.is_main_process:
@@ -400,8 +403,8 @@ def train(
             c0_acc = codebook_correct[0] / max(codebook_total, 1)
             c1_acc = codebook_correct[1] / max(codebook_total, 1)
             c2_acc = codebook_correct[2] / max(codebook_total, 1)
-            print(f"Epoch {epoch} - Valid: {metrics}")
-            print(f"  Per-codebook acc: c0={c0_acc:.4f}, c1={c1_acc:.4f}, c2={c2_acc:.4f}")
+            logger.info(f"Epoch {epoch} - Valid: {metrics}")
+            logger.info(f"  Per-codebook acc: c0={c0_acc:.4f}, c1={c1_acc:.4f}, c2={c2_acc:.4f}")
 
             if wandb_logging and accelerator.is_main_process:
                 for k, v in metrics.items():

@@ -1,13 +1,16 @@
 """
-Trainer for the Tiger model.
+Trainer for the TIGER model - Generative Retrieval for Sequential Recommendation.
 """
 import argparse
+import logging
 import os
 import gin
 import torch
 import wandb
 
 from accelerate import Accelerator
+
+logger = logging.getLogger(__name__)
 from genrec.data.utils import cycle
 from genrec.models.tiger import Tiger
 from genrec.models.rqvae import RqVae
@@ -194,9 +197,9 @@ def train(
         train_dataloader, valid_dataloader, test_dataloader
     )
 
-    print("train_dataloader: {}".format(len(train_dataloader)))
-    print("valid_dataloader: {}".format(len(valid_dataloader)))
-    print("test_dataloader: {}".format(len(test_dataloader)))
+    logger.info(f"train_dataloader: {len(train_dataloader)}")
+    logger.info(f"valid_dataloader: {len(valid_dataloader)}")
+    logger.info(f"test_dataloader: {len(test_dataloader)}")
 
     model = Tiger(
         embedding_dim=embedding_dim,
@@ -228,7 +231,7 @@ def train(
     )
 
     num_params = sum(p.numel() for p in model.parameters())
-    print(f"Device: {device}, Num Parameters: {num_params}")
+    logger.info(f"Device: {device}, Num Parameters: {num_params}")
 
     if accelerator.is_main_process:
         pbar = tqdm(total=total_steps, dynamic_ncols=True)
@@ -244,13 +247,13 @@ def train(
     # Resume from checkpoint if specified
     start_epoch = 0
     if resume_from_checkpoint is not None:
-        print(f"Resuming from checkpoint: {resume_from_checkpoint}")
+        logger.info(f"Resuming from checkpoint: {resume_from_checkpoint}")
         checkpoint = torch.load(resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         lr_scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = checkpoint["epoch"] + 1
-        print(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
+        logger.info(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
 
     def save_checkpoint(epoch, path):
         """Save checkpoint in dict format."""
@@ -263,7 +266,7 @@ def train(
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
         torch.save(state, path)
-        print(f"Saved checkpoint to {path}")
+        logger.info(f"Saved checkpoint to {path}")
 
     def evaluate(dataloader, desc="Evaluation"):
         """Evaluate model on a dataloader."""
@@ -333,7 +336,7 @@ def train(
         # Valid evaluation
         if do_eval and (epoch + 1) % eval_valid_every_epoch == 0:
             valid_metrics = evaluate(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})")
-            print(f"Epoch {epoch} - Valid: {valid_metrics}")
+            logger.info(f"Epoch {epoch} - Valid: {valid_metrics}")
             if wandb_logging and accelerator.is_main_process:
                 for k in valid_metrics:
                     log_dict[f"eval/valid_{k}"] = valid_metrics[k]
@@ -341,7 +344,7 @@ def train(
         # Test evaluation (less frequent)
         if do_eval and (epoch + 1) % eval_test_every_epoch == 0:
             test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
-            print(f"Epoch {epoch} - Test: {test_metrics}")
+            logger.info(f"Epoch {epoch} - Test: {test_metrics}")
             if wandb_logging and accelerator.is_main_process:
                 for k in test_metrics:
                     log_dict[f"eval/test_{k}"] = test_metrics[k]
@@ -374,5 +377,5 @@ def train(
 
 
 if __name__ == "__main__":
-    parse_config(trainer_type="tiger")
+    parse_config()
     train()

@@ -23,7 +23,7 @@ class ReconstructionLoss(nn.Module):
         return ((x_hat - x) ** 2).sum(axis=-1)
 
 
-class CategoricalReconstuctionLoss(nn.Module):
+class CategoricalReconstructionLoss(nn.Module):
     """
     Reconstruction loss for RQ-VAE with categorical features
     """

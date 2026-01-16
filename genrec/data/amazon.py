@@ -4,6 +4,7 @@ Supports automatic download and processing of Amazon Review 2014 5-core data.
 """
 import gzip
 import json
+import logging
 import os
 import urllib.request
 import numpy as np
@@ -15,6 +16,8 @@ from torch.utils.data import Dataset
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 # Amazon Review 2014 download URLs
@@ -43,11 +46,11 @@ DATASET_CONFIGS = {
 def download_file(url: str, dest_path: str) -> None:
     """Download file with progress bar."""
     if os.path.exists(dest_path):
-        print(f"File already exists: {dest_path}")
+        logger.info(f"File already exists: {dest_path}")
         return
 
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    print(f"Downloading {url} -> {dest_path}")
+    logger.info(f"Downloading {url} -> {dest_path}")
 
     with urllib.request.urlopen(url) as response:
         total_size = int(response.headers.get('content-length', 0))
@@ -60,7 +63,7 @@ def download_file(url: str, dest_path: str) -> None:
                     f.write(chunk)
                     pbar.update(len(chunk))
 
-    print(f"Downloaded: {dest_path}")
+    logger.info(f"Downloaded: {dest_path}")
 
 
 def parse_gzip_json(path: str):
@@ -148,7 +151,7 @@ class AmazonItemDataset(Dataset):
         df = pd.read_parquet(self.parquet_path)
         self.embeddings = np.stack(df['embedding'].values, axis=0)
         self.dim = self.embeddings.shape[-1]
-        print(f"Loaded {len(self.embeddings)} embeddings from {self.parquet_path}")
+        logger.info(f"Loaded {len(self.embeddings)} embeddings from {self.parquet_path}")
 
     def _generate_embeddings(self) -> None:
         """Generate embeddings from raw data."""
@@ -159,17 +162,17 @@ class AmazonItemDataset(Dataset):
         meta_path = os.path.join(self.raw_dir, config["meta"])
 
         # Build item mapping from reviews (preserves order)
-        print("Building item mapping from reviews...")
+        logger.info("Building item mapping from reviews...")
         item_id_mapping: Dict[str, int] = {}
         for review in tqdm(parse_gzip_json(reviews_path), desc="Processing reviews"):
             asin = review.get('asin')
             if asin and asin not in item_id_mapping:
                 item_id_mapping[asin] = len(item_id_mapping) + 1
 
-        print(f"Found {len(item_id_mapping)} unique items")
+        logger.info(f"Found {len(item_id_mapping)} unique items")
 
         # Load metadata
-        print("Loading metadata...")
+        logger.info("Loading metadata...")
         item_info: Dict[int, dict] = {}
         for meta in tqdm(parse_gzip_json(meta_path), desc="Processing metadata"):
             asin = meta.get('asin')
@@ -183,10 +186,10 @@ class AmazonItemDataset(Dataset):
                     'categories': meta.get('categories'),
                 }
 
-        print(f"Loaded metadata for {len(item_info)} items")
+        logger.info(f"Loaded metadata for {len(item_info)} items")
 
         # Generate embeddings
-        print(f"Generating embeddings with {self.encoder_model_name}...")
+        logger.info(f"Generating embeddings with {self.encoder_model_name}...")
         model = SentenceTransformer(self.encoder_model_name)
 
         item_embeddings: List[dict] = []
@@ -209,7 +212,7 @@ class AmazonItemDataset(Dataset):
         # Save to parquet
         df = pd.DataFrame(item_embeddings)
         df.to_parquet(self.parquet_path, index=False)
-        print(f"Saved embeddings to {self.parquet_path}")
+        logger.info(f"Saved embeddings to {self.parquet_path}")
 
         # Store embeddings
         self.embeddings = np.stack(df['embedding'].values, axis=0)
@@ -337,7 +340,7 @@ class AmazonSeqDataset(Dataset):
         collision_items = sum(len(items) for items in code_to_items.values() if len(items) > 1)
         max_collision = max(len(items) for items in code_to_items.values())
 
-        print(f"Semantic ID collisions: {collision_count} groups, {collision_items} items affected, max group size: {max_collision}")
+        logger.info(f"Semantic ID collisions: {collision_count} groups, {collision_items} items affected, max group size: {max_collision}")
 
         # Assign disambiguation suffix
         new_sem_ids = []
@@ -358,7 +361,7 @@ class AmazonSeqDataset(Dataset):
         user_sequences: Dict[str, List[tuple]] = {}
         item_id_mapping: Dict[str, int] = {}
 
-        print("Loading user sequences...")
+        logger.info("Loading user sequences...")
         for review in tqdm(parse_gzip_json(reviews_path), desc="Processing reviews"):
             asin = review.get('asin')
             user_id = review.get('reviewerID')
@@ -384,7 +387,7 @@ class AmazonSeqDataset(Dataset):
                 self.sequences.append(items)
                 self.user_ids.append(uid)
 
-        print(f"Loaded {len(self.sequences)} user sequences")
+        logger.info(f"Loaded {len(self.sequences)} user sequences")
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples.
@@ -438,7 +441,7 @@ class AmazonSeqDataset(Dataset):
                     'target': full_seq[-1],    # Last item
                 })
 
-        print(f"Generated {len(self.samples)} samples for {self.train_test_split}")
+        logger.info(f"Generated {len(self.samples)} samples for {self.train_test_split}")
 
     def _truncate_history(self, history: List[int]) -> List[int]:
         """Truncate history to max_seq_len (take last N items)."""

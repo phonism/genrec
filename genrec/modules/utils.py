@@ -82,45 +82,35 @@ def maybe_repeat_interleave(x, repeats, dim):
     return x.repeat_interleave(repeats, dim=dim)
 
 
-def parse_config(trainer_type: str = "tiger"):
+def parse_config():
     """
-    Parse the gin config file and set the parameters.
-    Supports command line overrides via --gin_bindings or convenience flags.
+    Parse the gin config file with {split} placeholder support.
 
-    Args:
-        trainer_type: "tiger" or "rqvae" - affects default path patterns for --split
+    The config file can use {split} as a placeholder that gets replaced
+    by the --split argument value.
 
     Examples:
-        python trainer.py config.gin --split sports
-        python trainer.py config.gin --gin "train.epochs=500" --gin "train.batch_size=128"
+        python trainer.py config.gin --split beauty
+        python trainer.py config.gin --split sports --gin "train.epochs=500"
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("config_path", type=str, help="Path to gin config file.")
-    parser.add_argument("--split", type=str, default=None,
-                        help="Dataset split (beauty, sports, toys). Overrides config.")
+    parser.add_argument("--split", type=str, default="beauty",
+                        help="Dataset split (beauty, sports, toys, clothing). Replaces {split} in config.")
     parser.add_argument("--gin", action="append", default=[],
                         help="Gin parameter overrides (can be specified multiple times).")
     args = parser.parse_args()
 
-    # Parse base config
-    gin.parse_config_file(args.config_path)
+    # Read config file
+    with open(args.config_path, 'r') as f:
+        config_content = f.read()
 
-    # Apply --split convenience override
+    # Replace {split} placeholder if --split is provided
     if args.split:
-        if trainer_type == "tiger":
-            split_bindings = [
-                f'AmazonSeqDataset.split="{args.split}"',
-                f'train.save_dir_root="out/tiger/amazon/{args.split}/"',
-                f'train.pretrained_rqvae_path="./out/rqvae/amazon/{args.split}/checkpoint_epoch_1999.pt"',
-                f'train.wandb_project="amazon_{args.split}_tiger_training"',
-            ]
-        else:  # rqvae
-            split_bindings = [
-                f'AmazonItemDataset.split="{args.split}"',
-                f'train.save_dir_root="out/rqvae/amazon/{args.split}"',
-                f'train.wandb_project="amazon_{args.split}_rqvae_training"',
-            ]
-        gin.parse_config(split_bindings)
+        config_content = config_content.replace('{split}', args.split)
+
+    # Parse config
+    gin.parse_config(config_content)
 
     # Apply additional gin bindings
     if args.gin:

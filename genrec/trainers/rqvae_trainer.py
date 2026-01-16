@@ -443,5 +443,5 @@ def train(
 
 
 if __name__ == "__main__":
-    parse_config(trainer_type="rqvae")
+    parse_config()
     train()

@@ -1,0 +1,180 @@
+site_name: GenRec
+site_description: A Model Zoo for Generative Recommendation
+site_author: Qi Lu
+site_url: https://phonism.github.io/genrec/
+
+# Repository information
+repo_name: phonism/genrec
+repo_url: https://github.com/phonism/genrec
+
+# Configuration
+theme:
+  name: material
+  language: zh
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: 切换到深色模式
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: 切换到浅色模式
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.annotate
+    - content.code.copy
+    - toc.follow
+
+# Navigation
+nav:
+  - 首页: index.md
+  - 快速开始: zh/getting-started.md
+  - 安装指南: zh/installation.md
+  - 模型:
+    - SASRec: zh/models/sasrec.md
+    - HSTU: zh/models/hstu.md
+    - RQVAE: zh/models/rqvae.md
+    - TIGER: zh/models/tiger.md
+    - LCRec: zh/models/lcrec.md
+    - COBRA: zh/models/cobra.md
+  - 数据集:
+    - 概述: zh/dataset/overview.md
+    - P5 Amazon: zh/dataset/p5-amazon.md
+    - 自定义数据集: zh/dataset/custom.md
+  - 训练:
+    - RQVAE 训练: zh/training/rqvae.md
+    - TIGER 训练: zh/training/tiger.md
+  - API 参考: zh/api/index.md
+  - 示例: zh/examples.md
+  - 常见问题: zh/faq.md
+  - 贡献指南: zh/contributing.md
+
+# Extensions
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - meta
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.magiclink:
+      repo_url_shorthand: true
+      user: phonism
+      repo: genrec
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+# Plugins
+plugins:
+  - search:
+      lang:
+        - zh
+        - en
+  - mkdocstrings
+  - i18n:
+      default_language: zh
+      languages:
+        zh:
+          name: 中文
+          build: true
+        en:
+          name: English  
+          build: true
+          nav_translations:
+            首页: Home
+            快速开始: Getting Started
+            安装指南: Installation
+            模型: Models
+            数据集: Dataset
+            概述: Overview
+            自定义数据集: Custom Datasets
+            训练: Training
+            RQVAE 训练: RQVAE Training
+            TIGER 训练: TIGER Training
+            API 参考: API Reference
+            示例: Examples
+            常见问题: FAQ
+            贡献指南: Contributing
+          nav:
+            - Home: en/index.md
+            - Getting Started: en/getting-started.md
+            - Installation: en/installation.md
+            - Models:
+              - SASRec: en/models/sasrec.md
+              - HSTU: en/models/hstu.md
+              - RQVAE: en/models/rqvae.md
+              - TIGER: en/models/tiger.md
+              - LCRec: en/models/lcrec.md
+              - COBRA: en/models/cobra.md
+            - Dataset:
+              - Overview: en/dataset/overview.md
+              - P5 Amazon: en/dataset/p5-amazon.md
+              - Custom Datasets: en/dataset/custom.md
+            - Training:
+              - RQVAE Training: en/training/rqvae.md
+              - TIGER Training: en/training/tiger.md
+            - API Reference: en/api/index.md
+            - Examples: en/examples.md
+            - FAQ: en/faq.md
+            - Contributing: en/contributing.md
+
+# Extra
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/phonism/genrec
+  alternate:
+    - name: 中文
+      link: /zh/
+      lang: zh
+    - name: English
+      link: /en/
+      lang: en
+
+# Extra JavaScript
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://polyfill.io/v3/polyfill.min.js?features=es6
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+# Extra CSS
+extra_css:
+  - stylesheets/extra.css

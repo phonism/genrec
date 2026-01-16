@@ -143,6 +143,24 @@ class LCRec(nn.Module):
         self.model.save_pretrained(save_dir, **kwargs)
         self.tokenizer.save_pretrained(save_dir)
 
+    def load_pretrained(self, load_dir: str):
+        """
+        Load model and tokenizer from saved checkpoint.
+
+        Args:
+            load_dir (str): directory containing the saved model and tokenizer.
+        """
+        # Load tokenizer (includes codebook tokens)
+        self.tokenizer = AutoTokenizer.from_pretrained(load_dir)
+
+        # Load model
+        self.model = AutoModelForCausalLM.from_pretrained(
+            load_dir,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+        )
+        print(f"Loaded checkpoint from {load_dir}")
+
     @torch.no_grad()
     def generate_topk(
         self,

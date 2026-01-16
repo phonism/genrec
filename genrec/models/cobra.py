@@ -117,16 +117,9 @@ class CobraEmbedding(nn.Module):
         # 5) Add position & type embeddings
         out_len = h.shape[1]
 
-        # Position: item index (0, 0, 0, 0, 1, 1, 1, 1, ...) for complete items
-        # For partial items: continue with next item index
-        pos_list = []
-        for item_idx in range(n_complete_items):
-            pos_list.extend([item_idx] * (self.C + 1))  # C sparse + 1 dense
-        # Partial item positions
-        if n_partial_tokens > 0:
-            pos_list.extend([n_complete_items] * n_partial_tokens)
-
-        pos_idx = torch.tensor(pos_list[:out_len], device=device).unsqueeze(0).expand(B, -1)
+        # Position: token-level position (0, 1, 2, 3, 4, 5, ...) for each token
+        # Each token gets a unique position index
+        pos_idx = torch.arange(out_len, device=device).unsqueeze(0).expand(B, -1)
 
         # Type: 0 for sparse, 1 for dense
         type_list = []
@@ -557,7 +550,7 @@ class Cobra(torch.nn.Module):
 
         beam_seqs = []  # Will collect generated tokens
         beam_scores = torch.zeros(B, 1, device=device)  # (B, 1) initially
-        h_c0 = None  # Store for dense vec computation
+        h_last = None  # Store hidden state from last codebook for dense vec computation
 
         # Autoregressive generation for each codebook
         for c in range(self.C):
@@ -575,8 +568,11 @@ class Cobra(torch.nn.Module):
                 seq_lens = seq_mask.sum(dim=1)  # (B,)
                 last_dense_pos = seq_lens - 1
 
-                h_c0 = h[torch.arange(B, device=device), last_dense_pos]  # (B, D)
-                logits = self.sparse_head[0](h_c0) / temperature  # (B, vocab_size)
+                h_c = h[torch.arange(B, device=device), last_dense_pos]  # (B, D)
+                logits = self.sparse_head[0](h_c) / temperature  # (B, vocab_size)
+                # If only 1 codebook, this is the last position for dense vec
+                if self.C == 1:
+                    h_last = h_c.unsqueeze(1).expand(-1, K, -1)  # (B, K, D)
                 log_probs = F.log_softmax(logits, dim=-1)  # (B, vocab_size)
 
                 topk_scores, topk_ids = log_probs.topk(K, dim=-1)  # (B, K)
@@ -641,12 +637,17 @@ class Cobra(torch.nn.Module):
                 beam_seqs = new_beam_seqs
                 beam_scores = topk_scores
 
+                # Store hidden state from last codebook for dense vec computation
+                # Must be after beam selection to match final beam order
+                if c == self.C - 1:
+                    h_c_reshaped = h_c.view(B, current_K, -1)  # (B, K, D)
+                    h_last = h_c_reshaped.gather(1, beam_indices.unsqueeze(-1).expand(-1, -1, h_c_reshaped.size(-1)))  # (B, K, D)
+
         # Stack beam sequences: list of C tensors (B, K) -> (B, K, C)
         sem_ids = torch.stack(beam_seqs, dim=-1)  # (B, K, C)
 
-        # Dense vectors from h_c0
-        dense_vecs = F.normalize(h_c0, p=2, dim=-1)  # (B, D)
-        dense_vecs = dense_vecs.unsqueeze(1).expand(-1, K, -1)  # (B, K, D)
+        # Dense vectors from h_last (last codebook position, aligned with training)
+        dense_vecs = F.normalize(h_last, p=2, dim=-1)  # (B, K, D)
 
         return CobraGenerationOutput(
             sem_ids=sem_ids,        # (B, K, C)

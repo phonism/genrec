@@ -1,5 +1,24 @@
 """
-rqvae
+Residual Quantized Variational Autoencoder (RQ-VAE) for Semantic ID Generation.
+
+This module implements RQVAE for generating semantic IDs in recommender systems.
+The model encodes item embeddings into discrete codes using residual quantization,
+enabling efficient generative retrieval.
+
+Key Components:
+    - Quantize: Single-level vector quantization with multiple forward modes
+    - ResidualQuantize: Multi-level residual quantization
+    - RQVAE: Full encoder-decoder model with quantization
+
+Quantization Modes:
+    - GUMBEL_SOFTMAX: Gumbel-softmax sampling with temperature
+    - STE: Straight-through estimator
+    - ROTATION_TRICK: Rotation trick for gradient estimation
+    - SINKHORN: Sinkhorn-Knopp optimal transport for balanced assignments
+
+References:
+    - TIGER: https://arxiv.org/abs/2305.05065
+    - Rotation Trick: https://arxiv.org/abs/2410.06424
 """
 import torch
 import gin
@@ -12,7 +31,7 @@ from enum import Enum
 from einops import rearrange
 from functools import cached_property
 from genrec.modules.encoder import MLP
-from genrec.modules.loss import CategoricalReconstuctionLoss
+from genrec.modules.loss import CategoricalReconstructionLoss
 from genrec.modules.loss import ReconstructionLoss
 from genrec.modules.loss import QuantizeLoss
 from genrec.modules.normalize import l2norm
@@ -20,8 +39,6 @@ from genrec.modules.gumbel import gumbel_softmax_sample
 from genrec.modules.kmeans import kmeans_init_
 from genrec.modules.normalize import L2NormalizationLayer
 
-
-torch.set_float32_matmul_precision('high')
 
 @gin.constants_from_enum
 class QuantizeForwardMode(Enum):
@@ -31,7 +48,7 @@ class QuantizeForwardMode(Enum):
     GUMBEL_SOFTMAX = 1
     STE = 2
     ROTATION_TRICK = 3
-    SINKHORN = 4  
+    SINKHORN = 4
 
 
 class QuantizeDistance(Enum):
@@ -145,8 +162,8 @@ class Quantize(nn.Module):
             if isinstance(m, nn.Embedding):
                 nn.init.uniform_(m.weight)
     
-    @torch.no_grad
-    def _kmeans_init(self, x) -> None:
+    @torch.no_grad()
+    def _kmeans_init(self, x: Tensor) -> None:
         kmeans_init_(self.embedding.weight, x=x)
         self.kmeans_initted = True
 
@@ -178,7 +195,7 @@ class Quantize(nn.Module):
                 (codebook.T / codebook.T.norm(dim=0, keepdim=True))
             )
         else:
-            raise Exception("Unsupported Quantize distance mode.")
+            raise ValueError(f"Unsupported Quantize distance mode: {self.distance_mode}")
         _, ids = (dist.detach()).min(axis=1)
 
         if self.training:
@@ -223,7 +240,7 @@ class Quantize(nn.Module):
                 emb_out = x + (emb - x).detach()
                 ids = sk_ids
             else:
-                raise Exception("Unsupported Quantize forward mode.")
+                raise ValueError(f"Unsupported Quantize forward mode: {self.forward_mode}")
             loss = self.quantize_loss(query=x, value=emb)
         
         else:
@@ -256,8 +273,6 @@ class RqVaeComputedLosses(NamedTuple):
     rqvae_loss: Tensor
     embs_norm: Tensor
     p_unique_ids: Tensor
-
-
 
 
 class RqVae(nn.Module):
@@ -324,7 +339,7 @@ class RqVae(nn.Module):
         )
 
         self.reconstruction_loss = (
-            CategoricalReconstuctionLoss(n_cat_features) if n_cat_features != 0
+            CategoricalReconstructionLoss(n_cat_features) if n_cat_features != 0
             else ReconstructionLoss()
         )
     
@@ -411,10 +426,16 @@ class RqVae(nn.Module):
         quantized = self.get_semantic_ids(x, gumbel_t)
         embs, residuals = quantized.embeddings, quantized.residuals
         x_hat = self.decode(embs.sum(axis=-1))
-        x_hat = torch.cat([l2norm(x_hat[..., :-self.n_cat_feats]), x_hat[..., -self.n_cat_feats:]], axis=-1)
-        reconstuction_loss = self.reconstruction_loss(x_hat, x)
+        if self.n_cat_feats > 0:
+            x_hat = torch.cat([
+                l2norm(x_hat[..., :-self.n_cat_feats]),
+                x_hat[..., -self.n_cat_feats:]
+            ], dim=-1)
+        else:
+            x_hat = l2norm(x_hat)
+        reconstruction_loss = self.reconstruction_loss(x_hat, x)
         rqvae_loss = quantized.quantize_loss
-        loss = (reconstuction_loss + rqvae_loss).mean()
+        loss = (reconstruction_loss + rqvae_loss).mean()
 
         with torch.no_grad():
             # Compute debug ID statistics
@@ -426,10 +447,8 @@ class RqVae(nn.Module):
 
         return RqVaeComputedLosses(
             loss=loss,
-            reconstruction_loss=reconstuction_loss.mean(),
+            reconstruction_loss=reconstruction_loss.mean(),
             rqvae_loss=rqvae_loss.mean(),
             embs_norm=embs_norm,
             p_unique_ids=p_unique_ids
         )
-
-

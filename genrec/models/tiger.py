@@ -1,6 +1,23 @@
 """
-TIGER: Recommender Systems with Generative Retrieval
-https://arxiv.org/pdf/2305.05065
+TIGER: Recommender Systems with Generative Retrieval.
+
+This module implements the TIGER model for generative retrieval in sequential
+recommendation. TIGER uses semantic IDs from RQ-VAE to represent items and
+generates next-item predictions through autoregressive decoding.
+
+Key Components:
+    - Tiger: Main model with encoder-decoder architecture
+    - TrieNode: Trie structure for constrained decoding
+    - TigerOutput: Named tuple for model outputs
+    - TigerGenerateOutput: Named tuple for generation outputs
+
+Features:
+    - Semantic ID embeddings with multi-codebook support
+    - Trie-based constrained decoding for valid item generation
+    - Beam search with prefix constraints
+
+Reference:
+    TIGER: https://arxiv.org/abs/2305.05065
 """
 
 import torch
