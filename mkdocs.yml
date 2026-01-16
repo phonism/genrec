@@ -109,13 +109,15 @@ plugins:
         - en
   - mkdocstrings
   - i18n:
-      default_language: zh
+      docs_structure: folder
+      fallback_to_default: true
       languages:
-        zh:
+        - locale: zh
           name: 中文
+          default: true
           build: true
-        en:
-          name: English  
+        - locale: en
+          name: English
           build: true
           nav_translations:
             首页: Home
@@ -132,28 +134,6 @@ plugins:
             示例: Examples
             常见问题: FAQ
             贡献指南: Contributing
-          nav:
-            - Home: en/index.md
-            - Getting Started: en/getting-started.md
-            - Installation: en/installation.md
-            - Models:
-              - SASRec: en/models/sasrec.md
-              - HSTU: en/models/hstu.md
-              - RQVAE: en/models/rqvae.md
-              - TIGER: en/models/tiger.md
-              - LCRec: en/models/lcrec.md
-              - COBRA: en/models/cobra.md
-            - Dataset:
-              - Overview: en/dataset/overview.md
-              - P5 Amazon: en/dataset/p5-amazon.md
-              - Custom Datasets: en/dataset/custom.md
-            - Training:
-              - RQVAE Training: en/training/rqvae.md
-              - TIGER Training: en/training/tiger.md
-            - API Reference: en/api/index.md
-            - Examples: en/examples.md
-            - FAQ: en/faq.md
-            - Contributing: en/contributing.md
 
 # Extra
 extra:
