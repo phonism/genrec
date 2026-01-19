@@ -1,0 +1,80 @@
+# LCRec debug config - quick testing with small subset
+# Run: python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec_debug.gin
+
+include "config/base.gin"
+
+import genrec.data.amazon_lcrec
+import genrec.models.lcrec
+
+# =============================================================================
+# Training Settings (reduced for debugging)
+# =============================================================================
+train.epochs = 5
+train.batch_size = 8
+train.learning_rate = 2e-5
+train.weight_decay = 0.01
+train.warmup_ratio = 0.01
+train.gradient_accumulate_every = 1
+train.max_length = 512
+
+# =============================================================================
+# Debug: Limit samples for quick testing
+# =============================================================================
+train.max_train_samples = 500
+train.max_eval_samples = 100
+train.debug_logging = True
+
+# =============================================================================
+# Model Settings
+# =============================================================================
+train.pretrained_path = %MODEL_HUB_QWEN3_1_7B
+train.use_lora = False
+
+# =============================================================================
+# Codebook Settings
+# =============================================================================
+train.num_codebooks = 5
+train.codebook_size = 256
+
+# =============================================================================
+# Dataset Settings
+# =============================================================================
+train.dataset = @AmazonLCRecDataset
+train.dataset_folder = "dataset/amazon"
+train.max_seq_len = 20
+train.max_text_len = 128
+train.pretrained_rqvae_path = "./out/lcrec/amazon/{split}/rqvae/checkpoint_epoch_1999.pt"
+
+AmazonLCRecDataset.split = "{split}"
+AmazonLCRecDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonLCRecDataset.rqvae_input_dim = 768
+AmazonLCRecDataset.rqvae_embed_dim = 64
+AmazonLCRecDataset.rqvae_hidden_dims = [512, 256, 128]
+AmazonLCRecDataset.rqvae_codebook_size = 256
+AmazonLCRecDataset.rqvae_n_layers = 5
+AmazonLCRecDataset.enabled_tasks = ["seqrec"]
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+train.do_eval = True
+train.eval_every_epoch = 1
+train.eval_batch_size = 4
+train.eval_beam_width = 10
+
+# =============================================================================
+# Checkpoint Settings
+# =============================================================================
+train.save_dir_root = "out/lcrec/amazon/{split}/debug"
+train.save_every_epoch = 1
+
+# =============================================================================
+# Logging Settings (no wandb for debug)
+# =============================================================================
+train.wandb_logging = False
+
+# =============================================================================
+# Accelerator Settings
+# =============================================================================
+train.amp = True
+train.mixed_precision_type = "bf16"

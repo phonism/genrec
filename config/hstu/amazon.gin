@@ -1,0 +1,62 @@
+# HSTU config for Amazon dataset
+# Hierarchical Sequential Transduction Unit
+# Run: python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
+
+import genrec.data.amazon_hstu
+import genrec.models.hstu
+
+# =============================================================================
+# Training Settings
+# =============================================================================
+train.epochs = 10
+train.batch_size = 128
+train.learning_rate = 1e-3
+train.weight_decay = 0.0
+
+# =============================================================================
+# Model Settings
+# =============================================================================
+train.max_seq_len = 50
+train.embed_dim = 64
+train.num_heads = 2
+train.num_blocks = 2
+train.dropout = 0.2
+
+# =============================================================================
+# HSTU-specific: Relative Attention Bias
+# =============================================================================
+train.num_position_buckets = 32
+train.num_time_buckets = 64
+train.use_temporal_bias = True  # Set False to disable temporal bias (like SASRec)
+
+# =============================================================================
+# Dataset Settings
+# =============================================================================
+train.dataset_folder = "dataset/amazon"
+train.split = "{split}"  # beauty, sports, toys, clothing
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+train.do_eval = True
+train.eval_every_epoch = 1
+train.eval_batch_size = 256
+
+# =============================================================================
+# Checkpoint Settings
+# =============================================================================
+train.save_dir_root = "out/hstu/amazon/{split}"
+train.save_every_epoch = 50
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+train.wandb_logging = True
+train.wandb_project = "hstu_{split}_training"
+train.wandb_log_interval = 100
+
+# =============================================================================
+# Accelerator Settings
+# =============================================================================
+train.amp = True
+train.mixed_precision_type = "bf16"

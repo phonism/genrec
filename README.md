@@ -20,6 +20,7 @@ A Model Zoo for Generative Recommendation.
 | [HSTU](https://wandb.ai/luckyqueen/hstu_beauty_training) | 0.0486 | 0.0708 | 0.0340 | 0.0412 |
 | TIGER (Paper) | 0.0454 | 0.0648 | 0.0321 | 0.0384 |
 | [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_beauty_tiger_training) | 0.0465 | 0.0721 | 0.0297 | 0.0378 |
+| [LCRec](https://wandb.ai/luckyqueen/lcrec_beauty_training) | 0.0525 | 0.0791 | 0.0352 | 0.0438 |
 
 ### Amazon 2014 Sports
 
@@ -29,6 +30,7 @@ A Model Zoo for Generative Recommendation.
 | [HSTU](https://wandb.ai/luckyqueen/hstu_sports_training) | 0.0243 | 0.0365 | 0.0168 | 0.0207 |
 | TIGER (Paper) | 0.0264 | 0.0400 | 0.0181 | 0.0225 |
 | [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_sports_tiger_training) | 0.0266 | 0.0414 | 0.0176 | 0.0224 |
+| [LCRec](https://wandb.ai/luckyqueen/lcrec_sports_training) | 0.0281 | 0.0422 | 0.0181 | 0.0226 |
 
 ### Amazon 2014 Toys
 
@@ -38,6 +40,7 @@ A Model Zoo for Generative Recommendation.
 | [HSTU](https://wandb.ai/luckyqueen/hstu_toys_training) | 0.0504 | 0.0685 | 0.0368 | 0.0427 |
 | TIGER (Paper) | 0.0521 | 0.0712 | 0.0371 | 0.0432 |
 | [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_toys_tiger_training/) | 0.0420 | 0.0647 | 0.0280 | 0.0350 |
+| [LCRec](https://wandb.ai/luckyqueen/lcrec_toys_training) | 0.0444 | 0.0683 | 0.0294 | 0.0371 |
 
 ## Features
 
