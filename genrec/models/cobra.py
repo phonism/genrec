@@ -33,6 +33,15 @@ class CobraGenerationOutput(NamedTuple):
     sem_ids: torch.Tensor      # (B, K, C) - top-K generated sparse IDs
     dense_vecs: torch.Tensor   # (B, K, D) - corresponding dense vectors
     scores: torch.Tensor       # (B, K) - scores for each candidate
+
+
+class BeamFusionOutput(NamedTuple):
+    """
+    BeamFusion output - final recommendation with item IDs
+    """
+    item_ids: torch.Tensor     # (B, K) - top-K recommended item IDs
+    sem_ids: torch.Tensor      # (B, K, C) - corresponding semantic IDs
+    scores: torch.Tensor       # (B, K) - fused scores
     
 
 class CobraEmbedding(nn.Module):
@@ -666,6 +675,89 @@ class Cobra(torch.nn.Module):
         vecs = self.encoder(encoder_input_ids)
         vecs = F.normalize(vecs, p=2, dim=-1, eps=1e-12)
         return vecs
+
+    def beam_fusion(
+        self,
+        input_ids: torch.Tensor,
+        encoder_input_ids: torch.Tensor,
+        item_dense_vecs: torch.Tensor,
+        item_sem_ids: torch.Tensor,
+        n_candidates: int = 10,
+        n_beam: int = 50,
+        temperature: float = 1.0,
+        alpha: float = 0.5,
+    ) -> BeamFusionOutput:
+        """
+        BeamFusion: Combine beam search with nearest neighbor retrieval.
+
+        1. Generate top-n_beam sparse IDs and dense vectors via beam search
+        2. Use dense vectors to find nearest neighbors among all items
+        3. Fuse beam scores with similarity scores
+
+        Args:
+            input_ids: (B, T*C) - semantic IDs of history
+            encoder_input_ids: (B, T, L) - tokenized text for encoder
+            item_dense_vecs: (N, D) - pre-computed dense vectors for all items
+            item_sem_ids: (N, C) - semantic IDs for all items
+            n_candidates: number of final candidates to return
+            n_beam: number of beam search candidates (should be > n_candidates)
+            temperature: temperature for softmax
+            alpha: weight for beam score (1-alpha for similarity score)
+
+        Returns:
+            BeamFusionOutput with item_ids, sem_ids, scores
+        """
+        B = input_ids.size(0)
+        device = input_ids.device
+        N = item_dense_vecs.size(0)
+
+        # Step 1: Generate candidates via beam search
+        gen_output = self.generate(
+            input_ids=input_ids,
+            encoder_input_ids=encoder_input_ids,
+            n_candidates=n_beam,
+            temperature=temperature,
+        )
+
+        # gen_output.dense_vecs: (B, n_beam, D)
+        # gen_output.scores: (B, n_beam) - log probabilities
+
+        # Step 2: Compute similarity with all items
+        # Normalize item vectors (should already be normalized, but ensure)
+        item_dense_vecs = F.normalize(item_dense_vecs, p=2, dim=-1)  # (N, D)
+
+        # Compute similarity: (B, n_beam, D) @ (D, N) -> (B, n_beam, N)
+        similarity = torch.bmm(
+            gen_output.dense_vecs,  # (B, n_beam, D)
+            item_dense_vecs.unsqueeze(0).expand(B, -1, -1).transpose(1, 2)  # (B, D, N)
+        )  # (B, n_beam, N)
+
+        # Step 3: For each beam candidate, find best matching item
+        # Max similarity across all items for each beam candidate
+        max_sim, best_item_ids = similarity.max(dim=-1)  # (B, n_beam), (B, n_beam)
+
+        # Step 4: Fuse scores
+        # Normalize beam scores to [0, 1] range (they are log probs, so negative)
+        beam_scores_norm = torch.softmax(gen_output.scores, dim=-1)  # (B, n_beam)
+
+        # Similarity is already in [-1, 1], shift to [0, 1]
+        sim_scores_norm = (max_sim + 1) / 2  # (B, n_beam)
+
+        # Fused score
+        fused_scores = alpha * beam_scores_norm + (1 - alpha) * sim_scores_norm  # (B, n_beam)
+
+        # Step 5: Select top-K based on fused scores
+        topk_scores, topk_indices = fused_scores.topk(n_candidates, dim=-1)  # (B, K)
+
+        # Gather corresponding item IDs and semantic IDs
+        topk_item_ids = best_item_ids.gather(1, topk_indices)  # (B, K)
+        topk_sem_ids = item_sem_ids[topk_item_ids]  # (B, K, C)
+
+        return BeamFusionOutput(
+            item_ids=topk_item_ids,
+            sem_ids=topk_sem_ids,
+            scores=topk_scores,
+        )
     
 if __name__ == "__main__":
     cobra = Cobra()

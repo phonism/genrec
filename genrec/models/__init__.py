@@ -15,7 +15,7 @@ Generative Models:
     - NoteLLM: Qwen2-based LLM for note recommendation
 """
 
-from genrec.models.rqvae import RQVAE, QuantizeForwardMode
+from genrec.models.rqvae import RqVae, QuantizeForwardMode
 from genrec.models.tiger import Tiger
 from genrec.models.sasrec import SASRec
 from genrec.models.hstu import HSTU
@@ -23,7 +23,7 @@ from genrec.models.lcrec import LCRec
 from genrec.models.cobra import Cobra
 
 __all__ = [
-    "RQVAE",
+    "RqVae",
     "QuantizeForwardMode",
     "Tiger",
     "SASRec",

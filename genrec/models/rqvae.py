@@ -37,7 +37,7 @@ from genrec.modules.loss import QuantizeLoss
 from genrec.modules.normalize import l2norm
 from genrec.modules.gumbel import gumbel_softmax_sample
 from genrec.modules.kmeans import kmeans_init_
-from genrec.modules.normalize import L2NormalizationLayer
+from genrec.modules.normalize import L2Norm
 
 
 @gin.constants_from_enum
@@ -137,7 +137,7 @@ class Quantize(nn.Module):
 
         self.out_proj = nn.Sequential(
             nn.Linear(embed_dim, embed_dim, bias=False) if sim_vq else nn.Identity(),
-            L2NormalizationLayer(dim=-1) if codebook_normalize else nn.Identity()
+            L2Norm(dim=-1) if codebook_normalize else nn.Identity()
         )
 
         self.quantize_loss = QuantizeLoss(commitment_weight)

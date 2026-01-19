@@ -31,15 +31,15 @@ train.commitment_weight = 0.25
 train.dataset = @AmazonItemDataset
 train.dataset_folder = "dataset/amazon"
 train.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
-AmazonItemDataset.split = "beauty"
+AmazonItemDataset.split = "{split}"
 
 # Checkpointing
 train.save_model_every = 50
 train.eval_every = 50
-train.save_dir_root = "out/tiger/amazon/beauty/rqvae"
+train.save_dir_root = "out/tiger/amazon/{split}/rqvae"
 
 # Logging
 train.wandb_logging = True
-train.wandb_project = "tiger_rqvae_training"
+train.wandb_project = "tiger_rqvae_{split}_training"
 train.wandb_log_interval = 100
 train.do_eval = True

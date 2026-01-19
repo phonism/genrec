@@ -293,6 +293,46 @@ def train(
         torch.save(state, path)
         logger.info(f"Saved checkpoint to {path}")
 
+    # Prepare item data for BeamFusion evaluation
+    logger.info("Preparing item data for BeamFusion evaluation...")
+    item_sem_ids = torch.tensor(train_dataset.sem_ids_list, dtype=torch.long, device=device)  # (N, C)
+    n_items = len(train_dataset.sem_ids_list)
+    logger.info(f"Total items: {n_items}")
+
+    # Pre-compute item dense vectors (in batches to avoid OOM)
+    def compute_item_dense_vecs(model, dataset, batch_size=64):
+        """Compute dense vectors for all items using the model's encoder."""
+        model.eval()
+        all_vecs = []
+        n_items = len(dataset.item_texts)
+
+        with torch.no_grad():
+            for start_idx in range(0, n_items, batch_size):
+                end_idx = min(start_idx + batch_size, n_items)
+                item_ids = list(range(start_idx, end_idx))
+
+                # Tokenize item texts
+                texts = [dataset.item_texts.get(i, f"item_{i}") for i in item_ids]
+                encoded = dataset.tokenizer(
+                    texts,
+                    padding='max_length',
+                    truncation=True,
+                    max_length=dataset.max_text_len,
+                    return_tensors='pt'
+                )
+                encoder_input_ids = encoded['input_ids'].to(device)  # (batch, L)
+
+                # Get dense vectors from encoder
+                # encoder expects (B, T, L), we have (B, L), so add T=1 dimension
+                encoder_input_ids = encoder_input_ids.unsqueeze(1)  # (batch, 1, L)
+                vecs = accelerator.unwrap_model(model).encoder(encoder_input_ids)  # (batch, 1, D)
+                vecs = vecs.squeeze(1)  # (batch, D)
+                vecs = torch.nn.functional.normalize(vecs, p=2, dim=-1)
+                all_vecs.append(vecs.cpu())
+
+        model.train()
+        return torch.cat(all_vecs, dim=0).to(device)  # (N, D)
+
     # Training loop
     model.train()
     global_step = -1
@@ -370,22 +410,29 @@ def train(
             log_dict["train/epoch_acc"] = epoch_acc
             log_dict["train/epoch_recall"] = epoch_recall
 
-        # Evaluation with Recall@K and NDCG@K
+        # Evaluation with Recall@K and NDCG@K using BeamFusion
         if do_eval and (epoch + 1) % eval_valid_every_epoch == 0:
             model.eval()
             metrics_accumulator = TopKAccumulator()
+
+            # Compute item dense vectors for BeamFusion (re-compute each eval for updated encoder)
+            item_dense_vecs = compute_item_dense_vecs(model, train_dataset, batch_size=64)
 
             # Per-codebook accuracy tracking
             codebook_correct = [0, 0, 0]
             codebook_total = 0
 
             with torch.no_grad():
-                for data in valid_dataloader:
-                    # Generate predictions
-                    generated = model.generate(
+                for data in tqdm(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})"):
+                    # Generate predictions using BeamFusion
+                    generated = accelerator.unwrap_model(model).beam_fusion(
                         input_ids=data["input_ids"].to(device),
                         encoder_input_ids=data["encoder_input_ids"].to(device),
+                        item_dense_vecs=item_dense_vecs,
+                        item_sem_ids=item_sem_ids,
                         n_candidates=10,
+                        n_beam=20,  # Must be <= codebook_size (32)
+                        alpha=0.5,
                     )
                     # Compare with target
                     target = data["target_sem_ids"].to(device)  # (B, C)
@@ -394,17 +441,15 @@ def train(
 
                     # Per-codebook accuracy (top-1 only)
                     top1 = topk[:, 0, :]  # (B, C)
-                    for c in range(3):
+                    for c in range(n_codebooks):
                         codebook_correct[c] += (top1[:, c] == target[:, c]).sum().item()
                     codebook_total += target.size(0)
 
             metrics = metrics_accumulator.reduce()
             # Print per-codebook accuracy
-            c0_acc = codebook_correct[0] / max(codebook_total, 1)
-            c1_acc = codebook_correct[1] / max(codebook_total, 1)
-            c2_acc = codebook_correct[2] / max(codebook_total, 1)
-            logger.info(f"Epoch {epoch} - Valid: {metrics}")
-            logger.info(f"  Per-codebook acc: c0={c0_acc:.4f}, c1={c1_acc:.4f}, c2={c2_acc:.4f}")
+            c_accs = [codebook_correct[c] / max(codebook_total, 1) for c in range(n_codebooks)]
+            logger.info(f"Epoch {epoch} - Valid (BeamFusion): {metrics}")
+            logger.info(f"  Per-codebook acc: " + ", ".join([f"c{c}={c_accs[c]:.4f}" for c in range(n_codebooks)]))
 
             if wandb_logging and accelerator.is_main_process:
                 for k, v in metrics.items():

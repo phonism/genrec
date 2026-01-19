@@ -27,7 +27,7 @@ train.max_seq_len=20
 # Dataset
 train.dataset=@AmazonSeqDataset
 train.dataset_folder="dataset/amazon"
-AmazonSeqDataset.split="beauty"
+AmazonSeqDataset.split="{split}"
 AmazonSeqDataset.encoder_model_name=%MODEL_HUB_SENTENCE_T5_XL
 AmazonSeqDataset.add_disambiguation=False  # Disabled - 4th code hurts performance
 
@@ -39,16 +39,16 @@ AmazonSeqDataset.rqvae_codebook_size=256
 AmazonSeqDataset.rqvae_n_layers=3
 
 # Pretrained RQVAE checkpoint path
-train.pretrained_rqvae_path = "./out/tiger/amazon/beauty/rqvae/checkpoint.pt"
+train.pretrained_rqvae_path = "./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
 
 # Checkpointing and evaluation (epoch-based)
 train.save_every_epoch=50
 train.eval_valid_every_epoch=1
 train.eval_test_every_epoch=10
-train.save_dir_root="out/tiger/amazon/beauty/"
+train.save_dir_root="out/tiger/amazon/{split}/"
 
 # Logging
 train.wandb_logging=True
-train.wandb_project="amazon_beauty_tiger_training"
+train.wandb_project="tiger_{split}_training"
 train.wandb_log_interval=1
 train.do_eval=True

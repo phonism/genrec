@@ -15,7 +15,7 @@ def l2norm(x: Tensor, dim: int = -1, eps: float = 1e-12) -> Tensor:
     return F.normalize(x, p=2, dim=dim, eps=eps)
 
 
-class L2NormalizationLayer(nn.Module):
+class L2Norm(nn.Module):
     """
     L2 normalization layer.
     """

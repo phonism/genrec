@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from sentence_transformers import SentenceTransformer
 from transformers import AutoTokenizer, AutoModel, T5EncoderModel, T5Config
-from genrec.modules.normalize import L2NormalizationLayer
+from genrec.modules.normalize import L2Norm
 from typing import List
 from torch import nn
 from torch import Tensor
@@ -405,7 +405,7 @@ class MLP(nn.Module):
                 self.mlp.append(nn.SiLU())
                 if dropout != 0:
                     self.mlp.append(nn.Dropout(dropout))
-        self.mlp.append(L2NormalizationLayer() if normalize else nn.Identity())
+        self.mlp.append(L2Norm() if normalize else nn.Identity())
 
     def forward(self, x: Tensor) -> torch.Tensor:
         """
