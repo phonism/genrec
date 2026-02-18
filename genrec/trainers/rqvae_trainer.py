@@ -5,14 +5,14 @@ import gin
 import os
 import numpy as np
 import time
+import torch
 import wandb
 
-from accelerate import Accelerator
 from genrec.data.p5_amazon import P5AmazonReviewsItemDataset
 from genrec.data.utils import cycle
 from genrec.models.rqvae import RqVae, QuantizeForwardMode
-from genrec.modules.utils import parse_config
-import torch
+from genrec.modules.utils import parse_config, setup_logger
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
 import torch.distributed as dist
 from torch.optim import AdamW
 from torch.utils.data import BatchSampler
@@ -95,13 +95,11 @@ def train(
 
     use_epochs = epochs is not None
 
-    if wandb_logging:
-        params = locals()
-
     # setup accelerator
-    accelerator = Accelerator(
+    accelerator = setup_accelerator(
         split_batches=split_batches,
-        mixed_precision=mixed_precision_type if amp else 'no'
+        amp=amp,
+        mixed_precision_type=mixed_precision_type,
     )
 
     device = accelerator.device
@@ -171,11 +169,10 @@ def train(
     )
 
     if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        run = wandb.init(
+        setup_wandb(
             project=wandb_project,
-            name=wandb_run_name,
-            config=params
+            run_name=wandb_run_name,
+            config=locals(),
         )
 
     start_epoch = 0

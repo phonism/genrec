@@ -6,38 +6,17 @@ import re
 import gin
 import torch
 import wandb
-import logging
-from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Set, Callable, Tuple
 
-from accelerate import Accelerator
 from genrec.models.lcrec import LCRec
-from genrec.modules.utils import parse_config
+from genrec.modules.utils import parse_config, setup_logger
 from genrec.modules.metrics import TopKAccumulator
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.optimization import get_cosine_schedule_with_warmup
-
-
-def setup_logger(save_dir: str, name: str = "lcrec") -> logging.Logger:
-    """Setup logger to write to both file and console."""
-    os.makedirs(save_dir, exist_ok=True)
-    logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(os.path.join(save_dir, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"))
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter('%(message)s'))
-    logger.addHandler(fh)
-    logger.addHandler(ch)
-    return logger
 
 
 def lcrec_collate_fn(batch, tokenizer, max_length=512, num_codebooks=5, is_eval=False):
@@ -285,18 +264,21 @@ def train(
 ):
     """Train an LCRec model."""
     logger = setup_logger(save_dir_root)
-    accelerator = Accelerator(
+    accelerator = setup_accelerator(
         split_batches=split_batches,
-        gradient_accumulation_steps=gradient_accumulate_every,
-        mixed_precision=mixed_precision_type if amp else "no",
+        gradient_accumulate_every=gradient_accumulate_every,
+        amp=amp,
+        mixed_precision_type=mixed_precision_type,
     )
     device = accelerator.device
 
     if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        wandb.init(project=wandb_project, name=wandb_run_name, config=locals())
-        wandb.define_metric("train/*", step_metric="global_step")
-        wandb.define_metric("eval/*", step_metric="epoch")
+        setup_wandb(
+            project=wandb_project,
+            run_name=wandb_run_name,
+            config=locals(),
+            step_metrics={"train/*": "global_step", "eval/*": "epoch"}
+        )
 
     # Model setup
     model = LCRec(pretrained_path=pretrained_path)

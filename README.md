@@ -42,6 +42,15 @@ A Model Zoo for Generative Recommendation.
 | [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_toys_tiger_training/) | 0.0420 | 0.0647 | 0.0280 | 0.0350 |
 | [LCRec](https://wandb.ai/luckyqueen/lcrec_toys_training) | 0.0444 | 0.0683 | 0.0294 | 0.0371 |
 
+### Amazon 2023 Arts_Crafts_and_Sewing
+
+| Methods | R@5 | R@10 | N@5 | N@10 |
+|---------|-----|------|-----|------|
+| [SASRec](https://wandb.ai/luckyqueen/sasrec_amazon2023_arts_crafts_and_sewing) | 0.0314 | 0.0451 | 0.0219 | 0.0263 |
+| [HSTU](https://wandb.ai/luckyqueen/hstu_amazon2023_arts_crafts_and_sewing) | 0.0289 | 0.0417 | 0.0199 | 0.0240 |
+| [TIGER (Ours)](https://wandb.ai/luckyqueen/tiger_amazon2023_arts_crafts_and_sewing) | 0.0502 | 0.0623 | 0.0419 | 0.0458 |
+| [LCRec](https://wandb.ai/luckyqueen/lcrec_amazon2023_arts_crafts_and_sewing) | 0.0480 | 0.0632 | 0.0362 | 0.0411 |
+
 ## Features
 
 - **Multiple Models**: Implementations of SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, and NoteLLM

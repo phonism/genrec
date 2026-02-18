@@ -1,0 +1,55 @@
+# SASRec config for Amazon 2023 dataset
+# Run: python genrec/trainers/sasrec_trainer.py config/sasrec/amazon2023.gin --split books
+
+import genrec.data.amazon_sasrec
+import genrec.models.sasrec
+
+# =============================================================================
+# Training Settings
+# =============================================================================
+train.epochs = 10
+train.batch_size = 256
+train.learning_rate = 1e-3
+train.weight_decay = 0.0
+
+# =============================================================================
+# Model Settings
+# =============================================================================
+train.max_seq_len = 50
+train.embed_dim = 64
+train.num_heads = 2
+train.num_blocks = 2
+train.ffn_dim = 256
+train.dropout = 0.2
+
+# =============================================================================
+# Dataset Settings (Amazon 2023)
+# =============================================================================
+train.dataset_folder = "dataset/amazon2023"
+train.split = "{split}"  # books
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+train.do_eval = True
+train.eval_every_epoch = 1
+train.eval_batch_size = 512
+
+# =============================================================================
+# Checkpoint Settings
+# =============================================================================
+train.save_dir_root = "out/sasrec/amazon2023/{split}"
+train.save_every_epoch = 5
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+train.wandb_logging = True
+train.wandb_project = "sasrec_amazon2023_{split}"
+train.wandb_log_interval = 100
+
+# =============================================================================
+# Accelerator Settings
+# =============================================================================
+train.amp = True
+train.mixed_precision_type = "bf16"

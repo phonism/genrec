@@ -3,10 +3,47 @@ utils
 """
 import argparse
 import gin
+import logging
+import os
 import torch
+from datetime import datetime
 from genrec.data.schemas import TokenizedSeqBatch
 from einops import rearrange
 from torch import Tensor
+
+
+def setup_logger(save_dir: str, name: str = "train") -> logging.Logger:
+    """
+    Setup logger to write to both file and console.
+
+    Args:
+        save_dir: Directory to save log file
+        name: Logger name (also used in log filename)
+
+    Returns:
+        Configured logger instance
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    logger = logging.getLogger(name)
+    if logger.handlers:
+        return logger
+
+    logger.setLevel(logging.DEBUG)
+
+    # File handler - debug level
+    log_file = os.path.join(save_dir, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    fh = logging.FileHandler(log_file)
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+    # Console handler - info level
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.INFO)
+    ch.setFormatter(logging.Formatter('%(message)s'))
+
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    return logger
 
 
 def reset_kv_cache(fn):

@@ -192,3 +192,10 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# GenRec specific
+out/
+dataset/
+models_hub/
+wandb/
+.wandb/

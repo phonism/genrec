@@ -5,35 +5,16 @@ import os
 import gin
 import torch
 import wandb
-import logging
-from datetime import datetime
 
-from accelerate import Accelerator
 from genrec.models.hstu import HSTU
-from genrec.modules.utils import parse_config
+from genrec.modules.utils import parse_config, setup_logger
 from genrec.data.amazon_hstu import AmazonHSTUDataset, hstu_collate_fn, hstu_eval_collate_fn
+from genrec.trainers.trainer_utils import (
+    setup_accelerator, setup_wandb, save_checkpoint, log_training_info
+)
 from torch.optim import Adam
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
-
-def setup_logger(save_dir: str, name: str = "hstu") -> logging.Logger:
-    """Setup logger."""
-    os.makedirs(save_dir, exist_ok=True)
-    logger = logging.getLogger(name)
-    if logger.handlers:
-        return logger
-
-    logger.setLevel(logging.DEBUG)
-    fh = logging.FileHandler(os.path.join(save_dir, f"{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"))
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter('%(message)s'))
-    logger.addHandler(fh)
-    logger.addHandler(ch)
-    return logger
 
 
 def evaluate(model, dataloader, accelerator, use_temporal_bias=True, top_ks=[1, 5, 10]):
@@ -95,15 +76,16 @@ def train(
     amp=True, mixed_precision_type="bf16",
 ):
     """Train HSTU model."""
-    logger = setup_logger(save_dir_root)
-    accelerator = Accelerator(mixed_precision=mixed_precision_type if amp else "no")
+    logger = setup_logger(save_dir_root, name="hstu")
+    accelerator = setup_accelerator(amp=amp, mixed_precision_type=mixed_precision_type)
     device = accelerator.device
 
     if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        wandb.init(project=wandb_project, config=locals())
-        wandb.define_metric("train/*", step_metric="global_step")
-        wandb.define_metric("eval/*", step_metric="epoch")
+        setup_wandb(
+            project=wandb_project,
+            config=locals(),
+            step_metrics={"train/*": "global_step", "eval/*": "epoch"}
+        )
 
     # Dataset
     train_ds = AmazonHSTUDataset(root=dataset_folder, split=split, train_test_split="train", max_seq_len=max_seq_len)

@@ -682,81 +682,131 @@ class Cobra(torch.nn.Module):
         encoder_input_ids: torch.Tensor,
         item_dense_vecs: torch.Tensor,
         item_sem_ids: torch.Tensor,
+        sem_id_to_items: dict,
         n_candidates: int = 10,
-        n_beam: int = 50,
-        temperature: float = 1.0,
-        alpha: float = 0.5,
+        n_beam: int = 20,
+        tau: float = 1.0,
+        psi: float = 16.0,
     ) -> BeamFusionOutput:
         """
-        BeamFusion: Combine beam search with nearest neighbor retrieval.
+        BeamFusion: Coarse-to-fine generation following COBRA paper.
 
-        1. Generate top-n_beam sparse IDs and dense vectors via beam search
-        2. Use dense vectors to find nearest neighbors among all items
-        3. Fuse beam scores with similarity scores
+        Paper formula: Φ(v̂, ID, a) = Softmax(τ·φ_ID) × Softmax(ψ·cos(v̂, a))
+
+        Process:
+        1. Beam search generates M sparse IDs with beam scores
+        2. For each ID, find candidate items C(ID) that match this semantic ID
+        3. Generate dense vector for each ID, compute similarity with candidates
+        4. Fuse beam score and similarity score using multiplication
 
         Args:
             input_ids: (B, T*C) - semantic IDs of history
             encoder_input_ids: (B, T, L) - tokenized text for encoder
             item_dense_vecs: (N, D) - pre-computed dense vectors for all items
             item_sem_ids: (N, C) - semantic IDs for all items
-            n_candidates: number of final candidates to return
-            n_beam: number of beam search candidates (should be > n_candidates)
-            temperature: temperature for softmax
-            alpha: weight for beam score (1-alpha for similarity score)
+            sem_id_to_items: dict mapping sem_id tuple -> list of item indices
+            n_candidates: number of final candidates to return (K)
+            n_beam: number of beam search candidates (M)
+            tau: coefficient for beam score in BeamFusion
+            psi: coefficient for similarity score in BeamFusion
 
         Returns:
             BeamFusionOutput with item_ids, sem_ids, scores
         """
         B = input_ids.size(0)
         device = input_ids.device
-        N = item_dense_vecs.size(0)
 
-        # Step 1: Generate candidates via beam search
+        # Step 1: Generate M sparse IDs via beam search
         gen_output = self.generate(
             input_ids=input_ids,
             encoder_input_ids=encoder_input_ids,
             n_candidates=n_beam,
-            temperature=temperature,
+            temperature=1.0,
         )
+        # gen_output.sem_ids: (B, M, C) - generated semantic IDs
+        # gen_output.dense_vecs: (B, M, D) - generated dense vectors
+        # gen_output.scores: (B, M) - beam scores (log probabilities)
 
-        # gen_output.dense_vecs: (B, n_beam, D)
-        # gen_output.scores: (B, n_beam) - log probabilities
-
-        # Step 2: Compute similarity with all items
-        # Normalize item vectors (should already be normalized, but ensure)
+        # Normalize dense vectors
+        gen_dense_vecs = F.normalize(gen_output.dense_vecs, p=2, dim=-1)  # (B, M, D)
         item_dense_vecs = F.normalize(item_dense_vecs, p=2, dim=-1)  # (N, D)
 
-        # Compute similarity: (B, n_beam, D) @ (D, N) -> (B, n_beam, N)
-        similarity = torch.bmm(
-            gen_output.dense_vecs,  # (B, n_beam, D)
-            item_dense_vecs.unsqueeze(0).expand(B, -1, -1).transpose(1, 2)  # (B, D, N)
-        )  # (B, n_beam, N)
+        # Beam scores -> softmax with tau
+        beam_scores_softmax = torch.softmax(tau * gen_output.scores, dim=-1)  # (B, M)
 
-        # Step 3: For each beam candidate, find best matching item
-        # Max similarity across all items for each beam candidate
-        max_sim, best_item_ids = similarity.max(dim=-1)  # (B, n_beam), (B, n_beam)
+        # Collect all candidates with their fused scores
+        all_item_ids = []
+        all_scores = []
 
-        # Step 4: Fuse scores
-        # Normalize beam scores to [0, 1] range (they are log probs, so negative)
-        beam_scores_norm = torch.softmax(gen_output.scores, dim=-1)  # (B, n_beam)
+        for b in range(B):
+            batch_candidates = []
+            batch_scores = []
 
-        # Similarity is already in [-1, 1], shift to [0, 1]
-        sim_scores_norm = (max_sim + 1) / 2  # (B, n_beam)
+            for m in range(n_beam):
+                # Get generated semantic ID for this beam
+                sem_id = tuple(gen_output.sem_ids[b, m].cpu().tolist())
+                beam_score = beam_scores_softmax[b, m].item()
 
-        # Fused score
-        fused_scores = alpha * beam_scores_norm + (1 - alpha) * sim_scores_norm  # (B, n_beam)
+                # Find candidate items matching this semantic ID (coarse filtering)
+                candidate_items = sem_id_to_items.get(sem_id, [])
 
-        # Step 5: Select top-K based on fused scores
-        topk_scores, topk_indices = fused_scores.topk(n_candidates, dim=-1)  # (B, K)
+                if len(candidate_items) == 0:
+                    continue
 
-        # Gather corresponding item IDs and semantic IDs
-        topk_item_ids = best_item_ids.gather(1, topk_indices)  # (B, K)
-        topk_sem_ids = item_sem_ids[topk_item_ids]  # (B, K, C)
+                # Get dense vectors for candidates
+                candidate_indices = torch.tensor(candidate_items, device=device, dtype=torch.long)
+                candidate_vecs = item_dense_vecs[candidate_indices]  # (num_candidates, D)
+
+                # Compute similarity with generated dense vector
+                gen_vec = gen_dense_vecs[b, m]  # (D,)
+                similarities = torch.mv(candidate_vecs, gen_vec)  # (num_candidates,)
+
+                # Similarity scores -> softmax with psi
+                sim_scores_softmax = torch.softmax(psi * similarities, dim=-1)  # (num_candidates,)
+
+                # BeamFusion: multiply beam score with similarity score
+                fused_scores = beam_score * sim_scores_softmax  # (num_candidates,)
+
+                batch_candidates.extend(candidate_items)
+                batch_scores.extend(fused_scores.cpu().tolist())
+
+            # Select top-K from all candidates for this batch
+            if len(batch_candidates) == 0:
+                # Fallback: no candidates found, return zeros
+                all_item_ids.append(torch.zeros(n_candidates, dtype=torch.long, device=device))
+                all_scores.append(torch.zeros(n_candidates, device=device))
+            else:
+                scores_tensor = torch.tensor(batch_scores, device=device)
+                candidates_tensor = torch.tensor(batch_candidates, device=device, dtype=torch.long)
+
+                # Remove duplicates by keeping highest score for each item
+                unique_items, inverse_indices = torch.unique(candidates_tensor, return_inverse=True)
+                unique_scores = torch.zeros(unique_items.size(0), device=device)
+                unique_scores.scatter_reduce_(0, inverse_indices, scores_tensor, reduce='amax')
+
+                # Select top-K
+                k = min(n_candidates, unique_items.size(0))
+                topk_scores, topk_idx = unique_scores.topk(k, dim=-1)
+                topk_items = unique_items[topk_idx]
+
+                # Pad if needed
+                if k < n_candidates:
+                    pad_size = n_candidates - k
+                    topk_items = torch.cat([topk_items, torch.zeros(pad_size, dtype=torch.long, device=device)])
+                    topk_scores = torch.cat([topk_scores, torch.zeros(pad_size, device=device)])
+
+                all_item_ids.append(topk_items)
+                all_scores.append(topk_scores)
+
+        # Stack results
+        final_item_ids = torch.stack(all_item_ids, dim=0)  # (B, K)
+        final_scores = torch.stack(all_scores, dim=0)  # (B, K)
+        final_sem_ids = item_sem_ids[final_item_ids]  # (B, K, C)
 
         return BeamFusionOutput(
-            item_ids=topk_item_ids,
-            sem_ids=topk_sem_ids,
-            scores=topk_scores,
+            item_ids=final_item_ids,
+            sem_ids=final_sem_ids,
+            scores=final_scores,
         )
     
 if __name__ == "__main__":

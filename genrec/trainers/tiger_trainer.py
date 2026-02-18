@@ -1,22 +1,18 @@
 """
 Trainer for the TIGER model - Generative Retrieval for Sequential Recommendation.
 """
-import argparse
-import logging
 import os
 import gin
 import torch
 import wandb
 
-from accelerate import Accelerator
-
-logger = logging.getLogger(__name__)
 from genrec.data.utils import cycle
 from genrec.models.tiger import Tiger
 from genrec.models.rqvae import RqVae
-from genrec.modules.utils import parse_config
+from genrec.modules.utils import parse_config, setup_logger
 from genrec.data.schemas import SeqData
 from genrec.modules.metrics import TopKAccumulator
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -114,31 +110,28 @@ def train(
     max_seq_len=2048,
     pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt",
     resume_from_checkpoint=None,
-): 
+):
     """
     Trains a Tiger model.
     """
-    if wandb_logging:
-        params = locals()
+    # Setup logger
+    logger = setup_logger(save_dir_root, name="tiger")
 
-    accelerator = Accelerator(
+    accelerator = setup_accelerator(
         split_batches=split_batches,
-        gradient_accumulation_steps=gradient_accumulate_every,
-        mixed_precision=mixed_precision_type if amp else "no",
+        gradient_accumulate_every=gradient_accumulate_every,
+        amp=amp,
+        mixed_precision_type=mixed_precision_type,
     )
-
     device = accelerator.device
 
     if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        run = wandb.init(
+        setup_wandb(
             project=wandb_project,
-            name=wandb_run_name,
-            config=params
+            run_name=wandb_run_name,
+            config=locals(),
+            step_metrics={"train/*": "global_step", "eval/*": "epoch"}
         )
-        # Define separate sections for train and eval metrics
-        wandb.define_metric("train/*", step_metric="global_step")
-        wandb.define_metric("eval/*", step_metric="epoch")
 
     train_dataset = dataset(
         root=dataset_folder,

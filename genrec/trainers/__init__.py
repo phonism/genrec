@@ -11,9 +11,22 @@ Trainers:
     - sasrec_trainer: SASRec training with Recall@K, NDCG@K
     - hstu_trainer: HSTU training with temporal bias support
 
+Utilities:
+    - trainer_utils: Common functions (setup_accelerator, setup_wandb, etc.)
+
 Usage:
     python genrec/trainers/<trainer>.py config/<model>/amazon.gin
 """
+
+from genrec.trainers.trainer_utils import (
+    TrainerConfig,
+    setup_accelerator,
+    setup_wandb,
+    save_checkpoint,
+    load_checkpoint,
+    get_parameter_count,
+    log_training_info,
+)
 
 __all__ = [
     "rqvae_trainer",
@@ -22,4 +35,12 @@ __all__ = [
     "cobra_trainer",
     "sasrec_trainer",
     "hstu_trainer",
+    # Utilities
+    "TrainerConfig",
+    "setup_accelerator",
+    "setup_wandb",
+    "save_checkpoint",
+    "load_checkpoint",
+    "get_parameter_count",
+    "log_training_info",
 ]

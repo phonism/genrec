@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 AMAZON_REVIEW_BASE_URL = "http://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
 
 DATASET_CONFIGS = {
+    # Amazon 2014 datasets
     "beauty": {
         "reviews": "reviews_Beauty_5.json.gz",
         "meta": "meta_Beauty.json.gz",
@@ -39,6 +40,15 @@ DATASET_CONFIGS = {
     "clothing": {
         "reviews": "reviews_Clothing_Shoes_and_Jewelry_5.json.gz",
         "meta": "meta_Clothing_Shoes_and_Jewelry.json.gz",
+    },
+    # Amazon 2023 datasets (processed by genrec.data.amazon2023)
+    "books": {
+        "reviews": "reviews_Books_5.json.gz",
+        "meta": "meta_Books.json.gz",
+    },
+    "arts_crafts_and_sewing": {
+        "reviews": "reviews_Arts_Crafts_and_Sewing_5.json.gz",
+        "meta": "meta_Arts_Crafts_and_Sewing.json.gz",
     },
 }
 

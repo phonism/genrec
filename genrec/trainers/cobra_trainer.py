@@ -2,19 +2,15 @@
 Trainer for the COBRA model.
 COBRA: Sparse Meets Dense - Unified Generative Recommendations with Cascaded Sparse-Dense Representations
 """
-import argparse
-import logging
 import os
 import gin
 import torch
 import wandb
 
-from accelerate import Accelerator
-
-logger = logging.getLogger(__name__)
 from genrec.models.cobra import Cobra
-from genrec.modules.utils import parse_config
+from genrec.modules.utils import parse_config, setup_logger
 from genrec.modules.metrics import TopKAccumulator
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -139,26 +135,24 @@ def train(
     """
     Trains a COBRA model.
     """
-    if wandb_logging:
-        params = locals()
+    # Setup logger
+    logger = setup_logger(save_dir_root, name="cobra")
 
-    accelerator = Accelerator(
+    accelerator = setup_accelerator(
         split_batches=split_batches,
-        gradient_accumulation_steps=gradient_accumulate_every,
-        mixed_precision=mixed_precision_type if amp else "no",
+        gradient_accumulate_every=gradient_accumulate_every,
+        amp=amp,
+        mixed_precision_type=mixed_precision_type,
     )
-
     device = accelerator.device
 
     if wandb_logging and accelerator.is_main_process:
-        wandb.login()
-        run = wandb.init(
+        setup_wandb(
             project=wandb_project,
-            name=wandb_run_name,
-            config=params
+            run_name=wandb_run_name,
+            config=locals(),
+            step_metrics={"train/*": "global_step", "eval/*": "epoch"}
         )
-        wandb.define_metric("train/*", step_metric="global_step")
-        wandb.define_metric("eval/*", step_metric="epoch")
 
     # Create datasets
     train_dataset = dataset(
@@ -299,6 +293,15 @@ def train(
     n_items = len(train_dataset.sem_ids_list)
     logger.info(f"Total items: {n_items}")
 
+    # Build sem_id -> items index for coarse-to-fine retrieval
+    from collections import defaultdict
+    sem_id_to_items = defaultdict(list)
+    for item_idx, sem_ids in enumerate(train_dataset.sem_ids_list):
+        sem_id_tuple = tuple(sem_ids)
+        sem_id_to_items[sem_id_tuple].append(item_idx)
+    sem_id_to_items = dict(sem_id_to_items)
+    logger.info(f"Built sem_id_to_items index with {len(sem_id_to_items)} unique semantic IDs")
+
     # Pre-compute item dense vectors (in batches to avoid OOM)
     def compute_item_dense_vecs(model, dataset, batch_size=64):
         """Compute dense vectors for all items using the model's encoder."""
@@ -422,22 +425,35 @@ def train(
             codebook_correct = [0, 0, 0]
             codebook_total = 0
 
+            # Also track sparse-only metrics (without BeamFusion)
+            sparse_metrics_accumulator = TopKAccumulator()
+
             with torch.no_grad():
                 for data in tqdm(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})"):
-                    # Generate predictions using BeamFusion
+                    # Generate predictions using BeamFusion (coarse-to-fine)
                     generated = accelerator.unwrap_model(model).beam_fusion(
                         input_ids=data["input_ids"].to(device),
                         encoder_input_ids=data["encoder_input_ids"].to(device),
                         item_dense_vecs=item_dense_vecs,
                         item_sem_ids=item_sem_ids,
+                        sem_id_to_items=sem_id_to_items,
                         n_candidates=10,
                         n_beam=20,  # Must be <= codebook_size (32)
-                        alpha=0.5,
+                        tau=1.0,   # coefficient for beam score
+                        psi=16.0,  # coefficient for similarity score
                     )
                     # Compare with target
                     target = data["target_sem_ids"].to(device)  # (B, C)
                     topk = generated.sem_ids  # (B, K, C)
                     metrics_accumulator.accumulate(actual=target, top_k=topk)
+
+                    # Also eval sparse-only (direct generate without BeamFusion)
+                    sparse_gen = accelerator.unwrap_model(model).generate(
+                        input_ids=data["input_ids"].to(device),
+                        encoder_input_ids=data["encoder_input_ids"].to(device),
+                        n_candidates=10,
+                    )
+                    sparse_metrics_accumulator.accumulate(actual=target, top_k=sparse_gen.sem_ids)
 
                     # Per-codebook accuracy (top-1 only)
                     top1 = topk[:, 0, :]  # (B, C)
@@ -446,9 +462,11 @@ def train(
                     codebook_total += target.size(0)
 
             metrics = metrics_accumulator.reduce()
+            sparse_metrics = sparse_metrics_accumulator.reduce()
             # Print per-codebook accuracy
             c_accs = [codebook_correct[c] / max(codebook_total, 1) for c in range(n_codebooks)]
             logger.info(f"Epoch {epoch} - Valid (BeamFusion): {metrics}")
+            logger.info(f"Epoch {epoch} - Valid (Sparse-only): {sparse_metrics}")
             logger.info(f"  Per-codebook acc: " + ", ".join([f"c{c}={c_accs[c]:.4f}" for c in range(n_codebooks)]))
 
             if wandb_logging and accelerator.is_main_process:

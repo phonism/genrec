@@ -36,7 +36,7 @@ from genrec.modules.loss import ReconstructionLoss, CategoricalReconstructionLos
 from genrec.modules.metrics import TopKAccumulator
 from genrec.modules.normalize import L2Norm, RMSNorm
 from genrec.modules.embedding import SemIdEmbedding, UserIdEmbedding
-from genrec.modules.utils import parse_config
+from genrec.modules.utils import parse_config, setup_logger
 
 __all__ = [
     "ReconstructionLoss",
@@ -48,4 +48,5 @@ __all__ = [
     "SemIdEmbedding",
     "UserIdEmbedding",
     "parse_config",
+    "setup_logger",
 ]
