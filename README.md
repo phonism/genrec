@@ -6,6 +6,8 @@
 
 A Model Zoo for Generative Recommendation.
 
+![GenRec Cover](assets/cover.png)
+
 ## Benchmark Results
 
 **Metrics**
@@ -54,10 +56,11 @@ A Model Zoo for Generative Recommendation.
 ## Features
 
 - **Multiple Models**: Implementations of SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, and NoteLLM
+- **Multiple Datasets**: Amazon 2014 (Beauty, Sports, Toys, Clothing) and Amazon 2023 (32 categories)
 - **Modular Design**: Clean separation of models, data, and training logic
 - **Flexible Configuration**: Gin-config based experiment management
 - **Easy Extension**: Add custom datasets and models with minimal code
-- **Reproducible**: Consistent evaluation metrics (Recall@K, NDCG@K)
+- **Reproducible**: Consistent evaluation metrics (Recall@K, NDCG@K) with W&B logging
 
 ## Models
 
@@ -69,6 +72,7 @@ A Model Zoo for Generative Recommendation.
 | **TIGER** | Generative | Generative Retrieval with trie-based constrained decoding |
 | **LCRec** | Generative | LLM-based recommendation with collaborative semantics |
 | **COBRA** | Generative | Cascaded sparse-dense representations |
+| **NoteLLM** | Generative | Retrievable LLM for note recommendation (experimental) |
 
 ## Installation
 
@@ -80,6 +84,12 @@ cd genrec
 pip install -e .
 ```
 
+### Full Installation (with Triton, TorchRec, etc.)
+
+```bash
+pip install -e ".[full]"
+```
+
 ### Dependencies Only
 
 ```bash
@@ -88,31 +98,60 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Train Baseline Models
+
+```bash
+# SASRec on Amazon 2014
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
+
+# HSTU on Amazon 2014
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
+
+# SASRec on Amazon 2023
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon2023.gin
+
+# HSTU on Amazon 2023
+python genrec/trainers/hstu_trainer.py config/hstu/amazon2023.gin
+```
+
 ### Train RQVAE (Semantic ID Generator)
 
 ```bash
-# Train on Amazon Beauty dataset
-python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin
+# For TIGER pipeline
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
 
-# Train on other datasets
-python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split sports
+# For LCRec pipeline
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
+
+# For COBRA pipeline
+python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
 ```
 
 ### Train TIGER (Generative Retrieval)
 
 ```bash
 # Requires pretrained RQVAE checkpoint
-python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
+
+# On Amazon 2023
+python genrec/trainers/tiger_trainer.py config/tiger/amazon2023/tiger.gin
 ```
 
-### Train Baseline Models
+### Train LCRec (LLM-based)
 
 ```bash
-# SASRec
-python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin
+# Requires pretrained RQVAE checkpoint
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
 
-# HSTU
-python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
+# On Amazon 2023
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
+```
+
+### Train COBRA
+
+```bash
+# Requires pretrained RQVAE checkpoint
+python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
 ```
 
 ## Configuration
@@ -120,7 +159,17 @@ python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
 ### Dataset Selection
 
 ```bash
---split <dataset>  # beauty, sports, toys, clothing
+# Amazon 2014 datasets (via --split)
+--split beauty    # Beauty
+--split sports    # Sports and Outdoors
+--split toys      # Toys and Games
+--split clothing  # Clothing, Shoes and Jewelry
+
+# Amazon 2023 datasets use dedicated config files
+config/sasrec/amazon2023.gin
+config/hstu/amazon2023.gin
+config/tiger/amazon2023/tiger.gin
+config/lcrec/amazon2023/lcrec.gin
 ```
 
 ### Parameter Override
@@ -134,11 +183,13 @@ python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
 ```bash
 # Change epochs and batch size
 python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin \
+    --split beauty \
     --gin "train.epochs=200" \
     --gin "train.batch_size=128"
 
-# Custom model path
+# Custom model path for LCRec
 python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin \
+    --split beauty \
     --gin "MODEL_HUB_QWEN3_1_7B='/path/to/model'"
 ```
 
@@ -146,13 +197,52 @@ python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin \
 
 ```
 genrec/
-├── models/          # Model implementations (7 models)
-├── modules/         # Reusable components (attention, loss, metrics)
-├── trainers/        # Training scripts with Gin configuration
-└── data/            # Dataset implementations
-config/              # Gin configuration files
-scripts/             # Utility scripts
-docs/                # Documentation (English & Chinese)
+├── genrec/
+│   ├── models/          # Model implementations
+│   │   ├── sasrec.py        # SASRec
+│   │   ├── hstu.py          # HSTU
+│   │   ├── rqvae.py         # RQVAE
+│   │   ├── tiger.py         # TIGER
+│   │   ├── lcrec.py         # LCRec
+│   │   ├── cobra.py         # COBRA
+│   │   └── notellm.py       # NoteLLM
+│   ├── trainers/        # Training scripts
+│   │   ├── sasrec_trainer.py
+│   │   ├── hstu_trainer.py
+│   │   ├── rqvae_trainer.py
+│   │   ├── tiger_trainer.py
+│   │   ├── lcrec_trainer.py
+│   │   ├── cobra_trainer.py
+│   │   └── trainer_utils.py
+│   ├── modules/         # Reusable components
+│   │   ├── transformer.py   # Transformer blocks
+│   │   ├── embedding.py     # Embedding layers
+│   │   ├── encoder.py       # Encoder modules
+│   │   ├── metrics.py       # Recall@K, NDCG@K
+│   │   ├── loss.py          # Loss functions
+│   │   ├── scheduler.py     # LR schedulers
+│   │   ├── kmeans.py        # K-means for RQVAE init
+│   │   ├── gumbel.py        # Gumbel softmax
+│   │   └── normalize.py     # Normalization layers
+│   └── data/            # Dataset implementations
+│       ├── amazon.py        # Amazon 2014 datasets
+│       ├── amazon2023.py    # Amazon 2023 datasets (32 categories)
+│       ├── amazon_sasrec.py # SASRec-specific data
+│       ├── amazon_hstu.py   # HSTU-specific data
+│       ├── amazon_lcrec.py  # LCRec-specific data
+│       ├── amazon_cobra.py  # COBRA-specific data
+│       └── p5_amazon.py     # P5-format data
+├── config/              # Gin configuration files
+│   ├── base.gin             # Base config
+│   ├── sasrec/              # SASRec configs
+│   ├── hstu/                # HSTU configs
+│   ├── tiger/               # TIGER configs (amazon/, amazon2023/)
+│   ├── lcrec/               # LCRec configs (amazon/, amazon2023/)
+│   └── cobra/               # COBRA configs
+├── scripts/             # Utility scripts
+├── docs/                # Documentation (English & Chinese)
+├── assets/              # Media assets
+└── reference/           # Reference implementations
 ```
 
 ## Documentation
@@ -178,10 +268,13 @@ If you find this project useful, please cite:
 
 ## References
 
+- [SASRec](https://arxiv.org/abs/1808.09781): Self-Attentive Sequential Recommendation
+- [HSTU](https://arxiv.org/abs/2402.17152): Hierarchical Sequential Transduction Units
 - [TIGER](https://arxiv.org/abs/2305.05065): Recommender Systems with Generative Retrieval
 - [RQ-VAE-Recommender](https://github.com/EdoardoBotta/RQ-VAE-Recommender) by Edoardo Botta
 - [LC-Rec](https://arxiv.org/abs/2311.09049): LLM-based Collaborative Recommendation
-- [HSTU](https://arxiv.org/abs/2402.17152): Hierarchical Sequential Transduction Units
+- [COBRA](https://arxiv.org/abs/2503.02453): Cascaded Sparse-Dense Representations
+- [NoteLLM](https://arxiv.org/abs/2403.01744): A Retrievable LLM for Note Recommendation
 
 ## License
 

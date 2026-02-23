@@ -98,6 +98,9 @@ class AmazonCobraDataset(Dataset):
         # Load item metadata for text
         self._load_item_metadata()
 
+        # Pre-tokenize all item texts (avoids per-sample tokenization in __getitem__)
+        self._precompute_item_tokens()
+
         # Load user sequences and generate samples
         self._load_sequences()
         self._generate_samples()
@@ -130,6 +133,22 @@ class AmazonCobraDataset(Dataset):
         for i in range(len(item_id_mapping)):
             if i not in self.item_texts:
                 self.item_texts[i] = f"item_{i}"
+
+    def _precompute_item_tokens(self) -> None:
+        """Pre-tokenize all item texts to avoid repeated tokenization in __getitem__."""
+        n_items = len(self.item_texts)
+        print(f"Pre-tokenizing {n_items} item texts...")
+        texts = [self.item_texts.get(i, f"item_{i}") for i in range(n_items)]
+        # Batch tokenize all at once
+        encoded = self.tokenizer(
+            texts,
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_text_len,
+            return_tensors='pt'
+        )
+        self.item_token_ids = encoded['input_ids']  # (N, L)
+        print(f"Pre-tokenized item tokens shape: {self.item_token_ids.shape}")
 
     def _load_sequences(self) -> None:
         """Load user interaction sequences from reviews."""
@@ -246,14 +265,17 @@ class AmazonCobraDataset(Dataset):
             else:
                 item_sem_ids.extend([0] * self.n_codebooks)
 
-        # Tokenize texts for history
-        encoder_input_ids = self._tokenize_items(history_items)
+        # Look up pre-tokenized texts for history (no tokenization at runtime)
+        n_items = self.item_token_ids.shape[0]
+        valid_ids = [i if i < n_items else 0 for i in history_items]
+        encoder_input_ids = self.item_token_ids[valid_ids]  # (T, L)
 
         # Target semantic IDs
         target_sem_ids = self.sem_ids_list[target_item] if target_item < len(self.sem_ids_list) else [0] * self.n_codebooks
 
-        # Tokenize target item text
-        target_encoder_input_ids = self._tokenize_items([target_item])  # (1, L)
+        # Look up pre-tokenized target text
+        target_idx = target_item if target_item < n_items else 0
+        target_encoder_input_ids = self.item_token_ids[target_idx:target_idx+1]  # (1, L)
 
         return {
             'input_ids': item_sem_ids,  # List[int] of length T*C

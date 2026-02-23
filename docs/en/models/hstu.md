@@ -60,10 +60,10 @@ train.use_temporal_bias = True  # Enable temporal RAB
 
 ```bash
 # Train with temporal bias (default)
-python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
 
 # Train without temporal bias (similar to SASRec)
-python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin \
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty \
     --gin "train.use_temporal_bias=False"
 
 # Train on other datasets

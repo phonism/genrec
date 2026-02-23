@@ -1,11 +1,11 @@
 # Getting Started
 
-This guide will help you quickly get started with the genrec framework.
+This guide will help you quickly get started with GenRec.
 
 ## Prerequisites
 
-- Python 3.8 or higher
-- CUDA 11.0+ (if using GPU)
+- Python 3.9 or higher
+- CUDA 11.0+ (for GPU training)
 - 8GB+ GPU memory (recommended)
 
 ## Installation
@@ -17,7 +17,13 @@ git clone https://github.com/phonism/genrec.git
 cd genrec
 ```
 
-### 2. Install Dependencies
+### 2. Install
+
+```bash
+pip install -e .
+```
+
+Or install dependencies only:
 
 ```bash
 pip install -r requirements.txt
@@ -25,184 +31,139 @@ pip install -r requirements.txt
 
 ### 3. Prepare Data
 
-Download the P5 Amazon dataset:
+Datasets are automatically downloaded during training. For Amazon 2014:
 
 ```bash
-# Data will be automatically downloaded to dataset/amazon directory
 mkdir -p dataset/amazon
 ```
 
-## First Experiment: Training RQVAE
-
-### 1. Check Configuration File
+For Amazon 2023:
 
 ```bash
-cat config/rqvae/p5_amazon.gin
+mkdir -p dataset/amazon2023
 ```
 
-Key configuration parameters:
-- `train.iterations=400000`: Number of training iterations
-- `train.batch_size=64`: Batch size
-- `train.learning_rate=0.0005`: Learning rate
-- `train.dataset_folder="dataset/amazon"`: Dataset path
+## Train Baseline Models
 
-### 2. Start Training
+### SASRec
 
 ```bash
-python genrec/trainers/rqvae_trainer.py config/rqvae/p5_amazon.gin
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
 ```
 
-During training you'll see:
-- Automatic data download and preprocessing
-- Text feature encoding progress
-- Training loss and metrics
-- Model checkpoint saving
-
-### 3. Monitor Training
-
-If Weights & Biases logging is enabled:
+### HSTU
 
 ```bash
-# Set in configuration file
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
+```
+
+Available splits for Amazon 2014: `beauty`, `sports`, `toys`, `clothing`
+
+For Amazon 2023 datasets, use dedicated config files:
+
+```bash
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon2023.gin
+python genrec/trainers/hstu_trainer.py config/hstu/amazon2023.gin
+```
+
+## Train Generative Models
+
+Generative models (TIGER, LCRec, COBRA) require a pretrained RQVAE checkpoint to generate semantic IDs.
+
+### Step 1: Train RQVAE
+
+```bash
+# For TIGER
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+
+# For LCRec
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
+
+# For COBRA
+python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
+```
+
+### Step 2: Train the Model
+
+```bash
+# TIGER
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
+
+# LCRec
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
+
+# COBRA
+python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
+```
+
+### Amazon 2023 Datasets
+
+```bash
+# TIGER on Amazon 2023
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon2023/rqvae.gin
+python genrec/trainers/tiger_trainer.py config/tiger/amazon2023/tiger.gin
+
+# LCRec on Amazon 2023
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon2023/rqvae.gin
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
+```
+
+## Monitor Training
+
+Enable Weights & Biases logging in your config:
+
+```gin
 train.wandb_logging=True
 train.wandb_project="your_project_name"
 ```
 
 Visit [wandb.ai](https://wandb.ai) to view training progress.
 
-## Second Experiment: Training TIGER
+## Configuration
 
-### 1. Ensure RQVAE is Trained
+### Override Parameters
 
-TIGER requires a pre-trained RQVAE model to generate semantic IDs:
-
-```bash
-# Check if RQVAE checkpoint exists
-ls out/rqvae/p5_amazon/beauty/checkpoint_*.pt
-```
-
-### 2. Configure TIGER
-
-Edit `config/tiger/p5_amazon.gin`:
-
-```gin
-train.pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt"
-```
-
-### 3. Start Training
+Use `--gin` to override any parameter:
 
 ```bash
-python genrec/trainers/tiger_trainer.py config/tiger/p5_amazon.gin
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin \
+    --split beauty \
+    --gin "train.epochs=200" \
+    --gin "train.batch_size=128"
 ```
 
-## Understanding the Framework Structure
+### Custom Model Path (LCRec)
 
-### Data Processing Pipeline
-
-```mermaid
-graph TD
-    A[Raw Data] --> B[Data Download]
-    B --> C[Preprocessing]
-    C --> D[Text Encoding]
-    D --> E[Sequence Generation]
-    E --> F[Dataset]
+```bash
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin \
+    --split beauty \
+    --gin "MODEL_HUB_QWEN3_1_7B='/path/to/model'"
 ```
 
-### Model Training Flow
+## Training Pipeline
 
 ```mermaid
 graph TD
     A[Config File] --> B[Dataset Loading]
     B --> C[Model Initialization]
     C --> D[Training Loop]
-    D --> E[Evaluation]
+    D --> E[Evaluation - Recall@K, NDCG@K]
     E --> F[Checkpoint Saving]
     F --> D
 ```
 
-## Custom Configuration
+For generative models:
 
-### Creating Custom Configuration
-
-```gin
-# my_config.gin
-import genrec.data.p5_amazon
-import genrec.models.rqvae
-
-# Custom parameters
-train.batch_size=32
-train.learning_rate=0.001
-train.vae_hidden_dims=[256, 128, 64]
-
-# Use custom data path
-train.dataset_folder="path/to/my/data"
+```mermaid
+graph TD
+    A[Train RQVAE] --> B[Generate Semantic IDs]
+    B --> C[Train TIGER/LCRec/COBRA]
+    C --> D[Evaluation]
 ```
-
-### Using Custom Configuration
-
-```bash
-python genrec/trainers/rqvae_trainer.py my_config.gin
-```
-
-## Model Evaluation
-
-### RQVAE Evaluation
-
-```python
-from genrec.models.rqvae import RqVae
-from genrec.data.p5_amazon import P5AmazonItemDataset
-
-# Load model
-model = RqVae.load_from_checkpoint("path/to/checkpoint.pt")
-
-# Load test data
-test_dataset = P5AmazonItemDataset(
-    root="dataset/amazon", 
-    train_test_split="eval"
-)
-
-# Evaluate reconstruction quality
-reconstruction_loss = model.evaluate(test_dataset)
-```
-
-### TIGER Evaluation
-
-```python
-from genrec.models.tiger import Tiger
-from genrec.modules.metrics import TopKAccumulator
-
-# Load model
-model = Tiger.load_from_checkpoint("path/to/checkpoint.pt")
-
-# Calculate Recall@K
-metrics = TopKAccumulator(k=10)
-recall = metrics.compute_recall(model, test_dataloader)
-```
-
-## Common Issues
-
-### Q: Out of memory?
-
-A: Adjust these parameters:
-```gin
-train.batch_size=16  # Reduce batch size
-train.vae_hidden_dims=[256, 128]  # Reduce model size
-```
-
-### Q: Training too slow?
-
-A: Optimization suggestions:
-- Use larger batch sizes
-- Enable mixed precision training
-- Use multi-GPU training
-
-### Q: How to add new datasets?
-
-A: Refer to the [Custom Dataset Guide](dataset/custom.md)
 
 ## Next Steps
 
-- Learn about [Model Architectures](models/rqvae.md)
+- Learn about [Model Architectures](models/sasrec.md)
 - Understand [Dataset Processing](dataset/overview.md)
 - Check [API Documentation](api/index.md)
 - Explore [Advanced Examples](examples.md)

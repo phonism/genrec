@@ -391,7 +391,19 @@ class Cobra(torch.nn.Module):
             CobraOutput
         """
 
-        vecs = self.encoder(encoder_input_ids)
+        # Encode in mini-batches to avoid OOM (B*T items can be very large)
+        if encoder_input_ids.dim() == 3:
+            B_enc, T_enc, L_enc = encoder_input_ids.shape
+            flat_enc = encoder_input_ids.view(B_enc * T_enc, L_enc)
+            enc_batch_size = 256  # Process 256 items at a time through encoder
+            all_vecs = []
+            for i in range(0, flat_enc.shape[0], enc_batch_size):
+                chunk = flat_enc[i:i+enc_batch_size].unsqueeze(1)  # (chunk, 1, L)
+                chunk_vecs = self.encoder(chunk)  # (chunk, 1, D)
+                all_vecs.append(chunk_vecs.squeeze(1))  # (chunk, D)
+            vecs = torch.cat(all_vecs, dim=0).view(B_enc, T_enc, -1)  # (B, T, D)
+        else:
+            vecs = self.encoder(encoder_input_ids)
 
         B, T = input_ids.shape
 
@@ -429,9 +441,9 @@ class Cobra(torch.nn.Module):
                 target_pos = torch.arange(1, T, device=h.device) * self.C + c
                 target = input_ids[:, target_pos]                              # (B, T-1)
 
-            # cross entropy + padding mask
+            # cross entropy + padding mask (force fp32 for numerical stability under AMP)
             loss_c = F.cross_entropy(
-                logits.reshape(-1, logits.size(-1)),
+                logits.float().reshape(-1, logits.size(-1)),
                 target.reshape(-1),
                 ignore_index=self.pad_id,
                 reduction="sum"
@@ -481,14 +493,16 @@ class Cobra(torch.nn.Module):
         vec_gt = F.normalize(vec_gt, p=2, dim=-1, eps=1e-12)
 
 
-        # in-batch InfoNCE
+        # in-batch InfoNCE (force fp32 to avoid bf16 overflow with low temperature)
+        vec_pred_f = vec_pred.float()
+        vec_gt_f = vec_gt.float()
         seq_ids_raw = torch.arange(B, device=h.device).unsqueeze(1)  # (B,1)
         seq_ids_raw = seq_ids_raw.expand(-1, T_dense).reshape(-1)    # (Q,)
         seq_ids = seq_ids_raw[valid]                                 # (Q_valid,)
         same_seq = seq_ids.unsqueeze(0) == seq_ids.unsqueeze(1)
-        same_seq.fill_diagonal_(False) 
-        sim = (vec_pred @ vec_gt.T) / self.temperature
-        sim = sim.masked_fill(same_seq, -1e4)
+        same_seq.fill_diagonal_(False)
+        sim = (vec_pred_f @ vec_gt_f.T) / self.temperature
+        sim = sim.masked_fill(same_seq, -1e9)
         labels = torch.arange(sim.size(0), device=sim.device)
         loss_dense = F.cross_entropy(sim, labels, reduction="mean")
         # calculate negative number

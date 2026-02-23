@@ -48,7 +48,7 @@ train.dropout = 0.2
 
 ```bash
 # 在 Amazon Beauty 上训练
-python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
 
 # 在其他数据集上训练
 python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split sports

@@ -1,100 +1,73 @@
-# genrec
+# GenRec
 
-基于 PyTorch 的生成式推荐系统研究框架。
+生成式推荐模型库。
 
 ## 概述
 
-genrec 是一个模块化的推荐系统研究框架，实现了多种最新的生成式推荐算法。该框架提供了干净的代码架构、灵活的配置系统以及易于扩展的数据处理管道。
+GenRec 是一个基于 PyTorch 的框架，提供生成式推荐模型的统一实现。框架采用干净的代码架构、基于 Gin-config 的实验管理，支持多种数据集和模型。
 
 ## 核心特性
 
-- ✨ **模块化设计**: 清晰的组件分离，易于理解和扩展
-- 🔧 **配置驱动**: 基于 Gin 的灵活配置系统
-- 📊 **多种模型**: RQVAE、TIGER 等最新生成式推荐模型
-- 🎯 **数据集支持**: P5 Amazon 等主流推荐数据集
-- 🚀 **分布式训练**: 基于 Accelerate 的多 GPU 训练支持
-- 📈 **实验跟踪**: 集成 Weights & Biases 进行实验管理
-- 🔍 **缓存优化**: 智能的数据预处理缓存机制
+- **7 种模型**: SASRec、HSTU、RQVAE、TIGER、LCRec、COBRA、NoteLLM
+- **多数据集**: Amazon 2014（Beauty、Sports、Toys、Clothing）和 Amazon 2023（32 个类别）
+- **Gin-Config**: 灵活的实验配置和参数覆盖
+- **W&B 集成**: 基于 Weights & Biases 的实验跟踪
+- **可复现**: 统一的 Recall@K 和 NDCG@K 评估指标
 
 ## 支持的模型
 
-### RQVAE (Residual Quantized Variational Autoencoder)
-- 基于向量量化的变分自编码器
-- 支持多种量化策略：Gumbel-Softmax、STE、Rotation Trick、Sinkhorn
-- 用于学习物品的语义表示
-
-### TIGER (Recommender Systems with Generative Retrieval)
-- 基于 Transformer 的生成式检索模型
-- 使用语义 ID 进行序列建模
-- 支持 Trie 约束的生成过程
+| 模型 | 类型 | 描述 |
+|------|------|------|
+| **SASRec** | 基线 | 自注意力序列推荐 |
+| **HSTU** | 基线 | 层次化序列转换单元 |
+| **RQVAE** | 生成式 | 残差量化 VAE，用于生成语义 ID |
+| **TIGER** | 生成式 | 基于 Trie 约束解码的生成式检索 |
+| **LCRec** | 生成式 | 基于 LLM 的协同语义推荐 |
+| **COBRA** | 生成式 | 级联稀疏-稠密表示 |
+| **NoteLLM** | 生成式 | 可检索的 LLM 笔记推荐（实验性） |
 
 ## 快速开始
 
-### 安装
-
 ```bash
-pip install -r requirements.txt
-```
+# 安装
+git clone https://github.com/phonism/genrec.git
+cd genrec
+pip install -e .
 
-### 训练 RQVAE
+# 训练 SASRec（Amazon Beauty）
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
 
-```bash
-python genrec/trainers/rqvae_trainer.py config/rqvae/p5_amazon.gin
-```
-
-### 训练 TIGER
-
-```bash
-python genrec/trainers/tiger_trainer.py config/tiger/p5_amazon.gin
+# 训练 TIGER（需要先训练 RQVAE）
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
 ```
 
 ## 项目结构
 
 ```
 genrec/
-├── genrec/          # 核心代码
-│   ├── data/                        # 数据处理模块
-│   │   ├── configs.py               # 配置类定义
-│   │   ├── base_dataset.py          # 数据集抽象基类
-│   │   ├── p5_amazon.py             # P5 Amazon 数据集
-│   │   ├── processors/              # 数据处理器
-│   │   └── dataset_factory.py       # 数据集工厂
-│   ├── models/                      # 模型实现
-│   │   ├── rqvae.py                 # RQVAE 模型
-│   │   └── tiger.py                 # TIGER 模型
-│   ├── modules/                     # 基础模块
-│   │   ├── embedding.py             # 嵌入层
-│   │   ├── encoder.py               # 编码器
-│   │   ├── loss.py                  # 损失函数
-│   │   └── metrics.py               # 评估指标
-│   └── trainers/                    # 训练脚本
-│       ├── rqvae_trainer.py         # RQVAE 训练器
-│       └── tiger_trainer.py         # TIGER 训练器
-├── config/                          # 配置文件
-│   ├── rqvae/                       # RQVAE 配置
-│   └── tiger/                       # TIGER 配置
-└── docs/                           # 文档
+├── genrec/
+│   ├── models/          # SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, NoteLLM
+│   ├── trainers/        # 每个模型的训练脚本
+│   ├── modules/         # Transformer、嵌入层、指标、损失函数等
+│   └── data/            # Amazon 2014 & 2023 数据集实现
+├── config/              # Gin 配置文件
+│   ├── sasrec/          # SASRec 配置
+│   ├── hstu/            # HSTU 配置
+│   ├── tiger/           # TIGER 配置（amazon/、amazon2023/）
+│   ├── lcrec/           # LCRec 配置（amazon/、amazon2023/）
+│   └── cobra/           # COBRA 配置
+├── scripts/             # 工具脚本
+└── docs/                # 文档（中英双语）
 ```
-
-## 主要改进
-
-相比原始实现，我们的重构版本提供了：
-
-1. **更清晰的代码结构**: 模块化设计，职责分明
-2. **配置化管理**: 支持灵活的参数配置和实验管理
-3. **通用性增强**: 易于扩展到新的数据集和模型
-4. **性能优化**: 缓存机制和内存效率提升
-5. **更好的文档**: 完整的 API 文档和使用示例
 
 ## 基准结果
 
-| 数据集 | 模型 | 指标 | 结果 |
-|--------|------|------|------|
-| P5 Amazon-Beauty | TIGER | Recall@10 | 0.42 |
+完整基准表格请参见 [README](https://github.com/phonism/genrec)，涵盖 Amazon 2014 和 Amazon 2023 数据集。
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！请参考我们的[贡献指南](contributing.md)。
+欢迎提交 Issue 和 Pull Request！请参考[贡献指南](contributing.md)。
 
 ## 许可证
 
@@ -102,17 +75,11 @@ genrec/
 
 ## 引用
 
-如果您在研究中使用了本框架，请引用相关论文：
-
 ```bibtex
-@inproceedings{rqvae2023,
-  title={RQ-VAE Recommender},
-  author={Botta, Edoardo},
-  year={2023}
-}
-
-@article{tiger2023,
-  title={TIGER: Recommender Systems with Generative Retrieval},
-  year={2023}
+@software{genrec2025,
+  title = {GenRec: A Model Zoo for Generative Recommendation},
+  author = {Qi Lu},
+  year = {2025},
+  url = {https://github.com/phonism/genrec}
 }
 ```

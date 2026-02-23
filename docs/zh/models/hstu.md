@@ -60,10 +60,10 @@ train.use_temporal_bias = True  # 启用时间 RAB
 
 ```bash
 # 使用时间偏置训练（默认）
-python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
 
 # 不使用时间偏置训练（类似 SASRec）
-python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin \
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty \
     --gin "train.use_temporal_bias=False"
 
 # 在其他数据集上训练
