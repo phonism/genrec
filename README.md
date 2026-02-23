@@ -6,8 +6,6 @@
 
 A Model Zoo for Generative Recommendation.
 
-![GenRec Cover](assets/cover.png)
-
 ## Benchmark Results
 
 **Metrics**
