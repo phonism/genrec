@@ -8,7 +8,15 @@ A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
-**Metrics**
+### Evaluation Protocol
+
+Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/abs/2311.09049), and [OpenOneRec](https://arxiv.org/abs/2512.24762):
+
+- **Dataset**: Amazon 2014 with 5-core filtering (users and items with < 5 interactions removed)
+- **Split**: Leave-one-out (last item for test, second-to-last for validation, rest for training)
+- **Ranking**: Full-item-set ranking over all items (no negative sampling)
+- **Max sequence length**: 50 for all models
+- **Metrics**: Recall@K and NDCG@K (K=5, 10)
 
 ![Recall@10 Comparison](assets/recall10_comparison.png)
 
@@ -16,40 +24,33 @@ A Model Zoo for Generative Recommendation.
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| [SASRec](https://wandb.ai/luckyqueen/sasrec_beauty_training) | 0.0469 | 0.0688 | 0.0305 | 0.0375 |
-| [HSTU](https://wandb.ai/luckyqueen/hstu_beauty_training) | 0.0486 | 0.0708 | 0.0340 | 0.0412 |
-| TIGER (Paper) | 0.0454 | 0.0648 | 0.0321 | 0.0384 |
-| [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_beauty_tiger_training) | 0.0465 | 0.0721 | 0.0297 | 0.0378 |
-| [LCRec](https://wandb.ai/luckyqueen/lcrec_beauty_training) | 0.0525 | 0.0791 | 0.0352 | 0.0438 |
+| SASRec (CE) | 0.0538 | 0.0851 | 0.0320 | 0.0421 |
+| SASRec (BCE) | 0.0258 | 0.0503 | 0.0137 | 0.0216 |
+| HSTU | 0.0568 | 0.0859 | 0.0347 | 0.0441 |
 
 ### Amazon 2014 Sports
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| [SASRec](https://wandb.ai/luckyqueen/sasrec_sports_training) | 0.0249 | 0.0373 | 0.0145 | 0.0185 |
-| [HSTU](https://wandb.ai/luckyqueen/hstu_sports_training) | 0.0243 | 0.0365 | 0.0168 | 0.0207 |
-| TIGER (Paper) | 0.0264 | 0.0400 | 0.0181 | 0.0225 |
-| [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_sports_tiger_training) | 0.0266 | 0.0414 | 0.0176 | 0.0224 |
-| [LCRec](https://wandb.ai/luckyqueen/lcrec_sports_training) | 0.0281 | 0.0422 | 0.0181 | 0.0226 |
+| SASRec (CE) | 0.0321 | 0.0495 | 0.0191 | 0.0248 |
+| SASRec (BCE) | 0.0156 | 0.0291 | 0.0085 | 0.0128 |
+| HSTU | 0.0283 | 0.0439 | 0.0182 | 0.0232 |
 
 ### Amazon 2014 Toys
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| [SASRec](https://wandb.ai/luckyqueen/sasrec_toys_training) | 0.0483 | 0.0700 | 0.0304 | 0.0374 |
-| [HSTU](https://wandb.ai/luckyqueen/hstu_toys_training) | 0.0504 | 0.0685 | 0.0368 | 0.0427 |
-| TIGER (Paper) | 0.0521 | 0.0712 | 0.0371 | 0.0432 |
-| [TIGER (Ours)](https://wandb.ai/luckyqueen/amazon_toys_tiger_training/) | 0.0420 | 0.0647 | 0.0280 | 0.0350 |
-| [LCRec](https://wandb.ai/luckyqueen/lcrec_toys_training) | 0.0444 | 0.0683 | 0.0294 | 0.0371 |
+| SASRec (CE) | 0.0613 | 0.0922 | 0.0348 | 0.0448 |
+| SASRec (BCE) | 0.0353 | 0.0594 | 0.0186 | 0.0264 |
+| HSTU | 0.0611 | 0.0914 | 0.0363 | 0.0461 |
 
-### Amazon 2023 Arts_Crafts_and_Sewing
+### Amazon 2014 Home
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| [SASRec](https://wandb.ai/luckyqueen/sasrec_amazon2023_arts_crafts_and_sewing) | 0.0314 | 0.0451 | 0.0219 | 0.0263 |
-| [HSTU](https://wandb.ai/luckyqueen/hstu_amazon2023_arts_crafts_and_sewing) | 0.0289 | 0.0417 | 0.0199 | 0.0240 |
-| [TIGER (Ours)](https://wandb.ai/luckyqueen/tiger_amazon2023_arts_crafts_and_sewing) | 0.0502 | 0.0623 | 0.0419 | 0.0458 |
-| [LCRec](https://wandb.ai/luckyqueen/lcrec_amazon2023_arts_crafts_and_sewing) | 0.0480 | 0.0632 | 0.0362 | 0.0411 |
+| SASRec (CE) | 0.0177 | 0.0277 | 0.0106 | 0.0138 |
+| SASRec (BCE) | 0.0081 | 0.0143 | 0.0046 | 0.0066 |
+| HSTU | 0.0129 | 0.0208 | 0.0084 | 0.0109 |
 
 ## Features
 
