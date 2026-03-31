@@ -15,5 +15,9 @@
 MODEL_HUB_SENTENCE_T5_BASE = "/root/workspace/models_hub/sentence-t5-base"
 MODEL_HUB_SENTENCE_T5_XL = "/root/workspace/models_hub/sentence-t5-xl"
 
+# Embedding models (for RQ-KMeans)
+MODEL_HUB_QWEN3_EMBEDDING_8B = "/root/workspace/models_hub/Qwen3-Embedding-8B"
+
 # LLM models (for LCRec/NoteLLM)
 MODEL_HUB_QWEN3_1_7B = "/root/workspace/models_hub/Qwen3-1.7B"
+MODEL_HUB_QWEN3_4B = "/root/workspace/models_hub/Qwen3-4B"

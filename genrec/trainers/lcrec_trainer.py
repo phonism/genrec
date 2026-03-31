@@ -37,8 +37,10 @@ def lcrec_collate_fn(batch, tokenizer, max_length=512, num_codebooks=5, is_eval=
         encoded = tokenizer(full_texts, padding=True, truncation=True, max_length=max_length, return_tensors='pt')
         labels = encoded['input_ids'].clone()
         labels[labels == tokenizer.pad_token_id] = -100
-        for i, prompt in enumerate(prompts):
-            labels[i, :len(tokenizer(prompt, add_special_tokens=False).input_ids)] = -100
+        # Batch tokenize prompts to get lengths (1 call instead of N)
+        prompt_enc = tokenizer(prompts, add_special_tokens=False)
+        for i, pids in enumerate(prompt_enc.input_ids):
+            labels[i, :len(pids)] = -100
 
     # Extract target info
     default_sem_ids = [0] * num_codebooks
@@ -75,6 +77,7 @@ class ConstrainedDecodingHelper:
     pattern: re.Pattern = field(default=None)
 
     def __post_init__(self):
+        vocab_size = len(self.tokenizer)
         for c in range(self.num_codebooks):
             self.allowed_tokens[c] = set()
             for code in range(self.codebook_size):
@@ -85,6 +88,21 @@ class ConstrainedDecodingHelper:
         self.allowed_tokens[self.num_codebooks] = {self.tokenizer.eos_token_id}
         self.response_marker_ids = self.tokenizer("### Response:", add_special_tokens=False).input_ids
         self.pattern = re.compile(r'<C(\d+)_(\d+)>')
+
+        # Precomputed lookup tables for fast constrained beam search
+        # position_mask[step, token_id] = True if token_id is allowed at step
+        self.position_mask = torch.zeros(self.num_codebooks + 1, vocab_size, dtype=torch.bool)
+        for step, token_set in self.allowed_tokens.items():
+            for tid in token_set:
+                self.position_mask[step, tid] = True
+
+        # code_map[codebook, token_id] = code_value (or -1 if invalid)
+        self.code_map = torch.full((self.num_codebooks, vocab_size), -1, dtype=torch.long)
+        for c in range(self.num_codebooks):
+            for code in range(self.codebook_size):
+                ids = self.tokenizer(f"<C{c}_{code}>", add_special_tokens=False).input_ids
+                if len(ids) == 1:
+                    self.code_map[c, ids[0]] = code
 
     def get_prefix_allowed_tokens_fn(self) -> Callable:
         def fn(batch_id: int, input_ids: torch.Tensor) -> List[int]:
@@ -107,17 +125,32 @@ class ConstrainedDecodingHelper:
         return [int(matches[i][1]) for i in range(self.num_codebooks)] if len(matches) >= self.num_codebooks else None
 
 
-def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, beam_width=10, logger=None, epoch=0, debug=False):
-    """Run evaluation on dataloader."""
+def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, beam_width=10, logger=None, epoch=0, debug=False, eval_tasks=None):
+    """Run evaluation on dataloader.
+
+    Args:
+        eval_tasks: Set of task names to evaluate (e.g. {'seqrec', 'item2index'}).
+                    None means evaluate all tasks. Use {'seqrec'} during training
+                    to skip slow index2item (50-token free generation).
+    """
     model.eval()
     device = accelerator.device
     metrics = {k: {'correct': [0]*num_codebooks, 'total': 0, 'exact': 0} for k in ['seqrec', 'item2index']}
     metrics['index2item'] = {'total': 0, 'exact': 0}
     topk_acc = TopKAccumulator(ks=[1, 5, 10])
-    prefix_fn = helper.get_prefix_allowed_tokens_fn()
     debug_count = 0
 
-    def generate(input_ids, attn_mask, max_new, use_beam=False, constrained=True):
+    raw_model = accelerator.unwrap_model(model)
+    has_custom_beam = hasattr(raw_model, 'generate_constrained_beam')
+    prefix_fn = helper.get_prefix_allowed_tokens_fn() if not has_custom_beam else None
+
+    # FSDP: need to gather full params for inference (beam search needs 2-D weights)
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    is_fsdp = isinstance(model, FSDP) or any(isinstance(m, FSDP) for m in model.modules())
+    fsdp_ctx = FSDP.summon_full_params(model, writeback=False, recurse=True) if is_fsdp else None
+
+    # HF generate fallback (used for index2item and models without custom beam search)
+    def generate_hf(input_ids, attn_mask, max_new, use_beam=False, constrained=True):
         kwargs = dict(
             input_ids=input_ids, attention_mask=attn_mask, max_new_tokens=max_new,
             do_sample=False, pad_token_id=tokenizer.pad_token_id,
@@ -125,80 +158,118 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
         )
         if use_beam:
             kwargs.update(num_beams=beam_width, num_return_sequences=beam_width)
-        if constrained:
+        if constrained and prefix_fn is not None:
             kwargs['prefix_allowed_tokens_fn'] = prefix_fn
-        return accelerator.unwrap_model(model).model.generate(**kwargs)
+        return raw_model.model.generate(**kwargs)
 
-    with torch.no_grad():
+    if fsdp_ctx is not None:
+        fsdp_ctx.__enter__()
+
+    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16, enabled=is_fsdp):
         for data in tqdm(dataloader, desc="Evaluating", disable=not accelerator.is_main_process):
             tasks = data['tasks']
 
-            # SeqRec evaluation
-            mask = torch.tensor([t == 'seqrec' for t in tasks])
-            if mask.any():
-                inp, attn, tgt = data["input_ids"][mask].to(device), data["attention_mask"][mask].to(device), data["target_sem_ids"][mask]
-                gen = generate(inp, attn, num_codebooks + 1, use_beam=True)
-                inp_len = inp.size(1)
+            # SeqRec evaluation (beam search)
+            if eval_tasks is None or 'seqrec' in eval_tasks:
+                mask = torch.tensor([t == 'seqrec' for t in tasks])
+                if mask.any():
+                    inp = data["input_ids"][mask].to(device)
+                    attn = data["attention_mask"][mask].to(device)
+                    tgt = data["target_sem_ids"][mask].to(device)  # [N, num_codebooks]
+                    N = inp.size(0)
 
-                for i in range(inp.size(0)):
-                    target = tgt[i].tolist()
-                    preds = []
-                    for k in range(beam_width):
-                        idx = i * beam_width + k
-                        if idx < gen.size(0):
-                            sem = helper.extract_sem_ids(tokenizer.decode(gen[idx, inp_len:], skip_special_tokens=False))
-                            if sem:
-                                preds.append(sem)
-                    while len(preds) < beam_width:
-                        preds.append([0] * num_codebooks)
+                    if has_custom_beam:
+                        # Custom constrained beam search: returns [N, topk, num_codebooks]
+                        pred_ids, _ = raw_model.generate_constrained_beam(
+                            inp, attn, helper.position_mask, helper.code_map,
+                            num_codebooks, beam_width=beam_width, topk=beam_width,
+                        )
+                    else:
+                        # Fallback: HF generate + extract sem_ids
+                        gen = generate_hf(inp, attn, num_codebooks + 1, use_beam=True, constrained=True)
+                        inp_len = inp.size(1)
+                        pred_list = []
+                        for i in range(N):
+                            preds = []
+                            for k in range(beam_width):
+                                idx = i * beam_width + k
+                                if idx < gen.size(0):
+                                    sem = helper.extract_sem_ids(tokenizer.decode(gen[idx, inp_len:], skip_special_tokens=False))
+                                    if sem:
+                                        preds.append(sem)
+                            while len(preds) < beam_width:
+                                preds.append([0] * num_codebooks)
+                            pred_list.append(preds)
+                        pred_ids = torch.tensor(pred_list, device=device, dtype=torch.long)  # [N, bw, C]
+
+                    # Batch metrics
+                    top1 = pred_ids[:, 0, :]  # [N, num_codebooks]
+                    per_code_match = (top1 == tgt)  # [N, num_codebooks]
+                    exact_match = per_code_match.all(dim=-1)  # [N]
+
+                    for c in range(num_codebooks):
+                        metrics['seqrec']['correct'][c] += per_code_match[:, c].sum().item()
+                    metrics['seqrec']['total'] += N
+                    metrics['seqrec']['exact'] += exact_match.sum().item()
+
+                    # TopK accumulator
+                    topk_acc.accumulate(tgt, pred_ids)
 
                     if debug and debug_count < 3 and accelerator.is_main_process and logger:
-                        logger.debug(f"[Epoch {epoch}] Sample {debug_count}: Target={target}, Pred={preds[0]}")
-                        debug_count += 1
+                        for i in range(min(3 - debug_count, N)):
+                            logger.debug(f"[Epoch {epoch}] Sample {debug_count}: Target={tgt[i].tolist()}, Pred={top1[i].tolist()}")
+                            debug_count += 1
 
-                    pred = preds[0]
-                    exact = all(pred[c] == target[c] for c in range(num_codebooks))
+            # item2index evaluation (greedy = beam_width=1)
+            if eval_tasks is None or 'item2index' in eval_tasks:
+                mask = torch.tensor([t == 'item2index' for t in tasks])
+                if mask.any():
+                    inp = data["input_ids"][mask].to(device)
+                    attn = data["attention_mask"][mask].to(device)
+                    tgt = data["target_sem_ids"][mask].to(device)
+                    N = inp.size(0)
+
+                    if has_custom_beam:
+                        pred_ids, _ = raw_model.generate_constrained_beam(
+                            inp, attn, helper.position_mask, helper.code_map,
+                            num_codebooks, beam_width=1, topk=1,
+                        )
+                        pred = pred_ids[:, 0, :]  # [N, num_codebooks]
+                    else:
+                        gen = generate_hf(inp, attn, num_codebooks + 1, constrained=True)
+                        inp_len = inp.size(1)
+                        pred_list = []
+                        for i in range(N):
+                            sem = helper.extract_sem_ids(tokenizer.decode(gen[i, inp_len:], skip_special_tokens=False))
+                            pred_list.append(sem if sem else [0] * num_codebooks)
+                        pred = torch.tensor(pred_list, device=device, dtype=torch.long)
+
+                    per_code_match = (pred == tgt)
+                    exact_match = per_code_match.all(dim=-1)
+
                     for c in range(num_codebooks):
-                        if pred[c] == target[c]:
-                            metrics['seqrec']['correct'][c] += 1
-                    metrics['seqrec']['total'] += 1
-                    if exact:
-                        metrics['seqrec']['exact'] += 1
-                    topk_acc.accumulate(torch.tensor([target], device=device), torch.tensor([preds], device=device))
+                        metrics['item2index']['correct'][c] += per_code_match[:, c].sum().item()
+                    metrics['item2index']['total'] += N
+                    metrics['item2index']['exact'] += exact_match.sum().item()
 
-            # item2index evaluation
-            mask = torch.tensor([t == 'item2index' for t in tasks])
-            if mask.any():
-                inp, attn, tgt = data["input_ids"][mask].to(device), data["attention_mask"][mask].to(device), data["target_sem_ids"][mask]
-                gen = generate(inp, attn, num_codebooks + 1)
-                inp_len = inp.size(1)
+            # index2item evaluation (unconstrained, uses HF generate)
+            if eval_tasks is None or 'index2item' in eval_tasks:
+                mask = torch.tensor([t == 'index2item' for t in tasks])
+                if mask.any():
+                    inp, attn = data["input_ids"][mask].to(device), data["attention_mask"][mask].to(device)
+                    labels = data.get("labels")
+                    labels = labels[mask] if labels is not None else None
+                    gen = generate_hf(inp, attn, 50)
 
-                for i in range(inp.size(0)):
-                    sem = helper.extract_sem_ids(tokenizer.decode(gen[i, inp_len:], skip_special_tokens=False))
-                    if sem:
-                        target = tgt[i].tolist()
-                        exact = all(sem[c] == target[c] for c in range(num_codebooks))
-                        for c in range(num_codebooks):
-                            if sem[c] == target[c]:
-                                metrics['item2index']['correct'][c] += 1
-                        metrics['item2index']['total'] += 1
-                        if exact:
-                            metrics['item2index']['exact'] += 1
+                    for i in range(inp.size(0)):
+                        tgt_text = tokenizer.decode(labels[i][labels[i] != -100], skip_special_tokens=True).strip().lower() if labels is not None else ""
+                        gen_text = tokenizer.decode(gen[i, inp.size(1):], skip_special_tokens=True).strip().lower()
+                        metrics['index2item']['total'] += 1
+                        if tgt_text and gen_text and tgt_text in gen_text:
+                            metrics['index2item']['exact'] += 1
 
-            # index2item evaluation
-            mask = torch.tensor([t == 'index2item' for t in tasks])
-            if mask.any():
-                inp, attn = data["input_ids"][mask].to(device), data["attention_mask"][mask].to(device)
-                labels = data.get("labels")
-                labels = labels[mask] if labels is not None else None
-                gen = generate(inp, attn, 50, constrained=False)
-
-                for i in range(inp.size(0)):
-                    tgt_text = tokenizer.decode(labels[i][labels[i] != -100], skip_special_tokens=True).strip().lower() if labels is not None else ""
-                    gen_text = tokenizer.decode(gen[i, inp.size(1):], skip_special_tokens=True).strip().lower()
-                    metrics['index2item']['total'] += 1
-                    if tgt_text and gen_text and tgt_text in gen_text:
-                        metrics['index2item']['exact'] += 1
+    if fsdp_ctx is not None:
+        fsdp_ctx.__exit__(None, None, None)
 
     topk_metrics = topk_acc.reduce()
 
@@ -390,11 +461,25 @@ def train(
 
         logger.info(f"Epoch {epoch} - avg_loss: {epoch_loss / max(epoch_steps, 1):.4f}")
 
-        # Evaluation
+        # Evaluation (skip index2item during training — 50-token free generation is slow)
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
-            metrics, topk = evaluate(model, valid_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging)
+            train_eval_tasks = {'seqrec', 'item2index'}
+            metrics, topk = evaluate(model, valid_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
+            test_metrics, test_topk = evaluate(model, test_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
             if accelerator.is_main_process:
+                logger.info(f"--- Valid ---")
                 log_metrics(metrics, topk, num_codebooks, epoch, logger, wandb_logging)
+                logger.info(f"--- Test ---")
+                log_metrics(test_metrics, test_topk, num_codebooks, epoch, logger, wandb_log=False)
+                if wandb_logging:
+                    test_log = {"epoch": epoch}
+                    for task in ['seqrec', 'item2index']:
+                        total = test_metrics[task]['total']
+                        if total > 0:
+                            test_log[f"test/{task}_exact"] = test_metrics[task]['exact'] / total
+                    for k, v in test_topk.items():
+                        test_log[f"test/seqrec_{k}"] = v
+                    wandb.log(test_log)
             model.train()
 
         # Save checkpoint

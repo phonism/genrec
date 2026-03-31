@@ -82,7 +82,7 @@ def train(
     vae_codebook_last_layer_mode=QuantizeForwardMode.SINKHORN,
     vae_sim_vq=False,
     vae_n_layers=3,
-    encoder_model_name="./models_hub/sentence-t5-xl"
+    encoder_model_name="./models_hub/sentence-t5-xl",
 ):
     """
     train rqvae
@@ -393,7 +393,7 @@ def train(
                     for batch in eval_dataloader:
                         data = batch.to(device)
                         with torch.no_grad():
-                            eval_model_output = model(data, gumbel_t=t)
+                            eval_model_output = model(data, gumbel_t=0.2)
                         eval_losses[0].append(eval_model_output.loss.cpu().item())
                         eval_losses[1].append(eval_model_output.reconstruction_loss.cpu().item())
                         eval_losses[2].append(eval_model_output.rqvae_loss.cpu().item())

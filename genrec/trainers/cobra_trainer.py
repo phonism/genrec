@@ -473,6 +473,41 @@ def train(
                 for k, v in metrics.items():
                     log_dict[f"eval/valid_{k}"] = v
 
+            # Test evaluation
+            test_metrics_accumulator = TopKAccumulator()
+            test_sparse_metrics_accumulator = TopKAccumulator()
+            with torch.no_grad():
+                for data in tqdm(test_dataloader, desc=f"Test Eval (Epoch {epoch})"):
+                    generated = accelerator.unwrap_model(model).beam_fusion(
+                        input_ids=data["input_ids"].to(device),
+                        encoder_input_ids=data["encoder_input_ids"].to(device),
+                        item_dense_vecs=item_dense_vecs,
+                        item_sem_ids=item_sem_ids,
+                        sem_id_to_items=sem_id_to_items,
+                        n_candidates=10,
+                        n_beam=20,
+                        tau=1.0,
+                        psi=16.0,
+                    )
+                    target = data["target_sem_ids"].to(device)
+                    test_metrics_accumulator.accumulate(actual=target, top_k=generated.sem_ids)
+
+                    sparse_gen = accelerator.unwrap_model(model).generate(
+                        input_ids=data["input_ids"].to(device),
+                        encoder_input_ids=data["encoder_input_ids"].to(device),
+                        n_candidates=10,
+                    )
+                    test_sparse_metrics_accumulator.accumulate(actual=target, top_k=sparse_gen.sem_ids)
+
+            test_metrics = test_metrics_accumulator.reduce()
+            test_sparse_metrics = test_sparse_metrics_accumulator.reduce()
+            logger.info(f"Epoch {epoch} - Test (BeamFusion): {test_metrics}")
+            logger.info(f"Epoch {epoch} - Test (Sparse-only): {test_sparse_metrics}")
+
+            if wandb_logging and accelerator.is_main_process:
+                for k, v in test_metrics.items():
+                    log_dict[f"eval/test_{k}"] = v
+
         if wandb_logging and accelerator.is_main_process and log_dict and len(log_dict) > 1:
             wandb.log(log_dict)
 

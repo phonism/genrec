@@ -8,7 +8,7 @@ import genrec.models.sasrec
 # =============================================================================
 # Training Settings
 # =============================================================================
-train.epochs = 10
+train.epochs = 300
 train.batch_size = 128
 train.learning_rate = 1e-3
 train.weight_decay = 0.0
@@ -18,10 +18,11 @@ train.weight_decay = 0.0
 # =============================================================================
 train.max_seq_len = 50
 train.embed_dim = 64
-train.num_heads = 2
+train.num_heads = 1
 train.num_blocks = 2
 train.ffn_dim = 256
-train.dropout = 0.2
+train.dropout = 0.5
+train.loss_type = "ce"  # "bce" (original paper, 1 neg per pos) or "ce" (cross-entropy over all items)
 
 # =============================================================================
 # Dataset Settings
@@ -35,6 +36,7 @@ train.split = "{split}"  # beauty, sports, toys, clothing
 train.do_eval = True
 train.eval_every_epoch = 1
 train.eval_batch_size = 256
+train.patience = 50
 
 # =============================================================================
 # Checkpoint Settings

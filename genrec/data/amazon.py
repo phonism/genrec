@@ -41,6 +41,10 @@ DATASET_CONFIGS = {
         "reviews": "reviews_Clothing_Shoes_and_Jewelry_5.json.gz",
         "meta": "meta_Clothing_Shoes_and_Jewelry.json.gz",
     },
+    "home": {
+        "reviews": "reviews_Home_and_Kitchen_5.json.gz",
+        "meta": "meta_Home_and_Kitchen.json.gz",
+    },
     # Amazon 2023 datasets (processed by genrec.data.amazon2023)
     "books": {
         "reviews": "reviews_Books_5.json.gz",
@@ -122,10 +126,11 @@ class AmazonItemDataset(Dataset):
         if self.split not in DATASET_CONFIGS:
             raise ValueError(f"Unknown split: {split}. Available: {list(DATASET_CONFIGS.keys())}")
 
-        # Paths
+        # Paths — include encoder name in parquet filename to avoid cache conflicts
         self.raw_dir = os.path.join(root, "raw", self.split)
         self.processed_dir = os.path.join(root, "processed", self.split)
-        self.parquet_path = os.path.join(self.processed_dir, "item_emb.parquet")
+        encoder_short_name = os.path.basename(encoder_model_name.rstrip("/"))
+        self.parquet_path = os.path.join(self.processed_dir, f"item_emb_{encoder_short_name}.parquet")
 
         # Download if needed
         self._download_if_needed()
@@ -198,14 +203,14 @@ class AmazonItemDataset(Dataset):
 
         logger.info(f"Loaded metadata for {len(item_info)} items")
 
-        # Generate embeddings
+        # Generate embeddings (batch encode for efficiency with large models)
         logger.info(f"Generating embeddings with {self.encoder_model_name}...")
         model = SentenceTransformer(self.encoder_model_name)
 
-        item_embeddings: List[dict] = []
-        for item_id in tqdm(sorted(item_info.keys()), desc="Generating embeddings"):
+        sorted_ids = sorted(item_info.keys())
+        texts = []
+        for item_id in sorted_ids:
             info = item_info[item_id]
-            # Text format for embedding
             semantics = (
                 f"'title':{info.get('title', '')}\n"
                 f" 'price':{info.get('price', '')}\n"
@@ -213,10 +218,16 @@ class AmazonItemDataset(Dataset):
                 f" 'brand':{info.get('brand', '')}\n"
                 f" 'categories':{info.get('categories', '')}"
             )
-            embedding = model.encode(semantics)
+            texts.append(semantics)
+
+        logger.info(f"Batch encoding {len(texts)} items...")
+        all_embeddings = model.encode(texts, batch_size=32, show_progress_bar=True)
+
+        item_embeddings: List[dict] = []
+        for i, item_id in enumerate(sorted_ids):
             item_embeddings.append({
                 'ItemID': item_id,
-                'embedding': embedding.tolist()
+                'embedding': all_embeddings[i].tolist()
             })
 
         # Save to parquet

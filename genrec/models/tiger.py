@@ -33,6 +33,7 @@ from typing import NamedTuple, Optional
 from collections import defaultdict
 from einops import rearrange
 
+from typing import Dict, Tuple
 from genrec.modules.normalize import RMSNorm, RootMeanSquareLayerNorm
 from genrec.modules.embedding import SemIdEmbedding, UserIdEmbedding
 from genrec.modules.transformer import TransformerEncoderDecoder
@@ -70,6 +71,73 @@ def build_trie(valid_item_ids: torch.Tensor) -> TrieNode:
 
 DEAD_NODE = TrieNode()
 
+def build_tensor_trie(
+    valid_item_ids: torch.Tensor,
+    codebook_size: int,
+) -> tuple:
+    """
+    Convert valid_item_ids into GPU-friendly tensor trie.
+
+    Returns:
+        children_mask: (num_nodes, codebook_size) bool — valid child tokens per node
+        transition: (num_nodes, codebook_size) int32 — next node ID per (node, token)
+    """
+    # Build Python trie first (on CPU)
+    root = TrieNode()
+    if valid_item_ids.dim() == 3:
+        flat = valid_item_ids.view(-1, valid_item_ids.size(-1))
+    elif valid_item_ids.dim() == 2:
+        flat = valid_item_ids
+    else:
+        flat = valid_item_ids.unsqueeze(0)
+
+    for seq in flat.tolist():
+        node = root
+        for tok in seq:
+            node = node[tok]
+        node.is_end = True
+
+    # BFS to assign integer IDs to nodes
+    node_list = [root]  # node_list[0] = root
+    node_id_map = {id(root): 0}
+    queue = [root]
+
+    while queue:
+        next_queue = []
+        for node in queue:
+            for tok, child in sorted(node.items()):
+                if id(child) not in node_id_map:
+                    node_id_map[id(child)] = len(node_list)
+                    node_list.append(child)
+                    next_queue.append(child)
+        queue = next_queue
+
+    num_nodes = len(node_list)
+
+    # Build tensors
+    children_mask = torch.zeros(num_nodes, codebook_size, dtype=torch.bool)
+    transition = torch.zeros(num_nodes, codebook_size, dtype=torch.int32)
+    # Dead node ID = num_nodes (out of range, won't be indexed for valid tokens)
+    dead_id = num_nodes
+
+    for node_idx, node in enumerate(node_list):
+        for tok, child in node.items():
+            if 0 <= tok < codebook_size:
+                children_mask[node_idx, tok] = True
+                transition[node_idx, tok] = node_id_map[id(child)]
+
+    # Add dead node row (no valid children)
+    children_mask = torch.cat([
+        children_mask,
+        torch.zeros(1, codebook_size, dtype=torch.bool)
+    ], dim=0)
+    transition = torch.cat([
+        transition,
+        torch.full((1, codebook_size), dead_id, dtype=torch.int32)
+    ], dim=0)
+
+    return children_mask, transition, num_nodes
+
 class TigerOutput(NamedTuple):
     """
     Tiger output
@@ -100,6 +168,12 @@ class Tiger(nn.Module):
         num_user_embeddings: int,
         sem_id_dim: int,
         max_pos: int = 2048,
+        d_kv: int = 0,
+        dim_feedforward: int = 1024,
+        share_position_bias: bool = False,
+        scale_attn: bool = True,
+        add_final_norm: bool = False,
+        decoder_bidirectional: bool = True,
     ) -> None:
         super().__init__()
         self.trie_root = None
@@ -112,7 +186,8 @@ class Tiger(nn.Module):
         self.num_user_embeddings = num_user_embeddings
         self.sem_id_dim = sem_id_dim
         self.max_pos = max_pos
-        
+        self.use_proj = (attn_dim != embedding_dim)
+
         self.bos_embedding = nn.Parameter(torch.randn(embedding_dim))
         self.norm = RMSNorm(embedding_dim)
         self.norm_context = RMSNorm(embedding_dim)
@@ -126,27 +201,47 @@ class Tiger(nn.Module):
             num_embeddings=num_user_embeddings,
             embeddings_dim=embedding_dim
         )
-        self.pos_embedding = nn.Embedding(max_pos, embedding_dim)
-        self.decoder_pos_embedding = nn.Embedding(sem_id_dim, embedding_dim)
 
-        self.in_proj = nn.Linear(embedding_dim, attn_dim, bias=False)
-        self.in_proj_context = nn.Linear(embedding_dim, attn_dim, bias=False)
+        if self.use_proj:
+            self.in_proj = nn.Linear(embedding_dim, attn_dim, bias=False)
+            self.in_proj_context = nn.Linear(embedding_dim, attn_dim, bias=False)
 
         self.transformer = TransformerEncoderDecoder(
             d_model=attn_dim,
             nhead=num_heads,
             num_encoder_layers=n_layers // 2,
             num_decoder_layers=n_layers // 2,
-            dim_feedforward=1024,
+            dim_feedforward=dim_feedforward,
             dropout=dropout,
             norm_cls=RootMeanSquareLayerNorm,
+            d_kv=d_kv,
+            share_position_bias=share_position_bias,
+            scale_attn=scale_attn,
+            add_final_norm=add_final_norm,
+            decoder_bidirectional=decoder_bidirectional,
         )
-        self.out_proj = nn.Linear(attn_dim, embedding_dim, bias=False)
         # vocab_size = num_item_embeddings * sem_id_dim + 1 (matching embedding layer)
         self.vocab_size = num_item_embeddings * sem_id_dim + 1
         self.output_head = nn.Linear(attn_dim, self.vocab_size, bias=False)
 
+        # Causal mask cache: size -> mask tensor
+        self._causal_mask_cache: Dict[Tuple[int, torch.device], torch.Tensor] = {}
+
+        # Tensor trie cache (built lazily)
+        self._trie_children_mask: Optional[torch.Tensor] = None
+        self._trie_transition: Optional[torch.Tensor] = None
+        self._trie_num_nodes: int = 0
+
     
+    def _get_causal_mask(self, size: int, device: torch.device) -> torch.Tensor:
+        """Get cached causal mask for given size."""
+        key = (size, device)
+        if key not in self._causal_mask_cache:
+            self._causal_mask_cache[key] = nn.Transformer.generate_square_subsequent_mask(
+                size, device=device
+            )
+        return self._causal_mask_cache[key]
+
     def forward(
         self,
         user_input_ids: torch.Tensor,
@@ -167,15 +262,10 @@ class Tiger(nn.Module):
         item_emb = self.sem_id_embedding(item_input_ids, token_type_ids)
         B, N, D = item_emb.shape
 
-        pos = torch.arange(N, device=item_emb.device).unsqueeze(0)
-        pos_emb = self.pos_embedding(pos.long())
-        #encoder_input = torch.cat([user_emb, item_emb + pos_emb], dim=1)
         encoder_input = torch.cat([user_emb, item_emb], dim=1)
 
         if target_input_ids is not None:
             target_emb = self.sem_id_embedding(target_input_ids, target_token_type_ids)
-            decoder_pos_emb = self.decoder_pos_embedding(target_token_type_ids)
-            #decoder_input = torch.cat([self.bos_embedding.repeat(B, 1, 1), target_emb + decoder_pos_emb], dim=1)
             decoder_input = torch.cat([self.bos_embedding.repeat(B, 1, 1), target_emb], dim=1)
         else:
             decoder_input = self.bos_embedding.repeat(B, 1, 1)
@@ -188,14 +278,14 @@ class Tiger(nn.Module):
         f_mask[~encoder_mask.bool()] = 1
         f_mask = f_mask.bool()
 
-        encoder_input = self.in_proj_context(self.drop(self.norm_context(encoder_input)))
-        decoder_input = self.in_proj(self.drop(self.norm(decoder_input)))
+        encoder_input = self.drop(self.norm_context(encoder_input))
+        decoder_input = self.drop(self.norm(decoder_input))
+        if self.use_proj:
+            encoder_input = self.in_proj_context(encoder_input)
+            decoder_input = self.in_proj(decoder_input)
 
-        # causal mask for decoder 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(
-            decoder_input.shape[1],
-            device=decoder_input.device
-        )
+        # causal mask for decoder (cached)
+        causal_mask = self._get_causal_mask(decoder_input.shape[1], decoder_input.device)
         decoder_out = self.transformer(
             src=encoder_input,
             tgt=decoder_input,
@@ -268,6 +358,7 @@ class Tiger(nn.Module):
         """Encode context (user + item history) once for reuse during generation."""
         user_emb = self.user_id_embedding(user_input_ids)
         item_emb = self.sem_id_embedding(item_input_ids, token_type_ids)
+        B, N, D = item_emb.shape
         encoder_input = torch.cat([user_emb, item_emb], dim=1)
 
         encoder_mask = torch.cat([
@@ -276,7 +367,9 @@ class Tiger(nn.Module):
         ], dim=1)
         f_mask = encoder_mask == 0
 
-        encoder_input = self.in_proj_context(self.drop(self.norm_context(encoder_input)))
+        encoder_input = self.drop(self.norm_context(encoder_input))
+        if self.use_proj:
+            encoder_input = self.in_proj_context(encoder_input)
         memory = self.transformer.encoder(encoder_input, key_padding_mask=f_mask)
         return memory, f_mask
 
@@ -295,11 +388,11 @@ class Tiger(nn.Module):
             target_emb = self.sem_id_embedding(tgt_ids, tgt_type)
             decoder_input = torch.cat([self.bos_embedding.repeat(B, 1, 1), target_emb], dim=1)
 
-        decoder_input = self.in_proj(self.drop(self.norm(decoder_input)))
+        decoder_input = self.drop(self.norm(decoder_input))
+        if self.use_proj:
+            decoder_input = self.in_proj(decoder_input)
 
-        causal_mask = nn.Transformer.generate_square_subsequent_mask(
-            decoder_input.shape[1], device=decoder_input.device
-        )
+        causal_mask = self._get_causal_mask(decoder_input.shape[1], decoder_input.device)
         decoder_out = self.transformer.decoder(
             decoder_input,
             memory=memory,
@@ -308,6 +401,18 @@ class Tiger(nn.Module):
         )
         logits = self.output_head(decoder_out)
         return logits[:, -1, :]
+
+    def _build_tensor_trie(self, valid_item_ids: torch.Tensor, device: torch.device):
+        """Build and cache tensor trie on GPU."""
+        if self._trie_children_mask is not None:
+            return
+        children_mask, transition, num_nodes = build_tensor_trie(
+            valid_item_ids, self.num_item_embeddings
+        )
+        self._trie_children_mask = children_mask.to(device)
+        self._trie_transition = transition.to(device).long()
+        self._trie_num_nodes = num_nodes
+        self._trie_dead_node_id = num_nodes  # last row is dead node
 
     def generate(
         self,
@@ -321,14 +426,12 @@ class Tiger(nn.Module):
         use_trie: bool = True,
     ) -> "TigerGenerationOutput":
         """
-        Generate semantic IDs with beam search and encoder caching.
-
-        Args:
-            use_trie: If True, use trie constraint for valid item IDs. If False, skip trie (faster).
+        Generate semantic IDs with beam search, encoder caching, tensor trie,
+        and GPU-based beam deduplication.
         """
-        # Beam search with encoder caching
         B, K = user_input_ids.size(0), n_top_k_candidates
         device = user_input_ids.device
+        NIE = self.num_item_embeddings  # codebook_size (e.g. 256)
 
         # Encode context once
         memory, memory_mask = self._encode_context(
@@ -341,14 +444,18 @@ class Tiger(nn.Module):
         beam_seqs = torch.empty(B, K, 0, dtype=torch.long, device=device)
         beam_logps = torch.zeros(B, K, device=device)
 
-        # Trie (only build if use_trie=True)
+        # Tensor trie: GPU-based constraint
         if use_trie:
-            if self.trie_root is None:
-                self.trie_root = build_trie(valid_item_ids.to("cpu"))
-            beam_nodes = [[self.trie_root for _ in range(K)] for _ in range(B)]
+            self._build_tensor_trie(valid_item_ids, device)
+            # beam_node_ids: (B, K) — current trie node for each beam
+            beam_node_ids = torch.zeros(B, K, dtype=torch.long, device=device)  # root=0
+
+        # Sequence encoding for GPU dedup: base-NIE encoding
+        # seq_encoded[b,k] = token[0]*NIE^(steps_remaining-1) + ... + token[step]
+        beam_seq_encoded = torch.zeros(B, K, dtype=torch.long, device=device)
 
         R = 6
-        KK = min(K * R, self.num_item_embeddings)
+        KK = min(K * R, NIE)
 
         for step in range(self.sem_id_dim):
             tgt_ids = beam_seqs.view(B * K, -1)
@@ -360,91 +467,85 @@ class Tiger(nn.Module):
 
             logits = self._decode_step(memory, memory_mask, tgt_ids_, tgt_type_)
 
-            # Convert trie's raw token IDs to vocab indices based on current step
-            vocab_offset = step * self.num_item_embeddings
+            vocab_offset = step * NIE
 
             if use_trie:
-                # Apply trie constraint
-                legal_mask = torch.full_like(logits, False, dtype=torch.bool)
-                for b in range(B):
-                    for k in range(K):
-                        idx = b * K + k
-                        valid_set = self.next_valid_tokens(beam_nodes[b][k])
-                        if valid_set:
-                            valid_vocab_ids = [vocab_offset + tok for tok in valid_set]
-                            legal_mask[idx, valid_vocab_ids] = True
+                # Tensor trie constraint — single GPU indexing, no Python loops
+                flat_node_ids = beam_node_ids.view(B * K)  # (B*K,)
+                valid_mask = self._trie_children_mask[flat_node_ids]  # (B*K, codebook_size)
+                legal_mask = torch.zeros(B * K, logits.size(-1), dtype=torch.bool, device=device)
+                legal_mask[:, vocab_offset:vocab_offset + NIE] = valid_mask
                 logits = logits.masked_fill(~legal_mask, -1e32)
             else:
-                # No trie constraint - only mask to current step's vocab range
                 mask = torch.full_like(logits, float('-inf'))
-                mask[:, vocab_offset:vocab_offset + self.num_item_embeddings] = 0
+                mask[:, vocab_offset:vocab_offset + NIE] = 0
                 logits = logits + mask
 
             log_probs = torch.log_softmax(logits / temperature, dim=-1)
-
-            probs = torch.softmax(logits / temperature, dim=-1)
-            cand_token = torch.multinomial(probs, num_samples=KK)
-            cand_logp = torch.gather(log_probs, 1, cand_token)
-            cand_token = cand_token - vocab_offset
+            cand_logp, cand_token = torch.topk(log_probs, k=KK, dim=-1)
+            cand_token = cand_token - vocab_offset  # now in [0, NIE)
             cand_logp = cand_logp.view(B, K, KK)
             cand_token = cand_token.view(B, K, KK)
 
-            total_logp = (beam_logps.unsqueeze(-1) + cand_logp).view(B, -1)
-            total_tok = cand_token.view(B, -1)
+            total_logp = (beam_logps.unsqueeze(-1) + cand_logp).view(B, -1)  # (B, K*KK)
+            total_tok = cand_token.view(B, -1)  # (B, K*KK)
             total_src = torch.arange(K, device=device).view(1, K, 1).expand(B, K, KK).reshape(B, -1)
 
-            new_seqs = []
-            new_scores = []
-            if use_trie:
-                new_nodes = []
+            # GPU-based beam dedup using encoded sequences
+            # Encode candidate sequences: parent_enc * NIE + new_token
+            parent_enc = beam_seq_encoded.unsqueeze(-1).expand(B, K, KK).reshape(B, -1)  # (B, K*KK)
+            cand_enc = parent_enc * NIE + total_tok  # (B, K*KK)
+
+            # Sort by score descending
+            sorted_scores, sort_idx = total_logp.sort(descending=True)  # (B, K*KK)
+            sorted_tok = torch.gather(total_tok, 1, sort_idx)
+            sorted_src = torch.gather(total_src, 1, sort_idx)
+            sorted_enc = torch.gather(cand_enc, 1, sort_idx)
+
+            # Dedup: for each batch, pick top-K unique encoded sequences
+            # Use vectorized approach: mark first occurrence of each unique encoding
+            new_beam_seqs = torch.zeros(B, K, step + 1, dtype=torch.long, device=device)
+            new_beam_logps = torch.full((B, K), -1e32, device=device)
+            new_beam_node_ids = torch.zeros(B, K, dtype=torch.long, device=device) if use_trie else None
+            new_beam_seq_encoded = torch.zeros(B, K, dtype=torch.long, device=device)
 
             for b in range(B):
-                scores_b, order_b = total_logp[b].sort(descending=True)
-                tokens_b = total_tok[b][order_b]
-                parent_b = total_src[b][order_b]
+                # Batch GPU→CPU transfer: 3 .tolist() calls instead of ~5400 .item() calls
+                enc_list = sorted_enc[b].tolist()
+                tok_list = sorted_tok[b].tolist()
+                src_list = sorted_src[b].tolist()
 
-                picked_idx = []
                 seen = set()
-
-                for j in range(scores_b.size(0)):
-                    if len(picked_idx) == K:
+                picks = []
+                for j in range(len(enc_list)):
+                    if len(picks) >= K:
                         break
-                    p = parent_b[j].item()
-                    tid = tokens_b[j].item()
+                    if enc_list[j] not in seen:
+                        seen.add(enc_list[j])
+                        picks.append(j)
 
-                    seq = torch.cat([
-                        beam_seqs[b, p], torch.tensor([tid], device=device)
-                    ])
-                    key = tuple(seq.tolist())
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    picked_idx.append(j)
+                n_picks = len(picks)
+                if n_picks == 0:
+                    continue
 
-                    new_seqs.append(seq)
-                    new_scores.append(scores_b[j])
-                    if use_trie:
-                        parent_node = beam_nodes[b][p]
-                        new_nodes.append(parent_node.get(tid, DEAD_NODE))
+                pick_idx = torch.tensor(picks, dtype=torch.long, device=device)
+                parent_beams = sorted_src[b][pick_idx]
 
-                while len(picked_idx) < K:
-                    new_seqs.append(torch.zeros_like(seq))
-                    new_scores.append(torch.tensor(-1e32, device=device))
-                    if use_trie:
-                        new_nodes.append(self.trie_root)
-                    picked_idx.append(-1)
+                if step > 0:
+                    new_beam_seqs[b, :n_picks, :step] = beam_seqs[b][parent_beams]
+                new_beam_seqs[b, :n_picks, step] = sorted_tok[b][pick_idx]
+                new_beam_logps[b, :n_picks] = sorted_scores[b][pick_idx]
+                new_beam_seq_encoded[b, :n_picks] = sorted_enc[b][pick_idx]
+                if use_trie:
+                    parent_nids = beam_node_ids[b][parent_beams]
+                    child_toks = sorted_tok[b][pick_idx]
+                    new_beam_node_ids[b, :n_picks] = self._trie_transition[parent_nids, child_toks]
 
-            lens = torch.tensor([s.size(0) for s in new_seqs], device=device)
-            max_L = lens.max().item()
-            padded = torch.stack([
-                torch.nn.functional.pad(s, (0, max_L - s.size(0)))
-                for s in new_seqs
-            ])
-
-            beam_seqs = padded.view(B, K, max_L)
-            beam_logps = torch.stack(new_scores).view(B, K)
+            beam_seqs = new_beam_seqs
+            beam_logps = new_beam_logps
+            beam_seq_encoded = new_beam_seq_encoded
             if use_trie:
-                beam_nodes = [new_nodes[i * K:(i + 1) * K] for i in range(B)]
+                beam_node_ids = new_beam_node_ids
 
         return TigerGenerationOutput(
             sem_ids=beam_seqs,

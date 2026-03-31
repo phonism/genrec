@@ -83,17 +83,15 @@ class AmazonHSTUDataset(Dataset):
                 timestamps = timestamps[:-2]
                 if len(items) < 2:
                     continue
-                # Sliding window
-                for i in range(1, len(items)):
-                    start = max(0, i - self.max_seq_len)
-                    history = items[start:i]
-                    history_ts = timestamps[start:i]
-                    target = items[i]
-                    self.samples.append({
-                        'history': history,
-                        'timestamps': history_ts,
-                        'target': target,
-                    })
+                # One sample per user: full training sequence with multi-position supervision
+                history = items[:-1]
+                history_ts = timestamps[:-1]
+                target = items[-1]
+                self.samples.append({
+                    'history': history,
+                    'timestamps': history_ts,
+                    'target': target,
+                })
 
         elif self.train_test_split == "valid":
             for items, timestamps in self.sequences:

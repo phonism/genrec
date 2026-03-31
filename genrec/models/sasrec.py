@@ -36,11 +36,13 @@ class SASRec(nn.Module):
         num_blocks: int = 2,
         ffn_dim: int = 256,
         dropout: float = 0.2,
+        loss_type: str = "bce",  # "bce" (original paper) or "ce" (cross-entropy)
     ):
         super().__init__()
         self.num_items = num_items
         self.max_seq_len = max_seq_len
         self.embed_dim = embed_dim
+        self.loss_type = loss_type
 
         # Embeddings: item 0 is padding (will be zeroed)
         self.item_embedding = nn.Embedding(num_items + 1, embed_dim, padding_idx=0)
@@ -76,57 +78,78 @@ class SASRec(nn.Module):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
 
+    def _encode(self, input_ids: torch.Tensor) -> torch.Tensor:
+        """Encode input sequence into hidden representations [B, L, D]."""
+        B, L = input_ids.shape
+        device = input_ids.device
+
+        mask = (input_ids != 0).unsqueeze(-1).float()
+        x = self.item_embedding(input_ids)
+        if self.loss_type != "bce":
+            x = x * (self.embed_dim ** 0.5)
+
+        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
+        x = x + self.position_embedding(positions)
+
+        x = self.emb_dropout(x)
+        x = x * mask
+
+        for block in self.blocks:
+            x = block(x, mask)
+            x = x * mask
+
+        x = self.final_norm(x)
+        return x
+
     def forward(
         self,
         input_ids: torch.Tensor,  # [B, L]
-        targets: Optional[torch.Tensor] = None,  # [B, L] for training
+        targets: Optional[torch.Tensor] = None,  # [B, L]
+        negatives: Optional[torch.Tensor] = None,  # [B, L] for BCE loss
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass.
 
         Args:
             input_ids: Item IDs sequence [B, L], 0 is padding
-            targets: Target item IDs [B, L] for computing loss (shifted by 1)
+            targets: Target item IDs [B, L] for computing loss
+            negatives: Negative sample IDs [B, L], required when loss_type="bce"
 
         Returns:
             logits: Prediction logits [B, L, num_items+1]
-            loss: Cross-entropy loss if targets provided, else None
+            loss: Training loss if targets provided, else None
         """
-        B, L = input_ids.shape
-        device = input_ids.device
+        hidden = self._encode(input_ids)  # [B, L, D]
 
-        # Mask for padding positions: [B, L, 1]
-        # True for valid positions, False for padding
-        mask = (input_ids != 0).unsqueeze(-1).float()
-
-        # Item embedding (scaled by sqrt(d) as in official impl)
-        x = self.item_embedding(input_ids) * (self.embed_dim ** 0.5)  # [B, L, D]
-
-        # Position embedding (not scaled)
-        positions = torch.arange(L, device=device).unsqueeze(0).expand(B, L)
-        x = x + self.position_embedding(positions)
-
-        # Dropout and mask
-        x = self.emb_dropout(x)
-        x = x * mask  # Zero out padding positions
-
-        # Apply self-attention blocks
-        for block in self.blocks:
-            x = block(x, mask)
-            x = x * mask  # Zero out padding after each block (as in official impl)
-
-        x = self.final_norm(x)
-
-        # Prediction: dot product with item embeddings
-        logits = x @ self.item_embedding.weight.T  # [B, L, num_items+1]
-
-        # Compute loss if targets provided
         loss = None
         if targets is not None:
-            logits_flat = logits.view(-1, self.num_items + 1)
-            targets_flat = targets.view(-1)
-            loss = F.cross_entropy(logits_flat, targets_flat, ignore_index=0)
+            if self.loss_type == "bce":
+                assert negatives is not None, "negatives required for BCE loss"
+                pos_emb = self.item_embedding(targets)    # [B, L, D]
+                neg_emb = self.item_embedding(negatives)  # [B, L, D]
+                pos_logits = (hidden * pos_emb).sum(dim=-1)  # [B, L]
+                neg_logits = (hidden * neg_emb).sum(dim=-1)  # [B, L]
 
+                valid_mask = (targets != 0).float()
+                pos_loss = F.binary_cross_entropy_with_logits(
+                    pos_logits, torch.ones_like(pos_logits), reduction='none'
+                )
+                neg_loss = F.binary_cross_entropy_with_logits(
+                    neg_logits, torch.zeros_like(neg_logits), reduction='none'
+                )
+                loss = ((pos_loss + neg_loss) * valid_mask).sum() / valid_mask.sum()
+            else:
+                logits_all = hidden @ self.item_embedding.weight.T
+                loss = F.cross_entropy(
+                    logits_all.view(-1, self.num_items + 1),
+                    targets.view(-1),
+                    ignore_index=0,
+                )
+
+        # Full logits only when needed (evaluation or CE loss already computed)
+        if targets is not None and self.loss_type == "bce":
+            return None, loss
+        logits = hidden @ self.item_embedding.weight.T  # [B, L, num_items+1]
         return logits, loss
 
     @torch.no_grad()

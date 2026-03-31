@@ -9,12 +9,12 @@ import genrec.models.lcrec
 # =============================================================================
 # Training Settings
 # =============================================================================
-train.epochs = 4
-train.batch_size = 32
+train.epochs = 10
+train.batch_size = 16
 train.learning_rate = 2e-5
 train.weight_decay = 0.01
 train.warmup_ratio = 0.01
-train.gradient_accumulate_every = 2
+train.gradient_accumulate_every = 4
 train.max_length = 512
 
 # =============================================================================
@@ -34,7 +34,7 @@ train.codebook_size = 256
 # =============================================================================
 train.dataset = @AmazonLCRecDataset
 train.dataset_folder = "dataset/amazon"
-train.max_seq_len = 20
+train.max_seq_len = 50
 train.max_text_len = 128
 train.pretrained_rqvae_path = "./out/lcrec/amazon/{split}/rqvae/checkpoint_epoch_1999.pt"
 
@@ -52,7 +52,7 @@ AmazonLCRecDataset.enabled_tasks = ["seqrec", "item2index", "index2item"]
 # =============================================================================
 train.do_eval = True
 train.eval_every_epoch = 1
-train.eval_batch_size = 4
+train.eval_batch_size = 16
 train.eval_beam_width = 10
 
 # =============================================================================

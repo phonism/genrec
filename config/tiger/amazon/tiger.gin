@@ -1,35 +1,43 @@
 # TIGER config for Amazon dataset
+# Uses HuggingFace T5ForConditionalGeneration (best performing config)
+# Based on tiger_new_seq50: plain Adam, lr=1e-4, no scheduler, seq50
 
 include "config/base.gin"
 
 import genrec.data.amazon
-import genrec.models.tiger
+import genrec.models.tiger_new
 
-# Training settings
-train.epochs=100
+# Training settings (plain Adam, no scheduler - best config)
+train.epochs=200
 train.learning_rate=1e-4
-train.num_warmup_steps=100
-train.weight_decay=0.035
+train.weight_decay=0.0
 train.batch_size=256
-train.gradient_accumulate_every=1
+train.infer_batch_size=96
+train.beam_size=30
+train.early_stop_patience=10
+train.eval_test_every_epoch=2
 
-# Model architecture (aligned with paper)
-train.embedding_dim=128
-train.attn_dim=384
-train.dropout=0.1
+# Model architecture (HF T5 config)
+train.num_layers=4
+train.num_decoder_layers=4
+train.d_model=128
+train.d_ff=1024
 train.num_heads=6
-train.n_layers=8
-train.num_item_embeddings=256
-train.num_user_embeddings=10000
+train.d_kv=64
+train.dropout_rate=0.1
+train.feed_forward_proj='relu'
+
+# Data config
+train.codebook_size=256
 train.sem_id_dim=3
-train.max_seq_len=20
+train.max_seq_len=50
 
 # Dataset
 train.dataset=@AmazonSeqDataset
 train.dataset_folder="dataset/amazon"
 AmazonSeqDataset.split="{split}"
 AmazonSeqDataset.encoder_model_name=%MODEL_HUB_SENTENCE_T5_XL
-AmazonSeqDataset.add_disambiguation=False  # Disabled - 4th code hurts performance
+AmazonSeqDataset.add_disambiguation=False
 
 # RQVAE config (must match pretrained model)
 AmazonSeqDataset.rqvae_input_dim=768
@@ -39,16 +47,12 @@ AmazonSeqDataset.rqvae_codebook_size=256
 AmazonSeqDataset.rqvae_n_layers=3
 
 # Pretrained RQVAE checkpoint path
-train.pretrained_rqvae_path = "./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+train.pretrained_rqvae_path="./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
 
-# Checkpointing and evaluation (epoch-based)
-train.save_every_epoch=50
-train.eval_valid_every_epoch=1
-train.eval_test_every_epoch=10
+# Output
 train.save_dir_root="out/tiger/amazon/{split}/"
 
 # Logging
 train.wandb_logging=True
 train.wandb_project="tiger_{split}_training"
-train.wandb_log_interval=1
-train.do_eval=True
+train.wandb_log_interval=10

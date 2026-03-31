@@ -149,8 +149,10 @@ def parse_config():
     # Parse config
     gin.parse_config(config_content)
 
-    # Apply additional gin bindings
+    # Apply additional gin bindings (also replace {split} placeholder)
     if args.gin:
+        if args.split:
+            args.gin = [g.replace('{split}', args.split) for g in args.gin]
         gin.parse_config(args.gin)
 
 

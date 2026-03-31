@@ -18,10 +18,12 @@ class InverseSquareRootScheduler(LRScheduler):
     
     def get_lr(self):
         """
-        Get the learning rate
+        Get the learning rate.
+        Linear warmup from 0 to base_lr, then inverse square root decay.
         """
         step = self.last_epoch + 1
         if step <= self.warmup_steps:
-            return self.base_lrs
+            scale = step / max(1, self.warmup_steps)
+            return [base_lr * scale for base_lr in self.base_lrs]
         scale_factor = (self.warmup_steps ** 0.5) / (step ** 0.5)
         return [base_lr * scale_factor for base_lr in self.base_lrs]

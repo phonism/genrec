@@ -19,6 +19,7 @@ from tqdm import tqdm
 from torch.nn.utils.rnn import pad_sequence
 from typing import List, Dict, Any
 from transformers.optimization import get_cosine_schedule_with_warmup
+from genrec.modules.scheduler import InverseSquareRootScheduler
 
 def pad_collate(
     batch: List[SeqData],
@@ -39,32 +40,38 @@ def pad_collate(
     Returns:
         Dict[str, torch.Tensor]
     """
-    max_item_length = max(len(x.item_ids) for x in batch)
-    user_ids = torch.full((len(batch), 1), pad_id, dtype=torch.long, device=device)
-    ids = torch.full((len(batch), max_item_length), pad_id, dtype=torch.long, device=device)
-    mask = torch.zeros((len(batch), max_item_length), dtype=torch.long, device=device)
-    token_type_ids = torch.zeros((len(batch), max_item_length), dtype=torch.long, device=device)
-    target_input_ids = torch.full((len(batch), len(batch[0].target_ids)), pad_id, dtype=torch.long, device=device)
-    target_token_type_ids = torch.zeros((len(batch), len(batch[0].target_ids)), dtype=torch.long, device=device)
-
     B = len(batch)
+    max_item_length = max(len(x.item_ids) for x in batch)
+    target_len = len(batch[0].target_ids)
+
+    user_ids = torch.full((B, 1), pad_id, dtype=torch.long, device=device)
+    ids = torch.full((B, max_item_length), pad_id, dtype=torch.long, device=device)
+    mask = torch.zeros((B, max_item_length), dtype=torch.long, device=device)
+    token_type_ids = torch.zeros((B, max_item_length), dtype=torch.long, device=device)
+
+    # Build target tensors batch-wise (avoid per-sample torch.arange)
+    target_input_ids = torch.tensor(
+        [x.target_ids for x in batch], dtype=torch.long, device=device
+    )
+    target_token_type_ids = torch.arange(
+        target_len, dtype=torch.long, device=device
+    ).unsqueeze(0).expand(B, -1).clone()
+
     for i in range(B):
-        
         uid = batch[i].user_id
         item_ids = batch[i].item_ids
+        L = len(item_ids)
         user_ids[i, 0] = uid
+        item_t = torch.tensor(item_ids)
+        type_t = torch.arange(L) % 3
         if padding_side == "left":
-            ids[i, :len(item_ids)] = torch.tensor(item_ids)
-            token_type_ids[i, :len(item_ids)] = torch.arange(len(item_ids), device=ids.device) % 3
-            mask[i, :len(item_ids)] = 1
-            target_input_ids[i, :] = torch.tensor(batch[i].target_ids)
-            target_token_type_ids[i, :] = torch.arange(len(batch[i].target_ids), device=target_input_ids.device)
+            ids[i, :L] = item_t
+            token_type_ids[i, :L] = type_t
+            mask[i, :L] = 1
         else:
-            ids[i, max_item_length - len(item_ids):] = torch.tensor(item_ids)
-            token_type_ids[i, max_item_length - len(item_ids):] = torch.arange(len(item_ids), device=ids.device) % 3
-            mask[i, max_item_length - len(item_ids):] = 1
-            target_input_ids[i, :] = torch.tensor(batch[i].target_ids)
-            target_token_type_ids[i, :] = torch.arange(len(batch[i].target_ids), device=target_input_ids.device)
+            ids[i, max_item_length - L:] = item_t
+            token_type_ids[i, max_item_length - L:] = type_t
+            mask[i, max_item_length - L:] = 1
 
     return {
         "user_input_ids": user_ids,
@@ -110,6 +117,15 @@ def train(
     max_seq_len=2048,
     pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt",
     resume_from_checkpoint=None,
+    lr_schedule="cosine",
+    beam_size=10,
+    early_stop_patience=0,  # 0 = disabled
+    d_kv=0,  # T5-style d_kv (0 = legacy mode)
+    dim_feedforward=1024,
+    share_position_bias=False,
+    scale_attn=True,
+    add_final_norm=False,
+    decoder_bidirectional=True,
 ):
     """
     Trains a Tiger model.
@@ -204,24 +220,45 @@ def train(
         num_user_embeddings=num_user_embeddings,
         sem_id_dim=sem_id_dim,
         max_pos=max_seq_len * sem_id_dim,
+        d_kv=d_kv,
+        dim_feedforward=dim_feedforward,
+        share_position_bias=share_position_bias,
+        scale_attn=scale_attn,
+        add_final_norm=add_final_norm,
+        decoder_bidirectional=decoder_bidirectional,
     )
     
-    optimizer = AdamW(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
-    )
+    if lr_schedule == "none":
+        from torch.optim import Adam
+        optimizer = Adam(model.parameters(), lr=learning_rate)
+        logger.info("Using plain Adam, no scheduler")
+    else:
+        optimizer = AdamW(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+        )
 
     total_steps = len(train_dataloader) * epochs // gradient_accumulate_every
-    lr_scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=num_warmup_steps,
-        num_training_steps=total_steps,
-    )
+    lr_scheduler = None
+    if lr_schedule == "inverse_sqrt":
+        lr_scheduler = InverseSquareRootScheduler(
+            optimizer,
+            warmup_steps=num_warmup_steps,
+        )
+    elif lr_schedule == "cosine":
+        lr_scheduler = get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=total_steps,
+        )
 
-    model, optimizer, lr_scheduler = accelerator.prepare(
-        model, optimizer, lr_scheduler
-    )
+    if lr_scheduler is not None:
+        model, optimizer, lr_scheduler = accelerator.prepare(
+            model, optimizer, lr_scheduler
+        )
+    else:
+        model, optimizer = accelerator.prepare(model, optimizer)
 
     num_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Device: {device}, Num Parameters: {num_params}")
@@ -244,7 +281,8 @@ def train(
         checkpoint = torch.load(resume_from_checkpoint, map_location=device)
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        lr_scheduler.load_state_dict(checkpoint["scheduler"])
+        if lr_scheduler is not None and "scheduler" in checkpoint:
+            lr_scheduler.load_state_dict(checkpoint["scheduler"])
         start_epoch = checkpoint["epoch"] + 1
         logger.info(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
 
@@ -254,8 +292,9 @@ def train(
             "epoch": epoch,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
-            "scheduler": lr_scheduler.state_dict(),
         }
+        if lr_scheduler is not None:
+            state["scheduler"] = lr_scheduler.state_dict()
         if not os.path.exists(os.path.dirname(path)):
             os.makedirs(os.path.dirname(path))
         torch.save(state, path)
@@ -271,7 +310,8 @@ def train(
                     item_input_ids=data["item_input_ids"].to(device),
                     token_type_ids=data["token_type_ids"].to(device),
                     seq_mask=data["seq_mask"].to(device),
-                    valid_item_ids=valid_item_ids.to(device)
+                    valid_item_ids=valid_item_ids,
+                    n_top_k_candidates=beam_size,
                 )
                 actual = data["target_input_ids"].to(device)
                 topk = generated.sem_ids
@@ -279,6 +319,12 @@ def train(
         metrics = metrics_accumulator.reduce()
         metrics_accumulator.reset()
         return metrics
+
+    # Early stopping state
+    best_valid_recall10 = 0.0
+    best_epoch = -1
+    early_stop_counter = 0
+    use_early_stopping = early_stop_patience > 0
 
     total_loss = 0
     model.train()
@@ -307,16 +353,18 @@ def train(
                     # only clip when sync gradients
                     total_norm = accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
                     optimizer.step()
-                    lr_scheduler.step()
+                    if lr_scheduler is not None:
+                        lr_scheduler.step()
                     optimizer.zero_grad()
 
                     if accelerator.is_main_process:
                         pbar.set_description(f'Epoch {epoch}/{epochs} | loss: {loss.item():.4f}')
                         pbar.update(1)
                     if wandb_logging and accelerator.is_main_process and global_step % wandb_log_interval == 0:
+                        cur_lr = lr_scheduler.get_last_lr()[0] if lr_scheduler is not None else learning_rate
                         wandb.log({
                             "global_step": global_step,
-                            "train/learning_rate": lr_scheduler.get_last_lr()[0],
+                            "train/learning_rate": cur_lr,
                             "train/loss": total_loss / gradient_accumulate_every,
                         })
                     total_loss = 0
@@ -326,16 +374,47 @@ def train(
         # End of epoch - evaluate and save
         log_dict = {"epoch": epoch} if wandb_logging else None
 
-        # Valid evaluation
-        if do_eval and (epoch + 1) % eval_valid_every_epoch == 0:
+        # Valid evaluation: every epoch if early stopping, else per config
+        should_eval_valid = use_early_stopping or ((epoch + 1) % eval_valid_every_epoch == 0)
+        if do_eval and should_eval_valid:
             valid_metrics = evaluate(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})")
             logger.info(f"Epoch {epoch} - Valid: {valid_metrics}")
             if wandb_logging and accelerator.is_main_process:
                 for k in valid_metrics:
                     log_dict[f"eval/valid_{k}"] = valid_metrics[k]
 
-        # Test evaluation (less frequent)
-        if do_eval and (epoch + 1) % eval_test_every_epoch == 0:
+            # Early stopping check
+            if use_early_stopping:
+                cur_recall10 = valid_metrics.get("Recall@10", 0.0)
+                if cur_recall10 > best_valid_recall10:
+                    best_valid_recall10 = cur_recall10
+                    best_epoch = epoch
+                    early_stop_counter = 0
+                    # Save best model
+                    if accelerator.is_main_process:
+                        save_checkpoint(epoch, os.path.join(save_dir_root, "best_model.pt"))
+                        logger.info(f"New best Valid R@10={cur_recall10:.4f} at epoch {epoch}")
+                    # Test evaluation on improvement
+                    if do_eval:
+                        test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
+                        logger.info(f"Epoch {epoch} - Test: {test_metrics}")
+                        if wandb_logging and accelerator.is_main_process:
+                            for k in test_metrics:
+                                log_dict[f"eval/test_{k}"] = test_metrics[k]
+                else:
+                    early_stop_counter += 1
+                    logger.info(f"No improvement. Counter: {early_stop_counter}/{early_stop_patience}")
+
+        # Test evaluation (less frequent, only when not already done by early stopping)
+        if do_eval and not use_early_stopping and (epoch + 1) % eval_test_every_epoch == 0:
+            test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
+            logger.info(f"Epoch {epoch} - Test: {test_metrics}")
+            if wandb_logging and accelerator.is_main_process:
+                for k in test_metrics:
+                    log_dict[f"eval/test_{k}"] = test_metrics[k]
+
+        # Periodic test eval even with early stopping (when no improvement)
+        if do_eval and use_early_stopping and early_stop_counter > 0 and (epoch + 1) % eval_test_every_epoch == 0:
             test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
             logger.info(f"Epoch {epoch} - Test: {test_metrics}")
             if wandb_logging and accelerator.is_main_process:
@@ -355,16 +434,24 @@ def train(
                     os.path.join(save_dir_root, f"checkpoint_epoch_{epoch}.pt")
                 )
 
+        # Early stopping break
+        if use_early_stopping and early_stop_counter >= early_stop_patience:
+            logger.info(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}, Best R@10: {best_valid_recall10:.4f}")
+            break
+
     # Save final checkpoint
     if accelerator.is_main_process:
         save_checkpoint(
-            epochs - 1,
+            epoch,
             os.path.join(save_dir_root, "checkpoint_final.pt")
         )
 
+    if use_early_stopping:
+        logger.info(f"Training done. Best Valid R@10={best_valid_recall10:.4f} at epoch {best_epoch}")
+
     if wandb_logging and accelerator.is_main_process:
         wandb.finish()
-    
+
     accelerator.wait_for_everyone()
     accelerator.end_training()
 

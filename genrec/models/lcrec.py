@@ -11,6 +11,7 @@ from transformers import (
     AutoModelForCausalLM,
     PreTrainedTokenizerBase,
     PreTrainedModel,
+    DynamicCache,
 )
 from typing import Union, Optional, Dict, List, Callable, Tuple
 
@@ -160,6 +161,158 @@ class LCRec(nn.Module):
             device_map="auto",
         )
         print(f"Loaded checkpoint from {load_dir}")
+
+    @torch.no_grad()
+    def generate_constrained_beam(
+        self,
+        input_ids: torch.Tensor,       # [B, L]
+        attention_mask: torch.Tensor,   # [B, L]
+        position_mask: torch.Tensor,    # [num_steps, vocab_size] bool
+        code_map: torch.Tensor,         # [num_codebooks, vocab_size] -> code value
+        num_codebooks: int,
+        beam_width: int = 10,
+        topk: int = 10,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Custom constrained beam search with KV cache reuse.
+
+        Returns:
+            sem_ids: [B, topk, num_codebooks] predicted semantic IDs
+            scores:  [B, topk] log-probability scores
+        """
+        B, L = input_ids.shape
+        device = input_ids.device
+        num_steps = num_codebooks + 1  # codebook tokens + EOS
+
+        # Move lookup tables to device
+        position_mask = position_mask.to(device)
+        code_map = code_map.to(device)
+
+        # --- Prefill: one forward pass to get KV cache + first logits ---
+        out = self.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=True)
+        logits = out.logits[:, -1, :]  # [B, V]
+        past_kv = out.past_key_values
+
+        # Apply step-0 mask
+        mask_0 = position_mask[0].unsqueeze(0)  # [1, V]
+        logits = logits.masked_fill(~mask_0, float('-inf'))
+        log_probs = F.log_softmax(logits, dim=-1)  # [B, V]
+
+        # Select top beam_width tokens per sample
+        topk_scores, topk_ids = log_probs.topk(beam_width, dim=-1)  # [B, beam_width]
+
+        # Expand for beams: [B, beam_width]
+        beam_scores = topk_scores  # [B, beam_width]
+        beam_tokens = topk_ids.unsqueeze(-1)  # [B, beam_width, 1]
+
+        # Expand KV cache: each layer (key, value) from [B, H, L, D] -> [B*beam_width, H, L, D]
+        past_kv = self._expand_past_kv(past_kv, beam_width)
+
+        # Expand attention_mask for beams
+        # [B, L] -> [B*beam_width, L]
+        attn_mask = attention_mask.unsqueeze(1).expand(-1, beam_width, -1).reshape(B * beam_width, L)
+
+        # --- Autoregressive steps 1..num_steps-1 ---
+        for step in range(1, num_steps):
+            # Next input token: last generated token for each beam
+            # beam_tokens: [B, beam_width, step]
+            next_input = beam_tokens[:, :, -1].reshape(B * beam_width, 1)  # [B*bw, 1]
+
+            # Update attention mask
+            attn_mask = torch.cat([attn_mask, torch.ones(B * beam_width, 1, device=device, dtype=attn_mask.dtype)], dim=-1)
+
+            out = self.model(input_ids=next_input, attention_mask=attn_mask, past_key_values=past_kv, use_cache=True)
+            logits = out.logits[:, -1, :]  # [B*bw, V]
+            past_kv = out.past_key_values
+
+            # Apply step mask
+            mask_s = position_mask[step].unsqueeze(0)  # [1, V]
+            logits = logits.masked_fill(~mask_s, float('-inf'))
+            log_probs = F.log_softmax(logits, dim=-1)  # [B*bw, V]
+            log_probs = log_probs.view(B, beam_width, -1)  # [B, bw, V]
+
+            # For non-EOS steps, expand beams
+            if step < num_codebooks:
+                # Candidate scores: [B, bw, V] -> select top beam_width from bw*V
+                candidate_scores = beam_scores.unsqueeze(-1) + log_probs  # [B, bw, V]
+                candidate_scores = candidate_scores.view(B, -1)  # [B, bw*V]
+                top_scores, top_indices = candidate_scores.topk(beam_width, dim=-1)  # [B, bw]
+
+                # Decode beam and token indices
+                beam_idx = top_indices // log_probs.size(-1)  # [B, bw] which beam
+                token_idx = top_indices % log_probs.size(-1)  # [B, bw] which token
+
+                # Reorder beams
+                beam_scores = top_scores  # [B, bw]
+                # Gather previous tokens from selected beams
+                prev_tokens = torch.gather(
+                    beam_tokens, 1,
+                    beam_idx.unsqueeze(-1).expand(-1, -1, beam_tokens.size(-1))
+                )  # [B, bw, step]
+                beam_tokens = torch.cat([prev_tokens, token_idx.unsqueeze(-1)], dim=-1)  # [B, bw, step+1]
+
+                # Reorder KV cache
+                reorder_idx = (torch.arange(B, device=device).unsqueeze(1) * beam_width + beam_idx).view(-1)  # [B*bw]
+                past_kv = self._reorder_past_kv(past_kv, reorder_idx)
+                attn_mask = attn_mask[reorder_idx]
+            else:
+                # EOS step: just pick the EOS score and add to beam scores
+                # All beams should pick the single allowed EOS token
+                eos_scores = log_probs[:, :, 0]  # only one token is allowed, take first non-inf
+                # Find the actual EOS token score
+                allowed_mask = position_mask[step]  # [V]
+                eos_token_idx = allowed_mask.nonzero(as_tuple=False)[0, 0]
+                eos_log_prob = log_probs[:, :, eos_token_idx]  # [B, bw]
+                beam_scores = beam_scores + eos_log_prob
+
+        # --- Extract sem_ids from beam_tokens using code_map ---
+        # beam_tokens: [B, beam_width, num_codebooks] (excluding EOS)
+        # code_map: [num_codebooks, V]
+        sem_ids = torch.zeros(B, beam_width, num_codebooks, dtype=torch.long, device=device)
+        for c in range(num_codebooks):
+            token_ids = beam_tokens[:, :, c]  # [B, bw]
+            sem_ids[:, :, c] = code_map[c][token_ids]  # lookup
+
+        # Sort by score descending and take topk
+        sorted_idx = beam_scores.argsort(dim=-1, descending=True)  # [B, bw]
+        sorted_idx_k = sorted_idx[:, :topk]  # [B, topk]
+        sem_ids = torch.gather(sem_ids, 1, sorted_idx_k.unsqueeze(-1).expand(-1, -1, num_codebooks))
+        scores = torch.gather(beam_scores, 1, sorted_idx_k)
+
+        return sem_ids, scores
+
+    @staticmethod
+    def _expand_past_kv(past_kv, beam_width):
+        """Expand KV cache from [B, ...] to [B*beam_width, ...]."""
+        if isinstance(past_kv, DynamicCache):
+            new_cache = DynamicCache()
+            for layer_idx in range(len(past_kv)):
+                layer = past_kv.layers[layer_idx]
+                key = layer.keys
+                value = layer.values
+                new_key = key.unsqueeze(1).expand(-1, beam_width, -1, -1, -1).reshape(-1, *key.shape[1:])
+                new_value = value.unsqueeze(1).expand(-1, beam_width, -1, -1, -1).reshape(-1, *value.shape[1:])
+                new_cache.update(new_key, new_value, layer_idx)
+            return new_cache
+        expanded = []
+        for layer_kv in past_kv:
+            expanded.append(tuple(
+                t.unsqueeze(1).expand(-1, beam_width, -1, -1, -1)
+                 .reshape(t.size(0) * beam_width, *t.shape[1:])
+                for t in layer_kv
+            ))
+        return tuple(expanded)
+
+    @staticmethod
+    def _reorder_past_kv(past_kv, reorder_idx):
+        """Reorder KV cache according to beam selection indices."""
+        if isinstance(past_kv, DynamicCache):
+            past_kv.reorder_cache(reorder_idx)
+            return past_kv
+        return tuple(
+            tuple(t.index_select(0, reorder_idx) for t in layer_kv)
+            for layer_kv in past_kv
+        )
 
     @torch.no_grad()
     def generate_topk(

@@ -69,8 +69,10 @@ def evaluate(model, dataloader, accelerator, top_ks=[1, 5, 10]):
 def train(
     epochs=200, batch_size=128, learning_rate=1e-3, weight_decay=0.0,
     max_seq_len=50, embed_dim=64, num_heads=2, num_blocks=2, ffn_dim=256, dropout=0.2,
+    loss_type="bce",
     dataset_folder="dataset/amazon", split="beauty",
     do_eval=True, eval_every_epoch=1, eval_batch_size=256,
+    patience=50,
     save_dir_root="out/sasrec/amazon/beauty", save_every_epoch=50,
     wandb_logging=False, wandb_project="sasrec_training", wandb_log_interval=100,
     amp=True, mixed_precision_type="bf16",
@@ -95,7 +97,7 @@ def train(
     num_items = train_ds.num_items
     logger.info(f"Num items: {num_items}, Train: {len(train_ds)}, Valid: {len(valid_ds)}, Test: {len(test_ds)}")
 
-    collate_train = lambda x: sasrec_collate_fn(x, max_seq_len)
+    collate_train = lambda x: sasrec_collate_fn(x, max_seq_len, num_items=num_items if loss_type == "bce" else 0)
     collate_eval = lambda x: sasrec_eval_collate_fn(x, max_seq_len)
 
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True, collate_fn=collate_train)
@@ -111,6 +113,7 @@ def train(
         num_blocks=num_blocks,
         ffn_dim=ffn_dim,
         dropout=dropout,
+        loss_type=loss_type,
     )
 
     optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(0.9, 0.98))
@@ -122,6 +125,7 @@ def train(
     # Training
     global_step = 0
     best_recall = 0.0
+    wait = 0
 
     for epoch in range(epochs):
         model.train()
@@ -131,8 +135,9 @@ def train(
         for data in pbar:
             input_ids = data['input_ids']
             targets = data['targets']
+            negatives = data.get('negatives', None)
 
-            _, loss = model(input_ids, targets)
+            _, loss = model(input_ids, targets, negatives)
 
             accelerator.backward(loss)
             optimizer.step()
@@ -152,17 +157,26 @@ def train(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics = evaluate(model, valid_dl, accelerator)
+            test_metrics_epoch = evaluate(model, test_dl, accelerator)
             if accelerator.is_main_process:
                 logger.info(f"Epoch {epoch} - Valid: " + ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()]))
+                logger.info(f"Epoch {epoch} - Test:  " + ", ".join([f"{k}={v:.4f}" for k, v in test_metrics_epoch.items()]))
                 if wandb_logging:
-                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}})
+                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}, **{f"test_epoch/{k}": v for k, v in test_metrics_epoch.items()}})
 
-                # Save best model
+                # Save best model + early stopping
                 if metrics['Recall@10'] > best_recall:
                     best_recall = metrics['Recall@10']
                     save_path = os.path.join(save_dir_root, "best_model.pt")
                     torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
                     logger.info(f"New best Recall@10: {best_recall:.4f}, saved to {save_path}")
+                    wait = 0
+                else:
+                    wait += 1
+                    logger.info(f"No improvement for {wait}/{patience} epochs")
+                    if wait >= patience:
+                        logger.info(f"Early stopping at epoch {epoch}")
+                        break
 
             model.train()
 

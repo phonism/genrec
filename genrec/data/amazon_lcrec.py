@@ -340,6 +340,12 @@ class AmazonLCRecDataset(Dataset):
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples based on enabled tasks."""
+        # Fix random seed to ensure all DDP ranks generate identical samples.
+        # Without this, random.random() in fusionseqrec/itemsearch sampling produces
+        # different sample counts per rank, causing NCCL deadlock at epoch boundaries.
+        rng_state = random.getstate()
+        random.seed(42)
+
         self.samples = []
 
         if self.train_test_split == "train":
@@ -353,6 +359,9 @@ class AmazonLCRecDataset(Dataset):
         for s in self.samples:
             task_counts[s['task']] = task_counts.get(s['task'], 0) + 1
         print(f"Task distribution: {task_counts}")
+
+        # Restore random state so downstream randomness (e.g. DataLoader shuffling) is unaffected
+        random.setstate(rng_state)
 
     def _generate_train_samples(self) -> None:
         """Generate training samples for all enabled tasks."""

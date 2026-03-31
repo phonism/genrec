@@ -4,6 +4,7 @@ Simple sequence dataset returning item IDs directly (no semantic IDs).
 """
 import os
 import gin
+import random
 import torch
 from torch.utils.data import Dataset
 from typing import Dict, List
@@ -86,11 +87,10 @@ class AmazonSASRecDataset(Dataset):
                 seq = full_seq[:-2]  # Leave last 2 for valid/test
                 if len(seq) < 2:
                     continue
-                # Sliding window: each position is a training sample
-                for i in range(1, len(seq)):
-                    history = seq[max(0, i - self.max_seq_len):i]
-                    target = seq[i]
-                    self.samples.append({'history': history, 'target': target})
+                # One sample per user: full training sequence with multi-position supervision
+                history = seq[:-1]
+                target = seq[-1]
+                self.samples.append({'history': history, 'target': target})
 
         elif self.train_test_split == "valid":
             for full_seq in self.sequences:
@@ -122,12 +122,14 @@ class AmazonSASRecDataset(Dataset):
         }
 
 
-def sasrec_collate_fn(batch: List[Dict], max_seq_len: int = 50):
+def sasrec_collate_fn(batch: List[Dict], max_seq_len: int = 50, num_items: int = 0):
     """
     Collate function for SASRec.
 
     Pads sequences to same length and creates input/target tensors.
     For training: input = [i1, i2, ..., in], target = [i2, i3, ..., in+1]
+
+    When num_items > 0, also samples one random negative per position (for BCE loss).
     """
     histories = [b['history'] for b in batch]
     targets = [b['target'] for b in batch]
@@ -155,10 +157,28 @@ def sasrec_collate_fn(batch: List[Dict], max_seq_len: int = 50):
         input_ids.append(padded_seq[:-1])  # [pad, i1, i2, ..., in]
         target_ids.append(padded_seq[1:])   # [i1, i2, ..., in, target]
 
-    return {
+    result = {
         'input_ids': torch.tensor(input_ids, dtype=torch.long),
         'targets': torch.tensor(target_ids, dtype=torch.long),
     }
+
+    # Sample negatives for BCE loss: one random item per position, avoiding the positive target
+    if num_items > 0:
+        neg_ids = []
+        for tgt_seq in target_ids:
+            neg_seq = []
+            for t in tgt_seq:
+                if t == 0:  # padding position
+                    neg_seq.append(0)
+                else:
+                    neg = random.randint(1, num_items)
+                    while neg == t:
+                        neg = random.randint(1, num_items)
+                    neg_seq.append(neg)
+            neg_ids.append(neg_seq)
+        result['negatives'] = torch.tensor(neg_ids, dtype=torch.long)
+
+    return result
 
 
 def sasrec_eval_collate_fn(batch: List[Dict], max_seq_len: int = 50):

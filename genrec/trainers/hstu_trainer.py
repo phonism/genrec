@@ -71,6 +71,7 @@ def train(
     num_position_buckets=32, num_time_buckets=64, use_temporal_bias=True,
     dataset_folder="dataset/amazon", split="beauty",
     do_eval=True, eval_every_epoch=10, eval_batch_size=256,
+    patience=50,
     save_dir_root="out/hstu/amazon/beauty", save_every_epoch=50,
     wandb_logging=False, wandb_project="hstu_training", wandb_log_interval=100,
     amp=True, mixed_precision_type="bf16",
@@ -125,6 +126,7 @@ def train(
     # Training
     global_step = 0
     best_recall = 0.0
+    wait = 0
 
     for epoch in range(epochs):
         model.train()
@@ -156,16 +158,26 @@ def train(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics = evaluate(model, valid_dl, accelerator, use_temporal_bias)
+            test_metrics_epoch = evaluate(model, test_dl, accelerator, use_temporal_bias)
             if accelerator.is_main_process:
                 logger.info(f"Epoch {epoch} - Valid: " + ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()]))
+                logger.info(f"Epoch {epoch} - Test:  " + ", ".join([f"{k}={v:.4f}" for k, v in test_metrics_epoch.items()]))
                 if wandb_logging:
-                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}})
+                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}, **{f"test_epoch/{k}": v for k, v in test_metrics_epoch.items()}})
 
+                # Save best model + early stopping
                 if metrics['Recall@10'] > best_recall:
                     best_recall = metrics['Recall@10']
                     save_path = os.path.join(save_dir_root, "best_model.pt")
                     torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
                     logger.info(f"New best Recall@10: {best_recall:.4f}, saved to {save_path}")
+                    wait = 0
+                else:
+                    wait += 1
+                    logger.info(f"No improvement for {wait}/{patience} epochs")
+                    if wait >= patience:
+                        logger.info(f"Early stopping at epoch {epoch}")
+                        break
 
             model.train()
 
