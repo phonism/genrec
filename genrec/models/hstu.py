@@ -147,6 +147,74 @@ class HSTU(nn.Module):
 
         return logits, loss
 
+    def forward_sampled_softmax(
+        self,
+        input_ids: torch.Tensor,
+        timestamps: Optional[torch.Tensor] = None,
+        targets: Optional[torch.Tensor] = None,
+        num_negatives: int = 128,
+        temperature: float = 0.05,
+        l2_norm: bool = True,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward with sampled softmax loss (aligned with Meta's original HSTU).
+
+        Instead of computing logits over ALL items, samples a small set of
+        negatives per batch for efficiency and different optimization landscape.
+        """
+        B, L = input_ids.shape
+        device = input_ids.device
+
+        causal_mask = torch.triu(torch.ones(L, L, device=device), diagonal=1).bool()
+        padding_mask = (input_ids == 0)
+
+        x = self.item_embedding(input_ids)
+        x = self.emb_dropout(x)
+
+        for layer in self.layers:
+            x = layer(x, causal_mask, padding_mask, timestamps)
+
+        x = self.final_norm(x)  # [B, L, D]
+
+        # Full logits for eval (no loss)
+        logits = x @ self.item_embedding.weight.T  # [B, L, V]
+
+        loss = None
+        if targets is not None:
+            # Flatten to [B*L, D] and [B*L]
+            x_flat = x.view(-1, self.embed_dim)  # [B*L, D]
+            targets_flat = targets.view(-1)  # [B*L]
+
+            # Filter out padding positions
+            valid_mask = targets_flat != 0
+            x_valid = x_flat[valid_mask]  # [N, D]
+            targets_valid = targets_flat[valid_mask]  # [N]
+
+            if x_valid.size(0) > 0:
+                # Get positive embeddings
+                pos_emb = self.item_embedding(targets_valid)  # [N, D]
+
+                # Sample random negatives (shared across batch for efficiency)
+                neg_ids = torch.randint(1, self.num_items + 1, (num_negatives,), device=device)
+                neg_emb = self.item_embedding(neg_ids)  # [K, D]
+
+                # L2 normalize if enabled (as in Meta's implementation)
+                if l2_norm:
+                    x_valid = F.normalize(x_valid, dim=-1)
+                    pos_emb = F.normalize(pos_emb, dim=-1)
+                    neg_emb = F.normalize(neg_emb, dim=-1)
+
+                # Compute logits: [N, 1+K]
+                pos_logits = (x_valid * pos_emb).sum(dim=-1, keepdim=True)  # [N, 1]
+                neg_logits = x_valid @ neg_emb.T  # [N, K]
+                all_logits = torch.cat([pos_logits, neg_logits], dim=-1) / temperature
+
+                # Target is always index 0 (positive)
+                loss_targets = torch.zeros(x_valid.size(0), device=device, dtype=torch.long)
+                loss = F.cross_entropy(all_logits, loss_targets)
+
+        return logits, loss
+
     @torch.no_grad()
     def predict(self, input_ids: torch.Tensor, timestamps: Optional[torch.Tensor] = None, top_k: int = 10) -> torch.Tensor:
         """Predict top-k items for next item."""

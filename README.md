@@ -17,6 +17,7 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 - **Ranking**: Full-item-set ranking over all items (no negative sampling)
 - **Max sequence length**: 50 for all models
 - **Metrics**: Recall@K and NDCG@K (K=5, 10)
+- **HSTU**: Tested with both full-vocabulary cross-entropy (CE) and sampled softmax (SS, 128 negatives, temp=0.05, L2 norm)
 
 ![Recall@10 Comparison](assets/recall10_comparison.png)
 
@@ -26,7 +27,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 |---------|-----|------|-----|------|
 | SASRec (CE) | 0.0538 | 0.0851 | 0.0320 | 0.0421 |
 | SASRec (BCE) | 0.0258 | 0.0503 | 0.0137 | 0.0216 |
-| HSTU | 0.0568 | 0.0859 | 0.0347 | 0.0441 |
+| HSTU (CE) | 0.0568 | 0.0859 | 0.0347 | 0.0441 |
+| HSTU (SS) | 0.0414 | 0.0727 | 0.0235 | 0.0335 |
 | TIGER | 0.0419 | 0.0644 | 0.0282 | 0.0354 |
 | LCRec | 0.0481 | 0.0704 | 0.0331 | 0.0403 |
 | **OneRec-SFT (1.7B)** | **0.0578** | **0.0816** | **0.0398** | **0.0475** |
@@ -37,7 +39,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 |---------|-----|------|-----|------|
 | SASRec (CE) | 0.0321 | 0.0495 | 0.0191 | 0.0248 |
 | SASRec (BCE) | 0.0156 | 0.0291 | 0.0085 | 0.0128 |
-| HSTU | 0.0283 | 0.0439 | 0.0182 | 0.0232 |
+| HSTU (CE) | 0.0283 | 0.0439 | 0.0182 | 0.0232 |
+| HSTU (SS) | 0.0246 | 0.0393 | 0.0143 | 0.0191 |
 | TIGER | 0.0236 | 0.0377 | 0.0150 | 0.0195 |
 | LCRec | 0.0238 | 0.0360 | 0.0159 | 0.0198 |
 | **OneRec-SFT (1.7B)** | **0.0299** | **0.0436** | **0.0200** | **0.0244** |
@@ -48,7 +51,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 |---------|-----|------|-----|------|
 | SASRec (CE) | 0.0613 | 0.0922 | 0.0348 | 0.0448 |
 | SASRec (BCE) | 0.0353 | 0.0594 | 0.0186 | 0.0264 |
-| HSTU | 0.0611 | 0.0914 | 0.0363 | 0.0461 |
+| HSTU (CE) | 0.0611 | 0.0914 | 0.0363 | 0.0461 |
+| HSTU (SS) | 0.0494 | 0.0795 | 0.0277 | 0.0375 |
 | TIGER | 0.0340 | 0.0521 | 0.0214 | 0.0272 |
 | LCRec | 0.0433 | 0.0614 | 0.0310 | 0.0368 |
 | **OneRec-SFT (1.7B)** | **0.0545** | **0.0790** | **0.0383** | **0.0462** |
@@ -59,7 +63,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 |---------|-----|------|-----|------|
 | SASRec (CE) | 0.0177 | 0.0277 | 0.0106 | 0.0138 |
 | SASRec (BCE) | 0.0081 | 0.0143 | 0.0046 | 0.0066 |
-| HSTU | 0.0129 | 0.0208 | 0.0084 | 0.0109 |
+| HSTU (CE) | 0.0129 | 0.0208 | 0.0084 | 0.0109 |
+| HSTU (SS) | 0.0123 | 0.0193 | 0.0079 | 0.0102 |
 | TIGER | 0.0145 | 0.0231 | 0.0096 | 0.0123 |
 | LCRec | 0.0163 | 0.0234 | 0.0110 | 0.0133 |
 | **OneRec-SFT (1.7B)** | **0.0166** | **0.0246** | **0.0112** | **0.0138** |

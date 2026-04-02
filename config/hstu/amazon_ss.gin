@@ -1,0 +1,70 @@
+# HSTU config with Sampled Softmax loss (aligned with Meta's original HSTU)
+# Run: python genrec/trainers/hstu_trainer.py config/hstu/amazon_ss.gin --split beauty
+
+import genrec.data.amazon_hstu
+import genrec.models.hstu
+
+# =============================================================================
+# Training Settings
+# =============================================================================
+train.epochs = 300
+train.batch_size = 128
+train.learning_rate = 1e-3
+train.weight_decay = 0.0
+
+# =============================================================================
+# Model Settings
+# =============================================================================
+train.max_seq_len = 50
+train.embed_dim = 64
+train.num_heads = 2
+train.num_blocks = 2
+train.dropout = 0.5
+
+# =============================================================================
+# Loss: Sampled Softmax (aligned with Meta HSTU)
+# =============================================================================
+train.loss_type = "sampled_softmax"
+train.num_negatives = 128
+train.ss_temperature = 0.05
+train.ss_l2_norm = True
+
+# =============================================================================
+# HSTU-specific: Relative Attention Bias
+# =============================================================================
+train.num_position_buckets = 32
+train.num_time_buckets = 64
+train.use_temporal_bias = True
+
+# =============================================================================
+# Dataset Settings
+# =============================================================================
+train.dataset_folder = "dataset/amazon"
+train.split = "{split}"
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+train.do_eval = True
+train.eval_every_epoch = 1
+train.eval_batch_size = 256
+train.patience = 50
+
+# =============================================================================
+# Checkpoint Settings
+# =============================================================================
+train.save_dir_root = "out/hstu_ss/amazon/{split}"
+train.save_every_epoch = 50
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+train.wandb_logging = True
+train.wandb_project = "hstu_ss_{split}_training"
+train.wandb_log_interval = 100
+
+# =============================================================================
+# Accelerator Settings
+# =============================================================================
+train.amp = True
+train.mixed_precision_type = "bf16"

@@ -69,6 +69,8 @@ def train(
     epochs=200, batch_size=128, learning_rate=1e-3, weight_decay=0.0,
     max_seq_len=50, embed_dim=64, num_heads=2, num_blocks=2, dropout=0.2,
     num_position_buckets=32, num_time_buckets=64, use_temporal_bias=True,
+    # Loss function: "ce" (full cross-entropy) or "sampled_softmax"
+    loss_type="ce", num_negatives=128, ss_temperature=0.05, ss_l2_norm=True,
     dataset_folder="dataset/amazon", split="beauty",
     do_eval=True, eval_every_epoch=10, eval_batch_size=256,
     patience=50,
@@ -121,7 +123,7 @@ def train(
     model, optimizer = accelerator.prepare(model, optimizer)
 
     num_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Model params: {num_params:,}, Temporal bias: {use_temporal_bias}")
+    logger.info(f"Model params: {num_params:,}, Temporal bias: {use_temporal_bias}, Loss: {loss_type}")
 
     # Training
     global_step = 0
@@ -138,7 +140,13 @@ def train(
             targets = data['targets']
             timestamps = data['timestamps'] if use_temporal_bias else None
 
-            _, loss = model(input_ids, timestamps, targets)
+            if loss_type == "sampled_softmax":
+                _, loss = accelerator.unwrap_model(model).forward_sampled_softmax(
+                    input_ids, timestamps, targets,
+                    num_negatives=num_negatives, temperature=ss_temperature, l2_norm=ss_l2_norm,
+                )
+            else:
+                _, loss = model(input_ids, timestamps, targets)
 
             accelerator.backward(loss)
             optimizer.step()
