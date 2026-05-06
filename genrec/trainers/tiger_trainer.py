@@ -1,459 +1,332 @@
 """
-Trainer for the TIGER model - Generative Retrieval for Sequential Recommendation.
+TIGER trainer (HF T5-based).
+
+Pipeline:
+- Flat offset-encoded codebook tokens (token = code + codebook_idx * codebook_size + 1).
+- HF T5ForConditionalGeneration via genrec.models.tiger.Tiger.
+- Plain Adam (default) or cosine schedule with linear warmup.
+- Early stopping on validation Recall@10.
 """
+
 import os
 import gin
 import torch
 import wandb
 
-from genrec.data.utils import cycle
 from genrec.models.tiger import Tiger
-from genrec.models.rqvae import RqVae
 from genrec.modules.utils import parse_config, setup_logger
 from genrec.data.schemas import SeqData
-from genrec.modules.metrics import TopKAccumulator
-from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
-from torch.optim import AdamW
+from genrec.trainers.trainer_utils import setup_wandb
+from torch.optim import Adam
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from torch.nn.utils.rnn import pad_sequence
-from typing import List, Dict, Any
-from transformers.optimization import get_cosine_schedule_with_warmup
-from genrec.modules.scheduler import InverseSquareRootScheduler
+from typing import List, Dict
 
-def pad_collate(
+
+def t5_collate(
     batch: List[SeqData],
-    pad_id: int = 0,
-    device: torch.device = torch.device("cpu"),
-    padding_side: str = "left"
+    codebook_size: int = 256,
+    sem_id_dim: int = 3,
+    max_history_tokens: int = 60,  # max_seq_len * sem_id_dim (e.g. 20*3=60)
 ) -> Dict[str, torch.Tensor]:
     """
-    Every sample has the following fields:
-        "ids": List[List[int]]  (L_i, 3)                # sparse ids
-        "vec_inputs": Dict[str, List[int]]  (L_i, V_ij) # dense ids
-        "lengths": List[int]  (L_i)                     # original length (optional)
+    Convert SeqData to flat T5 format with offset encoding.
 
-    Args:
-        batch: List[Dict[str, Any]]
-        pad_id: int
-        device: torch.device
-    Returns:
-        Dict[str, torch.Tensor]
+    Offset encoding: token = code + codebook_idx * codebook_size + 1
+    (0 is reserved for padding)
     """
     B = len(batch)
-    max_item_length = max(len(x.item_ids) for x in batch)
-    target_len = len(batch[0].target_ids)
 
-    user_ids = torch.full((B, 1), pad_id, dtype=torch.long, device=device)
-    ids = torch.full((B, max_item_length), pad_id, dtype=torch.long, device=device)
-    mask = torch.zeros((B, max_item_length), dtype=torch.long, device=device)
-    token_type_ids = torch.zeros((B, max_item_length), dtype=torch.long, device=device)
+    input_ids = torch.zeros(B, max_history_tokens, dtype=torch.long)
+    attention_mask = torch.zeros(B, max_history_tokens, dtype=torch.long)
+    label_list = []
 
-    # Build target tensors batch-wise (avoid per-sample torch.arange)
-    target_input_ids = torch.tensor(
-        [x.target_ids for x in batch], dtype=torch.long, device=device
-    )
-    target_token_type_ids = torch.arange(
-        target_len, dtype=torch.long, device=device
-    ).unsqueeze(0).expand(B, -1).clone()
+    for i, sample in enumerate(batch):
+        raw_ids = sample.item_ids  # flat list: [c0, c1, c2, c0, c1, c2, ...]
+        offset_ids = []
+        for j, code in enumerate(raw_ids):
+            cb_idx = j % sem_id_dim
+            offset_ids.append(code + cb_idx * codebook_size + 1)
 
-    for i in range(B):
-        uid = batch[i].user_id
-        item_ids = batch[i].item_ids
-        L = len(item_ids)
-        user_ids[i, 0] = uid
-        item_t = torch.tensor(item_ids)
-        type_t = torch.arange(L) % 3
-        if padding_side == "left":
-            ids[i, :L] = item_t
-            token_type_ids[i, :L] = type_t
-            mask[i, :L] = 1
-        else:
-            ids[i, max_item_length - L:] = item_t
-            token_type_ids[i, max_item_length - L:] = type_t
-            mask[i, max_item_length - L:] = 1
+        L = len(offset_ids)
+        if L > max_history_tokens:
+            offset_ids = offset_ids[-max_history_tokens:]
+            L = max_history_tokens
+
+        start = max_history_tokens - L
+        input_ids[i, start:] = torch.tensor(offset_ids, dtype=torch.long)
+        attention_mask[i, start:] = 1
+
+        target_ids = sample.target_ids
+        offset_target = []
+        for j, code in enumerate(target_ids):
+            cb_idx = j % sem_id_dim
+            offset_target.append(code + cb_idx * codebook_size + 1)
+        label_list.append(offset_target)
+
+    labels = torch.tensor(label_list, dtype=torch.long)
+    raw_targets = torch.tensor([s.target_ids for s in batch], dtype=torch.long)
 
     return {
-        "user_input_ids": user_ids,
-        "item_input_ids": ids,
-        "token_type_ids": token_type_ids,
-        "target_input_ids": target_input_ids,
-        "target_token_type_ids": target_token_type_ids,
-        "seq_mask": mask,
+        'input_ids': input_ids,
+        'attention_mask': attention_mask,
+        'labels': labels,
+        'raw_targets': raw_targets,
     }
+
+
+def calculate_pos_index(preds, labels, maxk=20):
+    """Calculate position index of ground truth in predictions (vectorized)."""
+    labels_expanded = labels.unsqueeze(1).expand_as(preds)  # (B, maxk, seq_len)
+    match = (preds == labels_expanded).all(dim=-1)  # (B, maxk)
+    first_match_mask = match.int().cumsum(dim=1) == 1
+    return match & first_match_mask
+
+
+def recall_at_k(pos_index, k):
+    return pos_index[:, :k].sum(dim=1).float().mean().item()
+
+
+def ndcg_at_k(pos_index, k):
+    ranks = torch.arange(1, pos_index.shape[-1] + 1).float()
+    dcg = 1.0 / torch.log2(ranks + 1)
+    dcg = torch.where(pos_index, dcg, torch.tensor(0.0))
+    return dcg[:, :k].sum(dim=1).mean().item()
 
 
 @gin.configurable
 def train(
-    epochs=1,
-    batch_size=64,
-    learning_rate=0.001,
-    weight_decay=0.01,
-    dataset_folder="dataset/query",
-    save_dir_root="out/",
+    epochs=200,
+    batch_size=256,
+    infer_batch_size=96,
+    learning_rate=1e-4,
+    weight_decay=0.0,
+    dataset_folder="dataset/amazon",
+    save_dir_root="out/tiger/",
     dataset=None,
-    split_batches=True,
-    amp=False,
-    wandb_logging=False,
-    wandb_project="Training",
-    wandb_run_name=None,  # Run name, auto-generated if None
+    wandb_logging=True,
+    wandb_project="tiger_training",
     wandb_log_interval=10,
-    mixed_precision_type="fp16",
-    gradient_accumulate_every=1,
-    save_model_every=1000000,
-    save_every_epoch=100,
-    eval_valid_every_epoch=10,
-    eval_test_every_epoch=50,
-    do_eval=True,
-    embedding_dim=128,
-    attn_dim=256,
-    dropout=0.1,
-    num_heads=8,
-    n_layers=2,
-    num_item_embeddings=256,
-    num_user_embeddings=10000,
-    num_warmup_steps=1000,
+    # Model config
+    num_layers=4,
+    num_decoder_layers=4,
+    d_model=128,
+    d_ff=1024,
+    num_heads=6,
+    d_kv=64,
+    dropout_rate=0.1,
+    feed_forward_proj='relu',
+    # Data config
+    codebook_size=256,
     sem_id_dim=3,
-    max_seq_len=2048,
-    pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt",
-    resume_from_checkpoint=None,
-    lr_schedule="cosine",
-    beam_size=10,
-    early_stop_patience=0,  # 0 = disabled
-    d_kv=0,  # T5-style d_kv (0 = legacy mode)
-    dim_feedforward=1024,
-    share_position_bias=False,
-    scale_attn=True,
-    add_final_norm=False,
-    decoder_bidirectional=True,
+    max_seq_len=20,
+    pretrained_rqvae_path="./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt",
+    # Scheduler config
+    lr_schedule="none",  # "none" or "cosine"
+    num_warmup_steps=0,
+    # Eval config
+    beam_size=30,
+    early_stop_patience=10,
+    eval_test_every_epoch=2,
+    eval_valid_every_n_epochs=1,
 ):
-    """
-    Trains a Tiger model.
-    """
-    # Setup logger
     logger = setup_logger(save_dir_root, name="tiger")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    accelerator = setup_accelerator(
-        split_batches=split_batches,
-        gradient_accumulate_every=gradient_accumulate_every,
-        amp=amp,
-        mixed_precision_type=mixed_precision_type,
-    )
-    device = accelerator.device
+    vocab_size = codebook_size * sem_id_dim + 1
 
-    if wandb_logging and accelerator.is_main_process:
+    model_config = {
+        'num_layers': num_layers,
+        'num_decoder_layers': num_decoder_layers,
+        'd_model': d_model,
+        'd_ff': d_ff,
+        'num_heads': num_heads,
+        'd_kv': d_kv,
+        'dropout_rate': dropout_rate,
+        'vocab_size': vocab_size,
+        'pad_token_id': 0,
+        'eos_token_id': 0,
+        'feed_forward_proj': feed_forward_proj,
+        'sem_id_dim': sem_id_dim,
+    }
+
+    if wandb_logging:
         setup_wandb(
             project=wandb_project,
-            run_name=wandb_run_name,
-            config=locals(),
-            step_metrics={"train/*": "global_step", "eval/*": "epoch"}
+            config={**model_config, 'lr': learning_rate, 'batch_size': batch_size,
+                    'max_seq_len': max_seq_len, 'beam_size': beam_size},
         )
 
+    # Load datasets
     train_dataset = dataset(
         root=dataset_folder,
         train_test_split="train",
         max_seq_len=max_seq_len,
-        subsample=True,
-        pretrained_rqvae_path=pretrained_rqvae_path
+        pretrained_rqvae_path=pretrained_rqvae_path,
     )
-
     valid_dataset = dataset(
         root=dataset_folder,
         train_test_split="valid",
         max_seq_len=max_seq_len,
-        subsample=False,
-        pretrained_rqvae_path=pretrained_rqvae_path
+        pretrained_rqvae_path=pretrained_rqvae_path,
     )
-
     test_dataset = dataset(
         root=dataset_folder,
         train_test_split="test",
         max_seq_len=max_seq_len,
-        subsample=False,
-        pretrained_rqvae_path=pretrained_rqvae_path
+        pretrained_rqvae_path=pretrained_rqvae_path,
     )
 
-    collate_fn = lambda x: pad_collate(x, pad_id=num_item_embeddings * sem_id_dim)
+    max_history_tokens = max_seq_len * sem_id_dim
+    collate_fn = lambda x: t5_collate(x, codebook_size, sem_id_dim, max_history_tokens)
 
-    train_dataloader = DataLoader(
-        train_dataset, batch_size=batch_size,
-        drop_last=True,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        prefetch_factor=10,
-        collate_fn=collate_fn)
-
-    valid_dataloader = DataLoader(
-        valid_dataset, batch_size=batch_size,
-        drop_last=False,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        prefetch_factor=10,
-        collate_fn=collate_fn)
-
-    test_dataloader = DataLoader(
-        test_dataset, batch_size=batch_size,
-        drop_last=False,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        prefetch_factor=10,
-        collate_fn=collate_fn)
-
-    train_dataloader, valid_dataloader, test_dataloader = accelerator.prepare(
-        train_dataloader, valid_dataloader, test_dataloader
+    train_loader = DataLoader(
+        train_dataset, batch_size=batch_size, shuffle=True,
+        num_workers=4, pin_memory=True, drop_last=True, collate_fn=collate_fn,
+    )
+    valid_loader = DataLoader(
+        valid_dataset, batch_size=infer_batch_size, shuffle=False,
+        num_workers=4, pin_memory=True, collate_fn=collate_fn,
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=infer_batch_size, shuffle=False,
+        num_workers=4, pin_memory=True, collate_fn=collate_fn,
     )
 
-    logger.info(f"train_dataloader: {len(train_dataloader)}")
-    logger.info(f"valid_dataloader: {len(valid_dataloader)}")
-    logger.info(f"test_dataloader: {len(test_dataloader)}")
+    logger.info(f"Train: {len(train_loader)} batches, Valid: {len(valid_loader)}, Test: {len(test_loader)}")
 
-    model = Tiger(
-        embedding_dim=embedding_dim,
-        attn_dim=attn_dim,
-        dropout=dropout,
-        num_heads=num_heads,
-        n_layers=n_layers,
-        num_item_embeddings=num_item_embeddings,
-        num_user_embeddings=num_user_embeddings,
-        sem_id_dim=sem_id_dim,
-        max_pos=max_seq_len * sem_id_dim,
-        d_kv=d_kv,
-        dim_feedforward=dim_feedforward,
-        share_position_bias=share_position_bias,
-        scale_attn=scale_attn,
-        add_final_norm=add_final_norm,
-        decoder_bidirectional=decoder_bidirectional,
-    )
-    
-    if lr_schedule == "none":
-        from torch.optim import Adam
-        optimizer = Adam(model.parameters(), lr=learning_rate)
+    # Model
+    model = Tiger(model_config).to(device)
+    total_params, emb_params = model.num_parameters
+    logger.info(f"Device: {device}, Params: {total_params:,} (emb: {emb_params:,})")
+
+    # Optimizer
+    optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+    # LR scheduler
+    scheduler = None
+    if lr_schedule == "cosine" and epochs > 0:
+        total_steps = len(train_loader) * epochs
+        if num_warmup_steps > 0:
+            warmup_scheduler = LinearLR(optimizer, start_factor=0.01, total_iters=num_warmup_steps)
+            cosine_scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - num_warmup_steps)
+            scheduler = SequentialLR(optimizer, [warmup_scheduler, cosine_scheduler], milestones=[num_warmup_steps])
+        else:
+            scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
+        logger.info(f"Using cosine schedule, warmup={num_warmup_steps}, total_steps={total_steps}")
+    else:
         logger.info("Using plain Adam, no scheduler")
-    else:
-        optimizer = AdamW(
-            model.parameters(),
-            lr=learning_rate,
-            weight_decay=weight_decay,
-        )
-
-    total_steps = len(train_dataloader) * epochs // gradient_accumulate_every
-    lr_scheduler = None
-    if lr_schedule == "inverse_sqrt":
-        lr_scheduler = InverseSquareRootScheduler(
-            optimizer,
-            warmup_steps=num_warmup_steps,
-        )
-    elif lr_schedule == "cosine":
-        lr_scheduler = get_cosine_schedule_with_warmup(
-            optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=total_steps,
-        )
-
-    if lr_scheduler is not None:
-        model, optimizer, lr_scheduler = accelerator.prepare(
-            model, optimizer, lr_scheduler
-        )
-    else:
-        model, optimizer = accelerator.prepare(model, optimizer)
-
-    num_params = sum(p.numel() for p in model.parameters())
-    logger.info(f"Device: {device}, Num Parameters: {num_params}")
-
-    if accelerator.is_main_process:
-        pbar = tqdm(total=total_steps, dynamic_ncols=True)
-
-    metrics_accumulator = TopKAccumulator(ks=[5, 10])
-
-    valid_item_ids = torch.tensor(
-        list(train_dataset.sem_ids_list), dtype=torch.long, device=device
-    )
-    print("valid_item_ids length=", len(valid_item_ids), 
-        "unique=", len(set([tuple(x) for x in valid_item_ids.tolist()])))
-
-    # Resume from checkpoint if specified
-    start_epoch = 0
-    if resume_from_checkpoint is not None:
-        logger.info(f"Resuming from checkpoint: {resume_from_checkpoint}")
-        checkpoint = torch.load(resume_from_checkpoint, map_location=device)
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        if lr_scheduler is not None and "scheduler" in checkpoint:
-            lr_scheduler.load_state_dict(checkpoint["scheduler"])
-        start_epoch = checkpoint["epoch"] + 1
-        logger.info(f"Resumed from epoch {checkpoint['epoch']}, starting at epoch {start_epoch}")
-
-    def save_checkpoint(epoch, path):
-        """Save checkpoint in dict format."""
-        state = {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-        }
-        if lr_scheduler is not None:
-            state["scheduler"] = lr_scheduler.state_dict()
-        if not os.path.exists(os.path.dirname(path)):
-            os.makedirs(os.path.dirname(path))
-        torch.save(state, path)
-        logger.info(f"Saved checkpoint to {path}")
-
-    def evaluate(dataloader, desc="Evaluation"):
-        """Evaluate model on a dataloader."""
-        model.eval()
-        for data in tqdm(dataloader, desc=desc):
-            with torch.inference_mode():
-                generated = model.generate(
-                    user_input_ids=data["user_input_ids"].to(device),
-                    item_input_ids=data["item_input_ids"].to(device),
-                    token_type_ids=data["token_type_ids"].to(device),
-                    seq_mask=data["seq_mask"].to(device),
-                    valid_item_ids=valid_item_ids,
-                    n_top_k_candidates=beam_size,
-                )
-                actual = data["target_input_ids"].to(device)
-                topk = generated.sem_ids
-                metrics_accumulator.accumulate(actual=actual, top_k=topk)
-        metrics = metrics_accumulator.reduce()
-        metrics_accumulator.reset()
-        return metrics
 
     # Early stopping state
     best_valid_recall10 = 0.0
     best_epoch = -1
     early_stop_counter = 0
-    use_early_stopping = early_stop_patience > 0
 
-    total_loss = 0
-    model.train()
-    global_step = -1
-    for epoch in range(start_epoch, epochs):
-        for step, data in enumerate(train_dataloader):
-            global_step += 1
-            model.train()
-            with accelerator.accumulate(model):
-                with accelerator.autocast():
-                    output = model(
-                        user_input_ids=data["user_input_ids"].to(device),
-                        item_input_ids=data["item_input_ids"].to(device),
-                        token_type_ids=data["token_type_ids"].to(device),
-                        target_input_ids=data["target_input_ids"].to(device),
-                        target_token_type_ids=data["target_token_type_ids"].to(device),
-                        seq_mask=data["seq_mask"].to(device),
-                    )
-                    loss = output.loss
-                    total_loss += loss.item()
+    def evaluate(loader, desc="Eval"):
+        model.eval()
+        all_recalls = {5: [], 10: []}
+        all_ndcgs = {5: [], 10: []}
 
-                accelerator.backward(loss)
+        with torch.no_grad(), torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            for batch in tqdm(loader, desc=desc):
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                labels = batch['labels']  # offset-encoded targets
+                B_cur = input_ids.size(0)
 
-                # sync gradients means it's time to update
-                if accelerator.sync_gradients:
-                    # only clip when sync gradients
-                    total_norm = accelerator.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
-                    if lr_scheduler is not None:
-                        lr_scheduler.step()
-                    optimizer.zero_grad()
-
-                    if accelerator.is_main_process:
-                        pbar.set_description(f'Epoch {epoch}/{epochs} | loss: {loss.item():.4f}')
-                        pbar.update(1)
-                    if wandb_logging and accelerator.is_main_process and global_step % wandb_log_interval == 0:
-                        cur_lr = lr_scheduler.get_last_lr()[0] if lr_scheduler is not None else learning_rate
-                        wandb.log({
-                            "global_step": global_step,
-                            "train/learning_rate": cur_lr,
-                            "train/loss": total_loss / gradient_accumulate_every,
-                        })
-                    total_loss = 0
-
-            accelerator.wait_for_everyone()
-
-        # End of epoch - evaluate and save
-        log_dict = {"epoch": epoch} if wandb_logging else None
-
-        # Valid evaluation: every epoch if early stopping, else per config
-        should_eval_valid = use_early_stopping or ((epoch + 1) % eval_valid_every_epoch == 0)
-        if do_eval and should_eval_valid:
-            valid_metrics = evaluate(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})")
-            logger.info(f"Epoch {epoch} - Valid: {valid_metrics}")
-            if wandb_logging and accelerator.is_main_process:
-                for k in valid_metrics:
-                    log_dict[f"eval/valid_{k}"] = valid_metrics[k]
-
-            # Early stopping check
-            if use_early_stopping:
-                cur_recall10 = valid_metrics.get("Recall@10", 0.0)
-                if cur_recall10 > best_valid_recall10:
-                    best_valid_recall10 = cur_recall10
-                    best_epoch = epoch
-                    early_stop_counter = 0
-                    # Save best model
-                    if accelerator.is_main_process:
-                        save_checkpoint(epoch, os.path.join(save_dir_root, "best_model.pt"))
-                        logger.info(f"New best Valid R@10={cur_recall10:.4f} at epoch {epoch}")
-                    # Test evaluation on improvement
-                    if do_eval:
-                        test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
-                        logger.info(f"Epoch {epoch} - Test: {test_metrics}")
-                        if wandb_logging and accelerator.is_main_process:
-                            for k in test_metrics:
-                                log_dict[f"eval/test_{k}"] = test_metrics[k]
-                else:
-                    early_stop_counter += 1
-                    logger.info(f"No improvement. Counter: {early_stop_counter}/{early_stop_patience}")
-
-        # Test evaluation (less frequent, only when not already done by early stopping)
-        if do_eval and not use_early_stopping and (epoch + 1) % eval_test_every_epoch == 0:
-            test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
-            logger.info(f"Epoch {epoch} - Test: {test_metrics}")
-            if wandb_logging and accelerator.is_main_process:
-                for k in test_metrics:
-                    log_dict[f"eval/test_{k}"] = test_metrics[k]
-
-        # Periodic test eval even with early stopping (when no improvement)
-        if do_eval and use_early_stopping and early_stop_counter > 0 and (epoch + 1) % eval_test_every_epoch == 0:
-            test_metrics = evaluate(test_dataloader, desc=f"Test Eval (Epoch {epoch})")
-            logger.info(f"Epoch {epoch} - Test: {test_metrics}")
-            if wandb_logging and accelerator.is_main_process:
-                for k in test_metrics:
-                    log_dict[f"eval/test_{k}"] = test_metrics[k]
-
-        # Log to wandb
-        if wandb_logging and accelerator.is_main_process and len(log_dict) > 1:
-            wandb.log(log_dict)
-        model.train()
-
-        # Epoch-based checkpoint saving
-        if accelerator.is_main_process:
-            if (epoch + 1) % save_every_epoch == 0:
-                save_checkpoint(
-                    epoch,
-                    os.path.join(save_dir_root, f"checkpoint_epoch_{epoch}.pt")
+                preds = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    num_beams=beam_size,
                 )
+                # Remove decoder_start_token (first token)
+                preds = preds[:, 1:]
+                # Reshape: (B * beam_size, sem_id_dim) -> (B, beam_size, sem_id_dim)
+                preds = preds.reshape(B_cur, beam_size, -1).cpu()
 
-        # Early stopping break
-        if use_early_stopping and early_stop_counter >= early_stop_patience:
-            logger.info(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}, Best R@10: {best_valid_recall10:.4f}")
+                pos_index = calculate_pos_index(preds, labels, maxk=beam_size)
+                for k in [5, 10]:
+                    all_recalls[k].append(recall_at_k(pos_index, k))
+                    all_ndcgs[k].append(ndcg_at_k(pos_index, k))
+
+        metrics = {}
+        for k in [5, 10]:
+            metrics[f'Recall@{k}'] = sum(all_recalls[k]) / len(all_recalls[k])
+            metrics[f'NDCG@{k}'] = sum(all_ndcgs[k]) / len(all_ndcgs[k])
+        model.train()
+        return metrics
+
+    # Training loop
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0.0
+        for batch in tqdm(train_loader, desc=f"Epoch {epoch}"):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            labels = batch['labels'].to(device)
+
+            optimizer.zero_grad()
+            loss, _ = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss.backward()
+            optimizer.step()
+            if scheduler is not None:
+                scheduler.step()
+            total_loss += loss.item()
+
+        avg_loss = total_loss / len(train_loader)
+        logger.info(f"Epoch {epoch} - loss: {avg_loss:.4f}")
+
+        log_dict = {"epoch": epoch, "train/loss": avg_loss}
+
+        # Valid evaluation (skip non-eval epochs)
+        if (epoch + 1) % eval_valid_every_n_epochs == 0 or epoch == 0:
+            valid_metrics = evaluate(valid_loader, desc=f"Valid (Epoch {epoch})")
+            logger.info(f"Epoch {epoch} - Valid: {valid_metrics}")
+
+            for k, v in valid_metrics.items():
+                log_dict[f"eval/valid_{k}"] = v
+
+            cur_recall10 = valid_metrics['Recall@10']
+
+            # Check improvement
+            if cur_recall10 > best_valid_recall10:
+                best_valid_recall10 = cur_recall10
+                best_epoch = epoch
+                early_stop_counter = 0
+
+                # Save best model
+                os.makedirs(save_dir_root, exist_ok=True)
+                torch.save(model.state_dict(), os.path.join(save_dir_root, "best_model.pt"))
+                logger.info(f"New best Valid R@10={cur_recall10:.4f} at epoch {epoch}")
+
+                # Test evaluation on improvement
+                test_metrics = evaluate(test_loader, desc=f"Test (Epoch {epoch})")
+                logger.info(f"Epoch {epoch} - Test: {test_metrics}")
+                for k, v in test_metrics.items():
+                    log_dict[f"eval/test_{k}"] = v
+            else:
+                early_stop_counter += 1
+                logger.info(f"No improvement. Counter: {early_stop_counter}/{early_stop_patience}")
+
+                # Still run test periodically
+                if (epoch + 1) % eval_test_every_epoch == 0:
+                    test_metrics = evaluate(test_loader, desc=f"Test (Epoch {epoch})")
+                    logger.info(f"Epoch {epoch} - Test: {test_metrics}")
+                    for k, v in test_metrics.items():
+                        log_dict[f"eval/test_{k}"] = v
+
+        if wandb_logging:
+            wandb.log(log_dict)
+
+        if early_stop_counter >= early_stop_patience:
+            logger.info(f"Early stopping at epoch {epoch}. Best epoch: {best_epoch}")
             break
 
-    # Save final checkpoint
-    if accelerator.is_main_process:
-        save_checkpoint(
-            epoch,
-            os.path.join(save_dir_root, "checkpoint_final.pt")
-        )
+    logger.info(f"Training done. Best Valid R@10={best_valid_recall10:.4f} at epoch {best_epoch}")
 
-    if use_early_stopping:
-        logger.info(f"Training done. Best Valid R@10={best_valid_recall10:.4f} at epoch {best_epoch}")
-
-    if wandb_logging and accelerator.is_main_process:
+    if wandb_logging:
         wandb.finish()
-
-    accelerator.wait_for_everyone()
-    accelerator.end_training()
 
 
 if __name__ == "__main__":

@@ -1,11 +1,11 @@
 # TIGER config for Amazon dataset
-# Uses HuggingFace T5ForConditionalGeneration (best performing config)
-# Based on tiger_new_seq50: plain Adam, lr=1e-4, no scheduler, seq50
+# Uses HuggingFace T5ForConditionalGeneration (paper-aligned reference implementation)
+# Plain Adam, lr=1e-4, no scheduler, max_seq_len=50
 
 include "config/base.gin"
 
 import genrec.data.amazon
-import genrec.models.tiger_new
+import genrec.models.tiger
 
 # Training settings (plain Adam, no scheduler - best config)
 train.epochs=200
