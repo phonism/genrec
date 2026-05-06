@@ -1,0 +1,79 @@
+# RPG config for Amazon dataset
+# Recommendation with Parallel Generation (Meta, KDD 2025)
+# Run: python -m genrec.trainers.rpg_trainer config/rpg/amazon.gin --split beauty
+
+include "config/base.gin"
+
+import genrec.data.amazon_rpg
+import genrec.models.rpg
+
+# =============================================================================
+# Model Settings
+# =============================================================================
+train_rpg.n_embd = 448
+train_rpg.n_layer = 2
+train_rpg.n_head = 4
+train_rpg.n_inner = 1024
+train_rpg.n_codebook = 32
+train_rpg.codebook_size = 256
+train_rpg.temperature = 0.03
+train_rpg.embd_pdrop = 0.5
+train_rpg.attn_pdrop = 0.5
+train_rpg.resid_pdrop = 0.0
+
+# =============================================================================
+# Graph Decoding Settings
+# =============================================================================
+train_rpg.num_beams = 20
+train_rpg.n_edges = 200
+train_rpg.propagation_steps = 3
+train_rpg.chunk_size = 1024
+
+# =============================================================================
+# Training Settings
+# =============================================================================
+train_rpg.epochs = 150
+train_rpg.batch_size = 256
+train_rpg.learning_rate = 0.01
+train_rpg.weight_decay = 0.0
+train_rpg.warmup_steps = 10000
+train_rpg.max_grad_norm = 1.0
+train_rpg.max_seq_len = 50
+
+# =============================================================================
+# Dataset Settings
+# =============================================================================
+train_rpg.dataset_folder = "dataset/amazon"
+train_rpg.split = "{split}"
+
+# Sentence embedding model for OPQ tokenization
+train_rpg.encoder_model_name = "text-embedding-3-large"
+train_rpg.sent_emb_pca = 512
+
+# =============================================================================
+# Evaluation Settings
+# =============================================================================
+train_rpg.do_eval = True
+train_rpg.eval_every_epoch = 1
+train_rpg.eval_batch_size = 256
+train_rpg.eval_with_graph = True
+train_rpg.patience = 20
+
+# =============================================================================
+# Checkpoint Settings
+# =============================================================================
+train_rpg.save_dir_root = "out/rpg/amazon/{split}"
+train_rpg.save_every_epoch = 50
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+train_rpg.wandb_logging = True
+train_rpg.wandb_project = "rpg_{split}_training"
+train_rpg.wandb_log_interval = 100
+
+# =============================================================================
+# Accelerator Settings
+# =============================================================================
+train_rpg.amp = False
+train_rpg.mixed_precision_type = "no"

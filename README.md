@@ -29,6 +29,9 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | HSTU (SS) | 0.0414 | 0.0727 | 0.0235 | 0.0335 |
 | TIGER | 0.0419 | 0.0644 | 0.0282 | 0.0354 |
 | LCRec | 0.0481 | 0.0704 | 0.0331 | 0.0403 |
+| RPG (sentence-t5-xl) | 0.0525 | 0.0744 | 0.0363 | 0.0433 |
+| RPG (text-emb-3-large) | 0.0531 | 0.0780 | 0.0370 | 0.0450 |
+| RPG (paper, text-emb-3-large) | 0.0569 | 0.0809 | - | 0.0464 |
 | **OneRec-SFT (1.7B)** | **0.0578** | **0.0816** | **0.0398** | **0.0475** |
 
 ### Amazon 2014 Sports
@@ -69,7 +72,7 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 
 ## Features
 
-- **Multiple Models**: Implementations of SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, and NoteLLM
+- **Multiple Models**: Implementations of SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, RPG, and NoteLLM
 - **Multiple Datasets**: Amazon 2014 (Beauty, Sports, Toys, Clothing) and Amazon 2023 (32 categories)
 - **Modular Design**: Clean separation of models, data, and training logic
 - **Flexible Configuration**: Gin-config based experiment management
@@ -86,6 +89,7 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | **TIGER** | Generative | Generative Retrieval with trie-based constrained decoding |
 | **LCRec** | Generative | LLM-based recommendation with collaborative semantics |
 | **COBRA** | Generative | Cascaded sparse-dense representations |
+| **RPG** | Generative | Parallel generation with OPQ semantic IDs and graph-constrained decoding |
 | **NoteLLM** | Generative | Retrievable LLM for note recommendation (experimental) |
 
 ## Installation
@@ -168,6 +172,16 @@ python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
 python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
 ```
 
+### Train RPG (Parallel Generation)
+
+```bash
+# RPG on Amazon 2014
+python -m genrec.trainers.rpg_trainer config/rpg/amazon.gin --split beauty
+
+# Multi-GPU
+bash scripts/train_rpg.sh beauty 4
+```
+
 ## Configuration
 
 ### Dataset Selection
@@ -219,6 +233,7 @@ genrec/
 │   │   ├── tiger.py         # TIGER
 │   │   ├── lcrec.py         # LCRec
 │   │   ├── cobra.py         # COBRA
+│   │   ├── rpg.py           # RPG
 │   │   └── notellm.py       # NoteLLM
 │   ├── trainers/        # Training scripts
 │   │   ├── sasrec_trainer.py
@@ -227,6 +242,7 @@ genrec/
 │   │   ├── tiger_trainer.py
 │   │   ├── lcrec_trainer.py
 │   │   ├── cobra_trainer.py
+│   │   ├── rpg_trainer.py
 │   │   └── trainer_utils.py
 │   ├── modules/         # Reusable components
 │   │   ├── transformer.py   # Transformer blocks
@@ -245,6 +261,7 @@ genrec/
 │       ├── amazon_hstu.py   # HSTU-specific data
 │       ├── amazon_lcrec.py  # LCRec-specific data
 │       ├── amazon_cobra.py  # COBRA-specific data
+│       ├── amazon_rpg.py    # RPG-specific data (OPQ tokenization)
 │       └── p5_amazon.py     # P5-format data
 ├── config/              # Gin configuration files
 │   ├── base.gin             # Base config
@@ -252,7 +269,8 @@ genrec/
 │   ├── hstu/                # HSTU configs
 │   ├── tiger/               # TIGER configs (amazon/, amazon2023/)
 │   ├── lcrec/               # LCRec configs (amazon/, amazon2023/)
-│   └── cobra/               # COBRA configs
+│   ├── cobra/               # COBRA configs
+│   └── rpg/                 # RPG configs
 ├── scripts/             # Utility scripts
 ├── docs/                # Documentation (English & Chinese)
 ├── assets/              # Media assets
@@ -288,6 +306,7 @@ If you find this project useful, please cite:
 - [RQ-VAE-Recommender](https://github.com/EdoardoBotta/RQ-VAE-Recommender) by Edoardo Botta
 - [LC-Rec](https://arxiv.org/abs/2311.09049): LLM-based Collaborative Recommendation
 - [COBRA](https://arxiv.org/abs/2503.02453): Cascaded Sparse-Dense Representations
+- [RPG](https://arxiv.org/abs/2506.05781): Recommendation with Parallel Generation ([official code](https://github.com/facebookresearch/RPG_KDD2025))
 - [NoteLLM](https://arxiv.org/abs/2403.01744): A Retrievable LLM for Note Recommendation
 
 ## License
