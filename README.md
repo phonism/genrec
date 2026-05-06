@@ -19,8 +19,6 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 - **Metrics**: Recall@K and NDCG@K (K=5, 10)
 - **HSTU**: Tested with both full-vocabulary cross-entropy (CE) and sampled softmax (SS, 128 negatives, temp=0.05, L2 norm)
 
-![Recall@10 Comparison](assets/recall10_comparison.png)
-
 ### Amazon 2014 Beauty
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
