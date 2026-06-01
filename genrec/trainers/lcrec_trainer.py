@@ -3,6 +3,7 @@ LCRec Trainer - Adapting LLMs by Integrating Collaborative Semantics for Recomme
 """
 import os
 import re
+import time
 import gin
 import torch
 import wandb
@@ -10,9 +11,9 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Set, Callable, Tuple
 
 from genrec.models.lcrec import LCRec
-from genrec.modules.utils import parse_config, setup_logger
+from genrec.modules.utils import parse_config, setup_logger, get_run_split
 from genrec.modules.metrics import TopKAccumulator
-from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb, set_seed, save_run_results
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -104,6 +105,14 @@ class ConstrainedDecodingHelper:
                 if len(ids) == 1:
                     self.code_map[c, ids[0]] = code
 
+    def to(self, device) -> "ConstrainedDecodingHelper":
+        """Move precomputed masks to device in-place. Idempotent — safe to call per batch."""
+        if self.position_mask.device != device:
+            self.position_mask = self.position_mask.to(device)
+        if self.code_map.device != device:
+            self.code_map = self.code_map.to(device)
+        return self
+
     def get_prefix_allowed_tokens_fn(self) -> Callable:
         def fn(batch_id: int, input_ids: torch.Tensor) -> List[int]:
             input_list = input_ids.tolist()
@@ -139,10 +148,15 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
     metrics['index2item'] = {'total': 0, 'exact': 0}
     topk_acc = TopKAccumulator(ks=[1, 5, 10])
     debug_count = 0
+    task_timings: Dict[str, float] = {k: 0.0 for k in ('seqrec', 'item2index', 'index2item')}
+    eval_t0 = time.time()
 
     raw_model = accelerator.unwrap_model(model)
     has_custom_beam = hasattr(raw_model, 'generate_constrained_beam')
     prefix_fn = helper.get_prefix_allowed_tokens_fn() if not has_custom_beam else None
+
+    # One-time H2D move; .to() is idempotent so re-calls are free.
+    helper.to(device)
 
     # FSDP: need to gather full params for inference (beam search needs 2-D weights)
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -173,6 +187,7 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
             if eval_tasks is None or 'seqrec' in eval_tasks:
                 mask = torch.tensor([t == 'seqrec' for t in tasks])
                 if mask.any():
+                    _t = time.time()
                     inp = data["input_ids"][mask].to(device)
                     attn = data["attention_mask"][mask].to(device)
                     tgt = data["target_sem_ids"][mask].to(device)  # [N, num_codebooks]
@@ -219,11 +234,13 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                         for i in range(min(3 - debug_count, N)):
                             logger.debug(f"[Epoch {epoch}] Sample {debug_count}: Target={tgt[i].tolist()}, Pred={top1[i].tolist()}")
                             debug_count += 1
+                    task_timings['seqrec'] += time.time() - _t
 
             # item2index evaluation (greedy = beam_width=1)
             if eval_tasks is None or 'item2index' in eval_tasks:
                 mask = torch.tensor([t == 'item2index' for t in tasks])
                 if mask.any():
+                    _t = time.time()
                     inp = data["input_ids"][mask].to(device)
                     attn = data["attention_mask"][mask].to(device)
                     tgt = data["target_sem_ids"][mask].to(device)
@@ -251,11 +268,13 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                         metrics['item2index']['correct'][c] += per_code_match[:, c].sum().item()
                     metrics['item2index']['total'] += N
                     metrics['item2index']['exact'] += exact_match.sum().item()
+                    task_timings['item2index'] += time.time() - _t
 
             # index2item evaluation (unconstrained, uses HF generate)
             if eval_tasks is None or 'index2item' in eval_tasks:
                 mask = torch.tensor([t == 'index2item' for t in tasks])
                 if mask.any():
+                    _t = time.time()
                     inp, attn = data["input_ids"][mask].to(device), data["attention_mask"][mask].to(device)
                     labels = data.get("labels")
                     labels = labels[mask] if labels is not None else None
@@ -267,6 +286,7 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                         metrics['index2item']['total'] += 1
                         if tgt_text and gen_text and tgt_text in gen_text:
                             metrics['index2item']['exact'] += 1
+                    task_timings['index2item'] += time.time() - _t
 
     if fsdp_ctx is not None:
         fsdp_ctx.__exit__(None, None, None)
@@ -285,6 +305,11 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
         metrics[task]['exact'] = gather(metrics[task]['exact'])
     metrics['index2item']['total'] = gather(metrics['index2item']['total'])
     metrics['index2item']['exact'] = gather(metrics['index2item']['exact'])
+
+    if accelerator.is_main_process and logger:
+        total_s = time.time() - eval_t0
+        parts = ", ".join(f"{k}={v:.1f}s" for k, v in task_timings.items() if v > 0)
+        logger.info(f"[eval timing] epoch={epoch} total={total_s:.1f}s ({parts})")
 
     return metrics, topk_metrics
 
@@ -332,9 +357,12 @@ def train(
     split_batches=True, amp=True, mixed_precision_type="bf16",
     max_train_samples=0, max_eval_samples=0, debug_logging=False,
     eval_only=False, checkpoint_path=None,
+    seed=42,
 ):
     """Train an LCRec model."""
+    _run_config = dict(locals())
     logger = setup_logger(save_dir_root)
+    set_seed(seed)
     accelerator = setup_accelerator(
         split_batches=split_batches,
         gradient_accumulate_every=gradient_accumulate_every,
@@ -419,6 +447,9 @@ def train(
     # Training loop
     pbar = tqdm(total=total_steps, dynamic_ncols=True) if accelerator.is_main_process else None
     global_step = 0
+    last_test_topk: Dict[str, float] = {}
+    last_test_task_exact: Dict[str, float] = {}
+    best_valid_recall10 = 0.0
 
     for epoch in range(epochs):
         model.train()
@@ -465,21 +496,38 @@ def train(
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             train_eval_tasks = {'seqrec', 'item2index'}
             metrics, topk = evaluate(model, valid_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
-            test_metrics, test_topk = evaluate(model, test_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
+
+            current_recall10 = topk.get("Recall@10", 0.0)
+            is_best = current_recall10 > best_valid_recall10
+            need_test = is_best or not last_test_topk
+            if is_best:
+                best_valid_recall10 = current_recall10
+
             if accelerator.is_main_process:
                 logger.info(f"--- Valid ---")
                 log_metrics(metrics, topk, num_codebooks, epoch, logger, wandb_logging)
-                logger.info(f"--- Test ---")
-                log_metrics(test_metrics, test_topk, num_codebooks, epoch, logger, wandb_log=False)
-                if wandb_logging:
-                    test_log = {"epoch": epoch}
-                    for task in ['seqrec', 'item2index']:
-                        total = test_metrics[task]['total']
-                        if total > 0:
-                            test_log[f"test/{task}_exact"] = test_metrics[task]['exact'] / total
-                    for k, v in test_topk.items():
-                        test_log[f"test/seqrec_{k}"] = v
-                    wandb.log(test_log)
+
+            if need_test:
+                test_metrics, test_topk = evaluate(model, test_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
+                if accelerator.is_main_process:
+                    logger.info(f"--- Test (refreshed) ---")
+                    log_metrics(test_metrics, test_topk, num_codebooks, epoch, logger, wandb_log=False)
+                    last_test_topk = dict(test_topk)
+                    last_test_task_exact = {
+                        task: (test_metrics[task]['exact'] / test_metrics[task]['total'])
+                        for task in ['seqrec', 'item2index']
+                        if test_metrics[task]['total'] > 0
+                    }
+                    if wandb_logging:
+                        test_log = {"epoch": epoch}
+                        for task, v in last_test_task_exact.items():
+                            test_log[f"test/{task}_exact"] = v
+                        for k, v in test_topk.items():
+                            test_log[f"test/seqrec_{k}"] = v
+                        wandb.log(test_log)
+            elif accelerator.is_main_process:
+                logger.info(f"--- Test (cached from previous best, skipped) ---")
+
             model.train()
 
         # Save checkpoint
@@ -500,6 +548,18 @@ def train(
 
     if wandb_logging and accelerator.is_main_process:
         wandb.finish()
+
+    if accelerator.is_main_process and last_test_topk:
+        save_run_results(
+            save_dir=save_dir_root,
+            model="lcrec",
+            split=get_run_split(),
+            seed=seed,
+            metrics=last_test_topk,
+            config=_run_config,
+            extra={"task_exact": last_test_task_exact},
+        )
+
     accelerator.wait_for_everyone()
     accelerator.end_training()
 

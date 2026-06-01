@@ -2,12 +2,20 @@
 Common utilities for trainers.
 Provides shared functionality to reduce code duplication across trainers.
 """
+import json
 import os
+import random
+import subprocess
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, List
+
+import numpy as np
 import torch
 import wandb
-from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
 from accelerate import Accelerator
+from accelerate.utils import InitProcessGroupKwargs
 
 
 @dataclass
@@ -44,6 +52,96 @@ class TrainerConfig:
     resume_from_checkpoint: Optional[str] = None
 
 
+def set_seed(seed: int, deterministic: bool = False) -> None:
+    """Seed Python / NumPy / PyTorch RNGs for reproducible training.
+
+    Data-layer seeds (e.g. `random.seed(42)` inside dataset __init__) run before
+    this call and stay deterministic across seeds — that protects train/test
+    splits. Anything after this call (model init, dropout, shuffle, negative
+    sampling at __getitem__ time) varies with `seed`.
+
+    Args:
+        seed: Random seed.
+        deterministic: If True, enable cudnn deterministic mode. Slower; only
+            use when bit-exact reproducibility matters (rarely needed for the
+            seed-variance matrix we run for benchmarks).
+    """
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
+def get_git_sha() -> str:
+    """Return short HEAD git SHA or 'unknown' if not in a git repo."""
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL,
+        )
+        return out.decode().strip()
+    except Exception:
+        return "unknown"
+
+
+def _jsonable(obj: Any) -> Any:
+    """Best-effort coerce config dicts to JSON-serializable form."""
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items() if not k.startswith("_")}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        return obj
+    return repr(obj)
+
+
+def save_run_results(
+    save_dir: str,
+    model: str,
+    split: str,
+    seed: int,
+    metrics: Dict[str, float],
+    config: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Write a structured `results.json` for downstream aggregation.
+
+    Schema (load with `aggregate_results.py`):
+        {
+          "model": str,
+          "split": str,
+          "seed": int,
+          "git_sha": str,
+          "timestamp": ISO-8601 UTC,
+          "metrics": { "Recall@10": 0.0864, ... },
+          "config": { ...gin params... },
+          "extra": { ...optional per-trainer fields... }
+        }
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    payload = {
+        "model": model,
+        "split": split,
+        "seed": int(seed),
+        "git_sha": get_git_sha(),
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "metrics": _jsonable(metrics),
+        "config": _jsonable(config or {}),
+    }
+    if extra:
+        payload["extra"] = _jsonable(extra)
+
+    path = os.path.join(save_dir, "results.json")
+    with open(path, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    return path
+
+
 def setup_accelerator(
     split_batches: bool = True,
     gradient_accumulate_every: int = 1,
@@ -62,10 +160,17 @@ def setup_accelerator(
     Returns:
         Configured Accelerator instance
     """
+    # NCCL collective timeout: the default 600s is too short for 1.7B SFT. A slow
+    # per-epoch checkpoint save under host IO contention (e.g. two 4-GPU jobs sharing
+    # one box) can starve a single rank past 600s, which trips the NCCL watchdog and
+    # kills the whole process group — this is exactly what crashed the toys run
+    # (see memory: onerec-sft-nccl-crash). 30 min gives ample slack with no downside.
+    nccl_kwargs = InitProcessGroupKwargs(timeout=timedelta(minutes=30))
     return Accelerator(
         split_batches=split_batches,
         gradient_accumulation_steps=gradient_accumulate_every,
         mixed_precision=mixed_precision_type if amp else "no",
+        kwargs_handlers=[nccl_kwargs],
     )
 
 

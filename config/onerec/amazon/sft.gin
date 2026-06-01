@@ -1,0 +1,60 @@
+# OneRec SFT — best Amazon 2014 recipe (Qwen3-1.7B, full-param, K=256).
+# Regularization: weight_decay=0.05 + attention_dropout=0.1, no label smoothing,
+# early-stopping patience=2. Reproduces the README OneRec-SFT (1.7B) rows.
+
+include "config/base.gin"
+
+import genrec.data.amazon_onerec
+import genrec.models.onerec
+
+# ---------- Training ----------
+train_sft.epochs = 8
+train_sft.batch_size = 16
+train_sft.learning_rate = 8e-5
+train_sft.weight_decay = 0.05
+train_sft.warmup_steps = 50
+train_sft.warmup_ratio = 0.0
+train_sft.adam_beta2 = 0.999
+train_sft.gradient_accumulate_every = 4
+train_sft.max_length = 512
+train_sft.attention_dropout = 0.1
+
+train_sft.label_smoothing = 0.0
+
+# ---------- Model / Codebook ----------
+train_sft.pretrained_path = %MODEL_HUB_QWEN3_1_7B
+train_sft.use_lora = False
+train_sft.num_codebooks = 3
+train_sft.codebook_size = 256
+
+# ---------- Dataset ----------
+train_sft.dataset = @AmazonOneRecSFTDataset
+train_sft.dataset_folder = "dataset/amazon"
+train_sft.max_seq_len = 50
+train_sft.max_text_len = 128
+
+AmazonOneRecSFTDataset.split = "{split}"
+AmazonOneRecSFTDataset.tokenizer_type = "rqkmeans"
+AmazonOneRecSFTDataset.pretrained_rqkmeans_path = "./out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+AmazonOneRecSFTDataset.rqkmeans_codebook_size = 256
+AmazonOneRecSFTDataset.rqkmeans_n_layers = 3
+AmazonOneRecSFTDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+AmazonOneRecSFTDataset.enabled_tasks = ["sidsft", "title2sid", "sid2title", "fusionseqrec"]
+
+# ---------- Eval / Checkpoint / Logging ----------
+train_sft.do_eval = True
+train_sft.eval_every_epoch = 1
+train_sft.eval_batch_size = 4
+train_sft.eval_beam_width = 10
+train_sft.early_stopping_patience = 2
+
+train_sft.save_dir_root = "out/onerec/amazon/{split}/sft"
+train_sft.save_every_epoch = 1
+
+train_sft.wandb_logging = False
+train_sft.wandb_project = "onerec_sft_{split}"
+train_sft.wandb_log_interval = 10
+train_sft.debug_logging = False
+
+train_sft.amp = True
+train_sft.mixed_precision_type = "bf16"

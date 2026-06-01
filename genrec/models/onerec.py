@@ -1,10 +1,11 @@
 """
-LCRec: Adapting Large Language Models by Integrating Collaborative Semantics for Recommendation
-https://arxiv.org/pdf/2311.09049
+OneRec: Generative Recommender with RQ-VAE + SFT + GRPO pipeline.
+
+Independent implementation (does not inherit LCRec).
+Wraps a Qwen2 LLM backbone with codebook tokens and GRPO generation methods.
 """
 import torch
 from torch import nn
-import json
 from torch.nn import functional as F
 from transformers import (
     AutoTokenizer,
@@ -13,95 +14,68 @@ from transformers import (
     PreTrainedModel,
     DynamicCache,
 )
-from typing import Union, Optional, Dict, List, Callable, Tuple
+from typing import Optional, Dict, List, Callable, Tuple
 
-class LCRec(nn.Module):
+
+class OneRec(nn.Module):
     """
-    LC-Rec implementation based on Qwen2 LLM backbone.
+    OneRec model based on Qwen2 LLM backbone.
 
-    This module integrates collaborative semantics by representing each
-    item with a unique *special token* appended to the tokenizer's
-    vocabulary. The model can be fine-tuned to predict the next-item
-    token given a user interaction history (sequence of special tokens),
-    enabling direct item generation without candidate sampling.
-
-    References:
-        Zheng *et al.* "Adapting Large Language Models by Integrating
-        Collaborative Semantics for Recommendation" (ICDE 2024).
+    Supports:
+    - SFT training with codebook tokens
+    - GRPO generation (sample multiple completions per prompt)
+    - Log probability computation for GRPO loss
     """
 
-    def __init__(
-        self,
-        pretrained_path: str,
-    ) -> None:
+    def __init__(self, pretrained_path: str, torch_dtype: str = "auto") -> None:
         super().__init__()
-
-        # Load tokenizer and LLM backbone
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(pretrained_path)
-        self.model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(pretrained_path)
-    
-    def gradient_checkpointing_enable(self):
-        """
-        Enable gradient checkpointing.
-        """
-        self.model.gradient_checkpointing_enable()
-    
+        self.model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
+            pretrained_path, torch_dtype=torch_dtype,
+        )
+        # Fix checkpoints saved via OneRec.save_pretrained() with accelerator.save —
+        # they may have "model.model." prefix instead of "model." due to the OneRec
+        # wrapper. Detect and reload with corrected keys if needed.
+        import safetensors.torch, glob, os
+        sf_files = glob.glob(os.path.join(pretrained_path, "*.safetensors"))
+        if sf_files:
+            sd = safetensors.torch.load_file(sf_files[0])
+            if any(k.startswith("model.model.") for k in sd.keys()):
+                fixed = {k.replace("model.model.", "model.", 1).replace("model.lm_head.", "lm_head.", 1): v
+                         for k, v in sd.items()}
+                self.model.load_state_dict(fixed, strict=False)
+
+    def gradient_checkpointing_enable(self, use_reentrant=True):
+        self.model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={'use_reentrant': use_reentrant}
+        )
+
     def add_codebook_tokens(self, num_codebooks: int, codebook_size: int):
-        """
-        Add codebook tokens to the tokenizer.
-        """
-        num_added = 0
-        for i in range(num_codebooks):
-            for j in range(codebook_size):
-                num_added += self.tokenizer.add_special_tokens(
-                    {"additional_special_tokens": [f"<C{i}_{j}>"]}
-                )
-        if num_added > 0: # means we added new tokens
+        """Add <C{i}_{j}> special tokens to the tokenizer and resize embeddings."""
+        new_tokens = [f"<C{i}_{j}>" for i in range(num_codebooks) for j in range(codebook_size)]
+        num_added = self.tokenizer.add_special_tokens({"additional_special_tokens": new_tokens})
+        if num_added > 0:
+            self.model.resize_token_embeddings(len(self.tokenizer), mean_resizing=False)
+            self.model.config.vocab_size = len(self.tokenizer)
+
+    def add_item_sep_token(self) -> int:
+        """Add <|item_sep|> special token for CLM format. Returns the token ID."""
+        num_added = self.tokenizer.add_special_tokens(
+            {"additional_special_tokens": ["<|item_sep|>"]}
+        )
+        if num_added > 0:
             self.model.resize_token_embeddings(len(self.tokenizer))
             self.model.config.vocab_size = len(self.tokenizer)
-        
-    def tokenize(self, prompt: str, *args, **kwargs) -> Dict[str, torch.Tensor]:
-        """
-        Tokenize texts.
+        self.item_sep_token_id = self.tokenizer.convert_tokens_to_ids("<|item_sep|>")
+        return self.item_sep_token_id
 
-        Args:
-            prompt (str): prompt to tokenize.
-            *args: additional arguments to pass to the tokenizer.
-            **kwargs: additional keyword arguments to pass to the tokenizer.
-        Returns:
-            Dict[str, torch.Tensor]: tokenized texts.
-        """
-        return self.tokenizer(prompt, *args, **kwargs)
-    
-    def decode(self, ids: torch.Tensor, *args, **kwargs) -> str:
-        """
-        Decode token IDs to text.
-
-        Args:
-            ids (torch.Tensor): token IDs to decode.
-            *args: additional arguments to pass to the tokenizer.
-            **kwargs: additional keyword arguments to pass to the tokenizer.
-        Returns:
-            str: decoded text.
-        """
-        return self.tokenizer.decode(ids, *args, **kwargs)
-        
     def tokenize_sft_format(
         self,
         prompt: str,
         response: str = "",
-        device: torch.device = torch.device("cpu")
+        device: torch.device = torch.device("cpu"),
     ) -> Dict[str, torch.Tensor]:
-        """
-        Tokenize texts.
-
-        Args:
-            prompt (str): prompt to tokenize.
-            response (str): response to tokenize.
-            device (torch.device, optional): device to move the tokens to. Defaults to torch.device("cpu").
-        Returns:
-            Dict[str, torch.Tensor]: tokenized texts.
-        """
+        """Tokenize prompt + response in SFT format."""
         prompt_ids = self.tokenizer(prompt).input_ids
         response_ids = self.tokenizer(response).input_ids
         input_ids = prompt_ids + response_ids + [self.tokenizer.eos_token_id]
@@ -109,7 +83,7 @@ class LCRec(nn.Module):
         return {
             "input_ids": input_ids,
             "prompt_seq_length": len(prompt_ids),
-            "attention_mask": torch.ones_like(input_ids)
+            "attention_mask": torch.ones_like(input_ids),
         }
 
     def forward(
@@ -117,44 +91,20 @@ class LCRec(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
-        **generate_kwargs,
+        **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        """
-        Forward function.
-
-        Args:
-            input_ids (torch.Tensor): input IDs.
-            attention_mask (torch.Tensor): attention mask.
-            labels (torch.Tensor): labels.
-            **generate_kwargs: additional arguments to pass to the model.
-        Returns:
-            Dict[str, torch.Tensor]: outputs.
-        """
-        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        return outputs
+        return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
     def save_pretrained(self, save_dir: str, **kwargs):
-        """
-        Save both tokenizer and model weights.
-
-        Args:
-            save_dir (str): directory to save the model and tokenizer.
-            **kwargs: additional arguments to pass to the tokenizer and model.
-        """
+        # Explicitly pass the HF model's state dict to avoid double "model." prefix
+        # when accelerator.save is used as save_function
+        if "state_dict" not in kwargs:
+            kwargs["state_dict"] = self.model.state_dict()
         self.model.save_pretrained(save_dir, **kwargs)
         self.tokenizer.save_pretrained(save_dir)
 
     def load_pretrained(self, load_dir: str):
-        """
-        Load model and tokenizer from saved checkpoint.
-
-        Args:
-            load_dir (str): directory containing the saved model and tokenizer.
-        """
-        # Load tokenizer (includes codebook tokens)
         self.tokenizer = AutoTokenizer.from_pretrained(load_dir)
-
-        # Load model
         self.model = AutoModelForCausalLM.from_pretrained(
             load_dir,
             torch_dtype=torch.bfloat16,
@@ -219,7 +169,6 @@ class LCRec(nn.Module):
         # --- Autoregressive steps 1..num_steps-1 ---
         for step in range(1, num_steps):
             # Next input token: last generated token for each beam
-            # beam_tokens: [B, beam_width, step]
             next_input = beam_tokens[:, :, -1].reshape(B * beam_width, 1)  # [B*bw, 1]
 
             # Update attention mask
@@ -261,9 +210,6 @@ class LCRec(nn.Module):
                 attn_mask = attn_mask[reorder_idx]
             else:
                 # EOS step: just pick the EOS score and add to beam scores
-                # All beams should pick the single allowed EOS token
-                eos_scores = log_probs[:, :, 0]  # only one token is allowed, take first non-inf
-                # Find the actual EOS token score
                 allowed_mask = position_mask[step]  # [V]
                 eos_token_idx = allowed_mask.nonzero(as_tuple=False)[0, 0]
                 eos_log_prob = log_probs[:, :, eos_token_idx]  # [B, bw]
@@ -321,8 +267,8 @@ class LCRec(nn.Module):
     @torch.no_grad()
     def generate_topk(
         self,
-        input_ids: torch.Tensor,  # [B, L]
-        attention_mask: torch.Tensor = None,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         max_new_tokens: int = 3,
         beam_width: int = 10,
         topk: Optional[int] = None,
@@ -330,42 +276,25 @@ class LCRec(nn.Module):
         eos_token_id: Optional[int] = None,
         temperature: float = 1.0,
     ) -> List[List[Tuple[torch.Tensor, float]]]:
-        """
-        batched beam search
-        Args:
-            input_ids (torch.Tensor): input IDs.
-            attention_mask (torch.Tensor): attention mask.
-            max_new_tokens (int): max new tokens.
-            beam_width (int): beam width.
-            topk (Optional[int]): topk.
-            allowed_token_fn (Optional[Callable[[int], bool]]): allowed token function.
-            eos_token_id (Optional[int]): end of sentence token ID.
-            temperature (float): temperature.
-        Returns:
-            List[List[Tuple[torch.Tensor, float]]]: list of list of tuple of (ids, log_prob).
-        """
+        """Batched beam search for evaluation."""
         batch_size = input_ids.size(0)
         device = input_ids.device
-        seq_lens = input_ids.size(1)
         if attention_mask is None:
             attention_mask = torch.ones_like(input_ids)
         topk = topk or beam_width
         eos_token_id = eos_token_id or self.tokenizer.eos_token_id
 
-        # initialize beams
-        beams = [[(input_ids[i], 0.0, False)] for i in range(batch_size)]  # [batch][beam]
+        beams = [[(input_ids[i], 0.0, False)] for i in range(batch_size)]
 
         for _ in range(max_new_tokens):
             new_beams = []
             for b in range(batch_size):
                 candidates = []
-                all_finished = True
                 for seq, score, finished in beams[b]:
                     if finished:
                         candidates.append((seq, score, True))
                         continue
 
-                    all_finished = False
                     attn = attention_mask[b].unsqueeze(0)
                     out = self.model(input_ids=seq.unsqueeze(0), attention_mask=attn)
                     logits = out.logits[0, -1] / temperature
@@ -380,21 +309,134 @@ class LCRec(nn.Module):
                         new_finished = (tok == eos_token_id)
                         candidates.append((new_seq, new_score, new_finished))
                 if not candidates:
-                    # if all candidates are filtered out, keep the original beam
                     candidates = beams[b]
-                # top beam_width
                 candidates.sort(key=lambda x: x[1], reverse=True)
                 new_beams.append(candidates[:beam_width])
-
             beams = new_beams
 
-            # if all beams are finished, break
             if all(all(finished for (_, _, finished) in beam) for beam in beams):
                 break
 
-        # final result, each batch's beam sorted by score
         final_result = []
         for beam in beams:
             beam.sort(key=lambda x: x[1], reverse=True)
             final_result.append([(seq, score) for seq, score, _ in beam[:topk]])
         return final_result
+
+    @torch.no_grad()
+    def generate_for_grpo(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        num_generations: int = 16,
+        max_new_tokens: int = 4,
+        temperature: float = 1.0,
+        prefix_allowed_tokens_fn: Optional[Callable] = None,
+        use_beam_search: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate multiple completions per prompt for GRPO.
+
+        Args:
+            input_ids: [B, L] prompt token ids
+            attention_mask: [B, L] attention mask
+            num_generations: G completions per prompt
+            max_new_tokens: max tokens to generate
+            temperature: sampling temperature
+            prefix_allowed_tokens_fn: constrained decoding function
+            use_beam_search: if True, use beam search (MiniOneRec style);
+                            if False, use sampling (OpenOneRec style)
+
+        Returns:
+            generated_ids: [B*G, L+T] full sequences (prompt + generated)
+            gen_log_probs: [B*G, T] log probs of generated tokens
+        """
+        B, L = input_ids.shape
+        device = input_ids.device
+
+        if use_beam_search:
+            # Stochastic beam search (MiniOneRec style): do_sample=True
+            # for diverse candidates across iterations
+            gen_kwargs = dict(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                num_beams=num_generations,
+                num_return_sequences=num_generations,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+        else:
+            # Sampling: diverse candidates with exploration
+            expanded_ids = input_ids.repeat_interleave(num_generations, dim=0)
+            expanded_mask = attention_mask.repeat_interleave(num_generations, dim=0)
+            gen_kwargs = dict(
+                input_ids=expanded_ids,
+                attention_mask=expanded_mask,
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                top_k=0,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+            )
+
+        if prefix_allowed_tokens_fn is not None:
+            gen_kwargs['prefix_allowed_tokens_fn'] = prefix_allowed_tokens_fn
+
+        generated_ids = self.model.generate(**gen_kwargs)  # [B*G, L+T']
+
+        # Pad to consistent length (L + max_new_tokens)
+        target_len = L + max_new_tokens
+        if generated_ids.size(1) < target_len:
+            pad = torch.full(
+                (generated_ids.size(0), target_len - generated_ids.size(1)),
+                self.tokenizer.pad_token_id, device=device, dtype=generated_ids.dtype
+            )
+            generated_ids = torch.cat([generated_ids, pad], dim=1)
+        elif generated_ids.size(1) > target_len:
+            generated_ids = generated_ids[:, :target_len]
+
+        # Compute log probs for generated tokens
+        gen_log_probs = self.compute_log_probs(generated_ids, prompt_len=L)
+
+        return generated_ids, gen_log_probs
+
+    def compute_log_probs(
+        self,
+        input_ids: torch.Tensor,
+        prompt_len: int,
+        attention_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Compute per-token log probs for the generated portion.
+
+        Args:
+            input_ids: [B, L+T] full sequences
+            prompt_len: length of prompt (tokens before this are not scored)
+            attention_mask: optional attention mask
+
+        Returns:
+            log_probs: [B, T] log probabilities of generated tokens
+        """
+        if attention_mask is None:
+            attention_mask = (input_ids != self.tokenizer.pad_token_id).long()
+
+        outputs = self.model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = outputs.logits  # [B, L+T, V]
+
+        # Shift: logits[t] predicts input_ids[t+1]
+        # We want log_probs for positions prompt_len to end
+        shift_logits = logits[:, prompt_len - 1:-1, :]  # [B, T, V]
+        shift_labels = input_ids[:, prompt_len:]  # [B, T]
+
+        log_probs = F.log_softmax(shift_logits, dim=-1)
+        token_log_probs = log_probs.gather(2, shift_labels.unsqueeze(-1)).squeeze(-1)  # [B, T]
+
+        # Mask out padding
+        pad_mask = (shift_labels != self.tokenizer.pad_token_id).float()
+        token_log_probs = token_log_probs * pad_mask
+
+        return token_log_probs

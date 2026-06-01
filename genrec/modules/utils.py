@@ -119,6 +119,16 @@ def maybe_repeat_interleave(x, repeats, dim):
     return x.repeat_interleave(repeats, dim=dim)
 
 
+# Process-global context populated by parse_config(). Lets trainers read the
+# resolved --split without threading it through every gin signature.
+_RUN_CONTEXT: dict = {}
+
+
+def get_run_split(default: str = "unknown") -> str:
+    """Return --split as resolved by the most recent parse_config() call."""
+    return _RUN_CONTEXT.get("split", default)
+
+
 def parse_config():
     """
     Parse the gin config file with {split} placeholder support.
@@ -129,6 +139,11 @@ def parse_config():
     Examples:
         python trainer.py config.gin --split beauty
         python trainer.py config.gin --split sports --gin "train.epochs=500"
+
+    Returns:
+        The parsed argparse.Namespace (config_path, split, gin). Most call sites
+        ignore the return value; trainers that want the resolved split should
+        prefer `get_run_split()`.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("config_path", type=str, help="Path to gin config file.")
@@ -154,6 +169,10 @@ def parse_config():
         if args.split:
             args.gin = [g.replace('{split}', args.split) for g in args.gin]
         gin.parse_config(args.gin)
+
+    _RUN_CONTEXT["split"] = args.split
+    _RUN_CONTEXT["config_path"] = args.config_path
+    return args
 
 
 @torch.no_grad

@@ -199,3 +199,13 @@ dataset/
 models_hub/
 wandb/
 .wandb/
+
+# Local dev artifacts, media, and vendored third-party projects
+# (not part of the reproducible GenRec codebase)
+.DS_Store
+**/.DS_Store
+.claude-trace/
+video/
+assets/
+reference/
+GRLM/

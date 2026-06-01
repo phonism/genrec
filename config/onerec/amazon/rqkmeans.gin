@@ -1,0 +1,32 @@
+# RQ-KMeans fitting config for Amazon dataset (K=256, aligned with MiniOneRec)
+#
+# Usage:
+#   python genrec/trainers/rqkmeans_trainer.py config/onerec/amazon/rqkmeans.gin --split beauty
+
+include "config/base.gin"
+
+import genrec.data.amazon
+
+# =============================================================================
+# RQ-KMeans Settings (K=256, aligned with MiniOneRec)
+# =============================================================================
+fit_rqkmeans.n_layers = 3
+fit_rqkmeans.codebook_size = 256
+fit_rqkmeans.random_state = 42
+fit_rqkmeans.max_iter = 100
+fit_rqkmeans.batch_size = 4096
+
+# =============================================================================
+# Dataset / Encoder Settings
+# =============================================================================
+fit_rqkmeans.dataset = @AmazonItemDataset
+fit_rqkmeans.dataset_folder = "dataset/amazon"
+fit_rqkmeans.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+
+AmazonItemDataset.split = "{split}"
+AmazonItemDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+
+# =============================================================================
+# Save Settings
+# =============================================================================
+fit_rqkmeans.save_dir_root = "out/onerec/amazon/{split}/rqkmeans"
