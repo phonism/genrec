@@ -1,0 +1,72 @@
+# COBRA config for Amazon Beauty dataset
+# COBRA: Sparse Meets Dense - Unified Generative Recommendations with Cascaded Sparse-Dense Representations
+
+include "config/base.gin"
+
+import genrec.data.amazon_cobra
+import genrec.models.cobra
+
+# Training settings
+train.epochs = 20
+train.batch_size = 32
+train.learning_rate = 1e-4
+train.weight_decay = 0.01
+train.num_warmup_steps = 500
+train.gradient_accumulate_every = 4
+
+# Model architecture (aligned with TIGER amazon.gin)
+train.encoder_n_layers = 2
+train.encoder_hidden_dim = 768
+train.encoder_num_heads = 6
+train.encoder_vocab_size = 32128
+train.id_vocab_size = 32
+train.n_codebooks = 3
+train.d_model = 768
+train.max_len = 1024
+train.temperature = 0.07
+train.queue_size = 1024
+
+# Decoder params (aligned with COBRA paper: 2 layers)
+train.decoder_n_layers = 2
+train.decoder_num_heads = 6
+train.decoder_dropout = 0.1
+
+# Use pretrained sentence-t5-base encoder
+train.encoder_type = "pretrained"
+train.encoder_model_name = %MODEL_HUB_SENTENCE_T5_BASE
+
+# Loss weights
+train.sparse_loss_weight = 1.0
+train.dense_loss_weight = 1.0
+
+# Dataset
+train.dataset = @AmazonCobraDataset
+train.dataset_folder = "dataset/amazon"
+train.max_seq_len = 100  # Full sequence training
+train.pretrained_rqvae_path = "./out/cobra/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+AmazonCobraDataset.split = "{split}"
+AmazonCobraDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonCobraDataset.max_text_len = 128
+
+# RQVAE config (must match pretrained model)
+AmazonCobraDataset.rqvae_input_dim = 768
+AmazonCobraDataset.rqvae_embed_dim = 32
+AmazonCobraDataset.rqvae_hidden_dims = [512, 256, 128, 64]
+AmazonCobraDataset.rqvae_codebook_size = 32
+AmazonCobraDataset.rqvae_n_layers = 3
+
+# Checkpointing
+train.save_dir_root = "out/cobra/amazon/{split}"
+train.save_every_epoch = 10
+train.eval_valid_every_epoch = 1
+train.eval_test_every_epoch = 1
+train.do_eval = True
+
+# Logging
+train.wandb_logging = True
+train.wandb_project = "cobra_{split}_training"
+train.wandb_log_interval = 10
+
+# Mixed precision (disabled: bf16 causes NaN in TransformerDecoder attention)
+train.amp = False
+train.mixed_precision_type = "bf16"

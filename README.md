@@ -150,9 +150,6 @@ python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split be
 ```bash
 # Requires pretrained RQVAE checkpoint
 python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
-
-# On Amazon 2023
-python genrec/trainers/tiger_trainer.py config/tiger/amazon2023/tiger.gin
 ```
 
 ### Train LCRec (LLM-based)
@@ -216,7 +213,6 @@ accelerate launch --config_file config/accelerate_4gpu.yaml \
 # Amazon 2023 datasets use dedicated config files
 config/sasrec/amazon2023.gin
 config/hstu/amazon2023.gin
-config/tiger/amazon2023/tiger.gin
 config/lcrec/amazon2023/lcrec.gin
 ```
 
@@ -287,7 +283,7 @@ genrec/
 │   ├── base.gin             # Base config
 │   ├── sasrec/              # SASRec configs
 │   ├── hstu/                # HSTU configs
-│   ├── tiger/               # TIGER configs (amazon/, amazon2023/)
+│   ├── tiger/               # TIGER configs (amazon/)
 │   ├── lcrec/               # LCRec configs (amazon/, amazon2023/)
 │   ├── cobra/               # COBRA configs
 │   └── rpg/                 # RPG configs
