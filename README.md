@@ -18,6 +18,7 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 - **Max sequence length**: 50 for all models
 - **Metrics**: Recall@K and NDCG@K (K=5, 10)
 - **HSTU**: Tested with both full-vocabulary cross-entropy (CE) and sampled softmax (SS, 128 negatives, temp=0.05, L2 norm)
+- **Note**: OneRec-SFT numbers are temporarily withheld. Its RQ-KMeans Semantic IDs collide (distinct items sharing one SID), which inflates SID-matched Recall; corrected, collision-aware numbers will be added once finalized. See `docs/zh/reproduction-roadmap.md` (T0-3).
 
 ### Amazon 2014 Beauty
 
@@ -32,7 +33,6 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | RPG (sentence-t5-xl) | 0.0525 | 0.0744 | 0.0363 | 0.0433 |
 | RPG (text-emb-3-large) | 0.0531 | 0.0780 | 0.0370 | 0.0450 |
 | RPG (paper, text-emb-3-large) | 0.0569 | 0.0809 | - | 0.0464 |
-| **OneRec-SFT (1.7B)** | **0.0612** | **0.0925** | **0.0400** | **0.0501** |
 
 ### Amazon 2014 Sports
 
@@ -44,7 +44,6 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | HSTU (SS) | 0.0246 | 0.0393 | 0.0143 | 0.0191 |
 | TIGER | 0.0236 | 0.0377 | 0.0150 | 0.0195 |
 | LCRec | 0.0238 | 0.0360 | 0.0159 | 0.0198 |
-| **OneRec-SFT (1.7B)** | **0.0403** | **0.0596** | **0.0264** | **0.0325** |
 
 ### Amazon 2014 Toys
 
@@ -56,7 +55,6 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | HSTU (SS) | 0.0494 | 0.0795 | 0.0277 | 0.0375 |
 | TIGER | 0.0340 | 0.0521 | 0.0214 | 0.0272 |
 | LCRec | 0.0433 | 0.0614 | 0.0310 | 0.0368 |
-| **OneRec-SFT (1.7B)** | **0.0637** | **0.0946** | **0.0440** | **0.0541** |
 
 ### Amazon 2014 Home
 
@@ -68,7 +66,6 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | HSTU (SS) | 0.0123 | 0.0193 | 0.0079 | 0.0102 |
 | TIGER | 0.0145 | 0.0231 | 0.0096 | 0.0123 |
 | LCRec | 0.0163 | 0.0234 | 0.0110 | 0.0133 |
-| **OneRec-SFT (1.7B)** | **0.0238** | **0.0348** | **0.0157** | **0.0193** |
 
 ## Features
 
@@ -181,8 +178,9 @@ bash scripts/train_rpg.sh beauty 4
 
 ### Train OneRec (RQ-KMeans → SFT)
 
-Reproduces the **OneRec-SFT (1.7B)** rows in the benchmark tables (best R@10 on all four
-Amazon 2014 splits). Requires `Qwen3-Embedding-8B` + `Qwen3-1.7B` in `./models_hub/`.
+Trains the **OneRec-SFT (1.7B)** pipeline (RQ-KMeans K=256 → SFT). Benchmark numbers are
+withheld pending SID-collision correction (see the note under Benchmark Results).
+Requires `Qwen3-Embedding-8B` + `Qwen3-1.7B` in `./models_hub/`.
 
 ```bash
 # Stage 1 — RQ-KMeans quantizer (K=256, 3 codebooks). Item embeddings are generated
