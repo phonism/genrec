@@ -567,8 +567,19 @@ class Cobra(torch.nn.Module):
         device = input_ids.device
         vocab_size = self.sparse_head[0].out_features
 
-        # Encode text to dense vectors
-        vecs = self.encoder(encoder_input_ids)  # (B, T, D)
+        # Encode text to dense vectors (chunked to avoid OOM when B*T is large,
+        # mirroring forward(); the heavy pretrained encoder over all history items
+        # is the eval memory bottleneck)
+        if encoder_input_ids.dim() == 3:
+            B_enc, T_enc, L_enc = encoder_input_ids.shape
+            flat_enc = encoder_input_ids.view(B_enc * T_enc, L_enc)
+            enc_chunk = 256
+            chunks = []
+            for i in range(0, flat_enc.shape[0], enc_chunk):
+                chunks.append(self.encoder(flat_enc[i:i + enc_chunk].unsqueeze(1)).squeeze(1))
+            vecs = torch.cat(chunks, dim=0).view(B_enc, T_enc, -1)  # (B, T, D)
+        else:
+            vecs = self.encoder(encoder_input_ids)  # (B, T, D)
         T_items = vecs.size(1)  # Number of complete items with dense vectors
 
         beam_seqs = []  # Will collect generated tokens
@@ -748,69 +759,63 @@ class Cobra(torch.nn.Module):
         # Beam scores -> softmax with tau
         beam_scores_softmax = torch.softmax(tau * gen_output.scores, dim=-1)  # (B, M)
 
-        # Collect all candidates with their fused scores
+        # Collect all candidates with their fused scores.
+        # Vectorized: the only GPU<->CPU sync is one .tolist() per batch (for the
+        # sem-id -> items dict lookup). Everything else stays on-device, so this is
+        # ~10-50x faster than the original per-(beam) sync loop. Semantics are
+        # unchanged: per-beam Softmax(psi*cos) x Softmax(tau*beam), dedup by max, top-K.
         all_item_ids = []
         all_scores = []
 
+        sem_ids_cpu = gen_output.sem_ids.tolist()  # (B, M, C) - single sync
+        neg_inf = float("-inf")
+
         for b in range(B):
-            batch_candidates = []
-            batch_scores = []
-
+            # Coarse filtering in pure Python (no GPU work): gather candidate items
+            # per beam plus the beam index each candidate came from.
+            cand_items: list = []
+            cand_beam: list = []
             for m in range(n_beam):
-                # Get generated semantic ID for this beam
-                sem_id = tuple(gen_output.sem_ids[b, m].cpu().tolist())
-                beam_score = beam_scores_softmax[b, m].item()
+                items = sem_id_to_items.get(tuple(sem_ids_cpu[b][m]))
+                if items:
+                    cand_items.extend(items)
+                    cand_beam.extend([m] * len(items))
 
-                # Find candidate items matching this semantic ID (coarse filtering)
-                candidate_items = sem_id_to_items.get(sem_id, [])
-
-                if len(candidate_items) == 0:
-                    continue
-
-                # Get dense vectors for candidates
-                candidate_indices = torch.tensor(candidate_items, device=device, dtype=torch.long)
-                candidate_vecs = item_dense_vecs[candidate_indices]  # (num_candidates, D)
-
-                # Compute similarity with generated dense vector
-                gen_vec = gen_dense_vecs[b, m]  # (D,)
-                similarities = torch.mv(candidate_vecs, gen_vec)  # (num_candidates,)
-
-                # Similarity scores -> softmax with psi
-                sim_scores_softmax = torch.softmax(psi * similarities, dim=-1)  # (num_candidates,)
-
-                # BeamFusion: multiply beam score with similarity score
-                fused_scores = beam_score * sim_scores_softmax  # (num_candidates,)
-
-                batch_candidates.extend(candidate_items)
-                batch_scores.extend(fused_scores.cpu().tolist())
-
-            # Select top-K from all candidates for this batch
-            if len(batch_candidates) == 0:
-                # Fallback: no candidates found, return zeros
+            if not cand_items:
                 all_item_ids.append(torch.zeros(n_candidates, dtype=torch.long, device=device))
                 all_scores.append(torch.zeros(n_candidates, device=device))
-            else:
-                scores_tensor = torch.tensor(batch_scores, device=device)
-                candidates_tensor = torch.tensor(batch_candidates, device=device, dtype=torch.long)
+                continue
 
-                # Remove duplicates by keeping highest score for each item
-                unique_items, inverse_indices = torch.unique(candidates_tensor, return_inverse=True)
-                unique_scores = torch.zeros(unique_items.size(0), device=device)
-                unique_scores.scatter_reduce_(0, inverse_indices, scores_tensor, reduce='amax')
+            ci = torch.as_tensor(cand_items, device=device, dtype=torch.long)  # (P,)
+            cb = torch.as_tensor(cand_beam, device=device, dtype=torch.long)   # (P,)
 
-                # Select top-K
-                k = min(n_candidates, unique_items.size(0))
-                topk_scores, topk_idx = unique_scores.topk(k, dim=-1)
-                topk_items = unique_items[topk_idx]
+            # cos(generated dense, candidate dense) for every candidate at once
+            sims = (item_dense_vecs[ci] * gen_dense_vecs[b][cb]).sum(-1)       # (P,)
 
-                # Pad if needed
-                if k < n_candidates:
-                    pad_size = n_candidates - k
-                    topk_items = torch.cat([topk_items, torch.zeros(pad_size, dtype=torch.long, device=device)])
-                    topk_scores = torch.cat([topk_scores, torch.zeros(pad_size, device=device)])
+            # Softmax(psi*sims) WITHIN each beam's candidate set (segmented softmax)
+            logits = psi * sims
+            seg_max = torch.full((n_beam,), neg_inf, device=device).scatter_reduce(
+                0, cb, logits, reduce="amax", include_self=True)
+            e = torch.exp(logits - seg_max[cb])
+            seg_sum = torch.zeros(n_beam, device=device).scatter_add(0, cb, e)
+            sim_softmax = e / seg_sum[cb].clamp_min(1e-12)
 
-                all_item_ids.append(topk_items)
-                all_scores.append(topk_scores)
+            # BeamFusion fusion: Softmax(tau*beam) x Softmax(psi*cos)
+            fused = beam_scores_softmax[b][cb] * sim_softmax                   # (P,)
+
+            # Dedup items keeping the max fused score, then top-K
+            uniq, inv = torch.unique(ci, return_inverse=True)
+            uniq_scores = torch.zeros(uniq.size(0), device=device).scatter_reduce(
+                0, inv, fused, reduce="amax", include_self=True)
+            k = min(n_candidates, uniq.size(0))
+            topk_scores, topk_idx = uniq_scores.topk(k)
+            topk_items = uniq[topk_idx]
+            if k < n_candidates:
+                pad = n_candidates - k
+                topk_items = torch.cat([topk_items, torch.zeros(pad, dtype=torch.long, device=device)])
+                topk_scores = torch.cat([topk_scores, torch.zeros(pad, device=device)])
+            all_item_ids.append(topk_items)
+            all_scores.append(topk_scores)
 
         # Stack results
         final_item_ids = torch.stack(all_item_ids, dim=0)  # (B, K)

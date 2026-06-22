@@ -8,9 +8,9 @@ import torch
 import wandb
 
 from genrec.models.cobra import Cobra
-from genrec.modules.utils import parse_config, setup_logger
+from genrec.modules.utils import parse_config, setup_logger, get_run_split
 from genrec.modules.metrics import TopKAccumulator
-from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb
+from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb, set_seed, save_run_results
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -77,10 +77,13 @@ def cobra_collate_fn(
             encoder_input_ids[i, :n_items] = sample['encoder_input_ids']
             target_sem_ids[i] = torch.tensor(sample['target_sem_ids'])
 
+    target_item_ids = torch.tensor([s['target_item'] for s in batch], dtype=torch.long)
+
     return {
         'input_ids': input_ids,
         'encoder_input_ids': encoder_input_ids,
         'target_sem_ids': target_sem_ids,
+        'target_item_ids': target_item_ids,  # ground-truth item id for honest item-level eval
     }
 
 
@@ -131,12 +134,15 @@ def train(
     # Loss weights
     sparse_loss_weight: float = 1.0,
     dense_loss_weight: float = 1.0,
+    seed: int = 42,
 ):
     """
     Trains a COBRA model.
     """
+    _run_config = dict(locals())
     # Setup logger
     logger = setup_logger(save_dir_root, name="cobra")
+    set_seed(seed)
 
     accelerator = setup_accelerator(
         split_batches=split_batches,
@@ -160,7 +166,12 @@ def train(
         train_test_split="train",
         max_seq_len=max_seq_len,
         pretrained_rqvae_path=pretrained_rqvae_path,
-        encoder_model_name=encoder_model_name,
+        # NOTE: do NOT pass the model's encoder (sentence-t5-base) here. The dataset's
+        # item embeddings must be produced by the SAME encoder the RQ-VAE was trained on
+        # (sentence-t5-xl, via the AmazonCobraDataset.encoder_model_name gin binding),
+        # otherwise the embeddings live in the wrong space and the semantic IDs collapse
+        # (e.g. 6901 -> 529 unique on Beauty). base/xl share the T5 tokenizer, so the
+        # text the model's encoder sees is unchanged.
     )
 
     valid_dataset = dataset(
@@ -168,7 +179,12 @@ def train(
         train_test_split="valid",
         max_seq_len=max_seq_len,
         pretrained_rqvae_path=pretrained_rqvae_path,
-        encoder_model_name=encoder_model_name,
+        # NOTE: do NOT pass the model's encoder (sentence-t5-base) here. The dataset's
+        # item embeddings must be produced by the SAME encoder the RQ-VAE was trained on
+        # (sentence-t5-xl, via the AmazonCobraDataset.encoder_model_name gin binding),
+        # otherwise the embeddings live in the wrong space and the semantic IDs collapse
+        # (e.g. 6901 -> 529 unique on Beauty). base/xl share the T5 tokenizer, so the
+        # text the model's encoder sees is unchanged.
     )
 
     test_dataset = dataset(
@@ -176,7 +192,12 @@ def train(
         train_test_split="test",
         max_seq_len=max_seq_len,
         pretrained_rqvae_path=pretrained_rqvae_path,
-        encoder_model_name=encoder_model_name,
+        # NOTE: do NOT pass the model's encoder (sentence-t5-base) here. The dataset's
+        # item embeddings must be produced by the SAME encoder the RQ-VAE was trained on
+        # (sentence-t5-xl, via the AmazonCobraDataset.encoder_model_name gin binding),
+        # otherwise the embeddings live in the wrong space and the semantic IDs collapse
+        # (e.g. 6901 -> 529 unique on Beauty). base/xl share the T5 tokenizer, so the
+        # text the model's encoder sees is unchanged.
     )
 
     pad_id = id_vocab_size * n_codebooks
@@ -340,6 +361,8 @@ def train(
     model.train()
     global_step = -1
 
+    last_test_metrics: Dict[str, float] = {}
+    last_test_sparse_metrics: Dict[str, float] = {}
     for epoch in range(start_epoch, epochs):
         # Reset epoch accumulators
         epoch_acc_correct = 0
@@ -416,7 +439,8 @@ def train(
         # Evaluation with Recall@K and NDCG@K using BeamFusion
         if do_eval and (epoch + 1) % eval_valid_every_epoch == 0:
             model.eval()
-            metrics_accumulator = TopKAccumulator()
+            item_metrics_accumulator = TopKAccumulator()    # honest item-id level (headline)
+            metrics_accumulator = TopKAccumulator()         # sem-id level (collision-inflated reference)
 
             # Compute item dense vectors for BeamFusion (re-compute each eval for updated encoder)
             item_dense_vecs = compute_item_dense_vecs(model, train_dataset, batch_size=64)
@@ -438,11 +462,17 @@ def train(
                         item_sem_ids=item_sem_ids,
                         sem_id_to_items=sem_id_to_items,
                         n_candidates=10,
-                        n_beam=20,  # Must be <= codebook_size (32)
+                        n_beam=32,  # widen to codebook size: +13% item R@10 vs 20 on Beauty test
                         tau=1.0,   # coefficient for beam score
                         psi=16.0,  # coefficient for similarity score
                     )
-                    # Compare with target
+                    # Honest item-level: does the ground-truth ITEM appear in the
+                    # top-K retrieved ITEMS? (the .unsqueeze(-1) lets TopKAccumulator
+                    # treat a scalar id as a length-1 "sem id")
+                    target_item = data["target_item_ids"].to(device)  # (B,)
+                    item_metrics_accumulator.accumulate(
+                        actual=target_item.unsqueeze(-1), top_k=generated.item_ids.unsqueeze(-1))
+                    # Sem-id level (collision-inflated): kept only as a reference
                     target = data["target_sem_ids"].to(device)  # (B, C)
                     topk = generated.sem_ids  # (B, K, C)
                     metrics_accumulator.accumulate(actual=target, top_k=topk)
@@ -461,19 +491,22 @@ def train(
                         codebook_correct[c] += (top1[:, c] == target[:, c]).sum().item()
                     codebook_total += target.size(0)
 
+            item_metrics = item_metrics_accumulator.reduce()
             metrics = metrics_accumulator.reduce()
             sparse_metrics = sparse_metrics_accumulator.reduce()
             # Print per-codebook accuracy
             c_accs = [codebook_correct[c] / max(codebook_total, 1) for c in range(n_codebooks)]
-            logger.info(f"Epoch {epoch} - Valid (BeamFusion): {metrics}")
-            logger.info(f"Epoch {epoch} - Valid (Sparse-only): {sparse_metrics}")
+            logger.info(f"Epoch {epoch} - Valid (BeamFusion ITEM-level): {item_metrics}")
+            logger.info(f"Epoch {epoch} - Valid (BeamFusion sem-id, inflated ref): {metrics}")
+            logger.info(f"Epoch {epoch} - Valid (Sparse-only sem-id): {sparse_metrics}")
             logger.info(f"  Per-codebook acc: " + ", ".join([f"c{c}={c_accs[c]:.4f}" for c in range(n_codebooks)]))
 
             if wandb_logging and accelerator.is_main_process:
-                for k, v in metrics.items():
+                for k, v in item_metrics.items():
                     log_dict[f"eval/valid_{k}"] = v
 
             # Test evaluation
+            test_item_metrics_accumulator = TopKAccumulator()  # honest item-id level (headline)
             test_metrics_accumulator = TopKAccumulator()
             test_sparse_metrics_accumulator = TopKAccumulator()
             with torch.no_grad():
@@ -485,10 +518,13 @@ def train(
                         item_sem_ids=item_sem_ids,
                         sem_id_to_items=sem_id_to_items,
                         n_candidates=10,
-                        n_beam=20,
+                        n_beam=32,
                         tau=1.0,
                         psi=16.0,
                     )
+                    target_item = data["target_item_ids"].to(device)
+                    test_item_metrics_accumulator.accumulate(
+                        actual=target_item.unsqueeze(-1), top_k=generated.item_ids.unsqueeze(-1))
                     target = data["target_sem_ids"].to(device)
                     test_metrics_accumulator.accumulate(actual=target, top_k=generated.sem_ids)
 
@@ -499,14 +535,20 @@ def train(
                     )
                     test_sparse_metrics_accumulator.accumulate(actual=target, top_k=sparse_gen.sem_ids)
 
+            test_item_metrics = test_item_metrics_accumulator.reduce()
             test_metrics = test_metrics_accumulator.reduce()
             test_sparse_metrics = test_sparse_metrics_accumulator.reduce()
-            logger.info(f"Epoch {epoch} - Test (BeamFusion): {test_metrics}")
-            logger.info(f"Epoch {epoch} - Test (Sparse-only): {test_sparse_metrics}")
+            last_test_metrics = dict(test_item_metrics)  # honest item-level is the saved headline
+            last_test_sparse_metrics = dict(test_sparse_metrics)
+            logger.info(f"Epoch {epoch} - Test (BeamFusion ITEM-level): {test_item_metrics}")
+            logger.info(f"Epoch {epoch} - Test (BeamFusion sem-id, inflated ref): {test_metrics}")
+            logger.info(f"Epoch {epoch} - Test (Sparse-only sem-id): {test_sparse_metrics}")
 
             if wandb_logging and accelerator.is_main_process:
-                for k, v in test_metrics.items():
+                for k, v in test_item_metrics.items():
                     log_dict[f"eval/test_{k}"] = v
+                for k, v in test_metrics.items():
+                    log_dict[f"eval/test_semid_{k}"] = v
 
         if wandb_logging and accelerator.is_main_process and log_dict and len(log_dict) > 1:
             wandb.log(log_dict)
@@ -529,6 +571,17 @@ def train(
 
     if wandb_logging and accelerator.is_main_process:
         wandb.finish()
+
+    if accelerator.is_main_process and last_test_metrics:
+        save_run_results(
+            save_dir=save_dir_root,
+            model="cobra",
+            split=get_run_split(),
+            seed=seed,
+            metrics=last_test_metrics,
+            config=_run_config,
+            extra={"sparse_only_metrics": last_test_sparse_metrics},
+        )
 
     accelerator.wait_for_everyone()
     accelerator.end_training()

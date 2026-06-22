@@ -1,0 +1,76 @@
+# COBRA v2 — reproduction attempt.
+# Diagnosis (2026-06): the sparse branch DOES learn under teacher forcing
+# (c0/c1/c2 = 0.26/0.21/0.43, joint top-1 ~0.0255), but (a) that ceiling is modest
+# and (b) autoregressive generation recovers even less (sem-id R@10 ~0.011 < joint
+# top-1). Levers: deeper decoder to raise the ceiling + longer training. Eval is now
+# item-level (the headline) and beam_fusion is vectorized; we eval every 5 epochs to
+# keep the (still generate()-bound) eval cost down.
+
+include "config/base.gin"
+
+import genrec.data.amazon_cobra
+import genrec.models.cobra
+
+# Training settings
+train.epochs = 50
+train.batch_size = 32
+train.learning_rate = 1e-4
+train.weight_decay = 0.01
+train.num_warmup_steps = 500
+train.gradient_accumulate_every = 4
+
+# Model architecture
+train.encoder_n_layers = 2
+train.encoder_hidden_dim = 768
+train.encoder_num_heads = 6
+train.encoder_vocab_size = 32128
+train.id_vocab_size = 32
+train.n_codebooks = 3
+train.d_model = 768
+train.max_len = 1024
+train.temperature = 0.07
+train.queue_size = 1024
+
+# Decoder — DEEPER than baseline (2 -> 4) to raise the teacher-forced ceiling
+train.decoder_n_layers = 4
+train.decoder_num_heads = 8
+train.decoder_dropout = 0.1
+
+# Lightweight 1-2 layer encoder trained from scratch (the paper's actual architecture,
+# and ~5-10x faster per epoch than the 12-layer pretrained t5-base -> feasible pilot).
+# The encoder is not the diagnosed bottleneck; this keeps iteration cheap.
+train.encoder_type = "light"
+train.encoder_model_name = %MODEL_HUB_SENTENCE_T5_BASE
+
+# Loss weights
+train.sparse_loss_weight = 1.0
+train.dense_loss_weight = 1.0
+
+# Dataset
+train.dataset = @AmazonCobraDataset
+train.dataset_folder = "dataset/amazon"
+train.max_seq_len = 100
+train.pretrained_rqvae_path = "./out/cobra/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+AmazonCobraDataset.split = "{split}"
+AmazonCobraDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonCobraDataset.max_text_len = 128
+AmazonCobraDataset.rqvae_input_dim = 768
+AmazonCobraDataset.rqvae_embed_dim = 32
+AmazonCobraDataset.rqvae_hidden_dims = [512, 256, 128, 64]
+AmazonCobraDataset.rqvae_codebook_size = 32
+AmazonCobraDataset.rqvae_n_layers = 3
+
+# Checkpointing / eval (item-level headline; every 5 epochs to limit eval cost)
+train.save_dir_root = "out/cobra/amazon/{split}_v2"
+train.save_every_epoch = 5
+train.eval_valid_every_epoch = 5
+train.eval_test_every_epoch = 5
+train.do_eval = True
+
+# Logging
+train.wandb_logging = True
+train.wandb_project = "cobra_v2_{split}_training"
+train.wandb_log_interval = 10
+
+train.amp = False
+train.mixed_precision_type = "bf16"

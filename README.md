@@ -19,6 +19,7 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 - **Metrics**: Recall@K and NDCG@K (K=5, 10)
 - **HSTU**: Tested with both full-vocabulary cross-entropy (CE) and sampled softmax (SS, 128 negatives, temp=0.05, L2 norm)
 - **Note**: OneRec-SFT numbers are temporarily withheld. Its RQ-KMeans Semantic IDs collide (distinct items sharing one SID), which inflates SID-matched Recall; corrected, collision-aware numbers will be added once finalized. See `docs/zh/reproduction-roadmap.md` (T0-3).
+- **Note (COBRA)**: implemented but **not yet reproduced**. Honest item-level Beauty test is R@10=0.0099 / N@10=0.0048 (with beam width widened to the codebook size, 32) — roughly 7x below the paper's 0.0725 and ~9x below SASRec here. Three issues were found and fixed: (1) eval matched semantic-ID tuples instead of item ids (collision rate 0.43 → ~1.3x inflation), now item-level; (2) a trainer bug fed the dataset's RQ-VAE the wrong encoder's embeddings (sentence-t5-base instead of the xl it was trained on), collapsing semantic IDs from 6901→529 unique — any fresh run with the old code was training on garbage codes; (3) decode beam widened 20→32 (+13% R@10). The *remaining* gap is the model ceiling, not the quantizer or decoding: the RQ-VAE codebooks are healthy (perplexity ≈28-32/32) and the sparse branch learns fine under teacher forcing, but a deeper/longer-trained model is needed to lift item-level recall toward the paper. COBRA trains/evaluates at max_seq_len=100. See `docs/en/models/cobra.md`.
 
 ### Amazon 2014 Beauty
 
@@ -33,6 +34,10 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | RPG (sentence-t5-xl) | 0.0525 | 0.0744 | 0.0363 | 0.0433 |
 | RPG (text-emb-3-large) | 0.0531 | 0.0780 | 0.0370 | 0.0450 |
 | RPG (paper, text-emb-3-large) | 0.0569 | 0.0809 | - | 0.0464 |
+| COBRA (not reproduced) † | 0.0054 | 0.0099 | 0.0033 | 0.0048 |
+| COBRA (paper) | 0.0537 | 0.0725 | 0.0395 | 0.0456 |
+
+† Honest item-level (not the collision-inflated SID metric). See the COBRA note above.
 
 ### Amazon 2014 Sports
 

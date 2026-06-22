@@ -282,6 +282,7 @@ class AmazonCobraDataset(Dataset):
             'encoder_input_ids': encoder_input_ids,  # (T, L)
             'target_sem_ids': target_sem_ids,  # List[int] of length C
             'target_encoder_input_ids': target_encoder_input_ids,  # (1, L)
+            'target_item': int(target_item),  # ground-truth item id (for honest item-level eval)
         }
 
 
