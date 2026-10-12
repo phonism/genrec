@@ -1,0 +1,28 @@
+# Validation-selected TIGER recipe for Amazon 2014.
+#
+# This keeps the paper-aligned sequence architecture, optimizer, learning-rate
+# schedule, 20-item history and four-token unique SID protocol.  Validation on
+# Beauty selected the existing GenRec RQ-VAE tokenizer and no user token.  The
+# fully paper-aligned tokenizer remains available in tiger_paper_aligned.gin.
+
+include "config/tiger/amazon/tiger_paper_aligned.gin"
+
+# ``parse_config`` substitutes {split} in this top-level file before Gin
+# expands includes.  Repeat the binding here so an included literal
+# ``"{split}"`` cannot leak into dataset construction.
+AmazonSeqDataset.split = "{split}"
+
+train.max_steps = 20000
+train.include_user_token = False
+train.eval_every_steps = 5000
+train.save_training_state_every_steps = 5000
+train.resume_from_checkpoint = None
+
+train.pretrained_rqvae_path = "./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+AmazonSeqDataset.item_text_format = "legacy"
+AmazonSeqDataset.rqvae_hidden_dims = [512, 256, 128, 64]
+AmazonSeqDataset.rqvae_mlp_activation = "silu"
+AmazonSeqDataset.rqvae_mlp_bias = False
+
+train.save_dir_root = "out/tiger/amazon/{split}/paper_recipe_optimized"
+train.wandb_project = "tiger_paper_recipe_optimized_{split}"

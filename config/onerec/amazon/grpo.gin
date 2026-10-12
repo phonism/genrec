@@ -1,0 +1,77 @@
+# OneRec GRPO — RL stage on top of the SFT checkpoint (K=256).
+# Loads the SFT model, samples G candidates per prompt under the PrefixTrie,
+# scores them with a reward, and does group-relative policy optimization
+# (PPO-clipped importance ratio against the behavior policy + KL to a frozen ref).
+
+include "config/base.gin"
+
+import genrec.data.amazon_onerec
+import genrec.models.onerec
+
+# ---------- Training ----------
+train_grpo.epochs = 2
+train_grpo.batch_size = 4
+train_grpo.learning_rate = 1e-5
+train_grpo.weight_decay = 0.01
+train_grpo.warmup_steps = 10
+train_grpo.gradient_accumulate_every = 32
+train_grpo.max_length = 512
+train_grpo.max_grad_norm = 0.3
+
+# ---------- GRPO ----------
+train_grpo.num_generations = 8
+train_grpo.temperature = 1.2
+train_grpo.beta = 0.001
+train_grpo.clip_eps = 0.2
+train_grpo.reward_type = "hierarchical"
+train_grpo.use_beam_search = False
+train_grpo.add_gt = False
+
+# ---------- Model / Codebook ----------
+train_grpo.num_codebooks = 3
+train_grpo.codebook_size = 256
+train_grpo.sft_checkpoint_path = "./out/onerec/amazon/{split}/sft/checkpoint_best"
+train_grpo.use_lora = False
+
+# ---------- Dataset ----------
+train_grpo.rl_dataset = @AmazonOneRecRLDataset
+train_grpo.dataset_folder = "dataset/amazon"
+train_grpo.max_seq_len = 50
+
+AmazonOneRecRLDataset.split = "{split}"
+AmazonOneRecRLDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+AmazonOneRecRLDataset.tokenizer_type = "rqkmeans"
+AmazonOneRecRLDataset.pretrained_rqkmeans_path = "./out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+AmazonOneRecRLDataset.rqkmeans_codebook_size = 256
+AmazonOneRecRLDataset.rqkmeans_n_layers = 3
+AmazonOneRecRLDataset.max_cross_modal = 10000
+AmazonOneRecRLDataset.evaluation_protocol = "leave_one_out"
+AmazonOneRecRLDataset.temporal_train_ratio = 0.8
+AmazonOneRecRLDataset.temporal_valid_ratio = 0.1
+
+# ---------- Eval ----------
+train_grpo.eval_dataset = @AmazonOneRecSFTDataset
+train_grpo.do_eval = True
+train_grpo.eval_every_epoch = 1
+train_grpo.eval_batch_size = 4
+train_grpo.eval_beam_width = 10
+
+AmazonOneRecSFTDataset.split = "{split}"
+AmazonOneRecSFTDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+AmazonOneRecSFTDataset.tokenizer_type = "rqkmeans"
+AmazonOneRecSFTDataset.pretrained_rqkmeans_path = "./out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+AmazonOneRecSFTDataset.rqkmeans_codebook_size = 256
+AmazonOneRecSFTDataset.rqkmeans_n_layers = 3
+AmazonOneRecSFTDataset.evaluation_protocol = "leave_one_out"
+AmazonOneRecSFTDataset.temporal_train_ratio = 0.8
+AmazonOneRecSFTDataset.temporal_valid_ratio = 0.1
+
+# ---------- Save / Logging ----------
+train_grpo.save_dir_root = "out/onerec/amazon/{split}/grpo"
+train_grpo.save_every_epoch = 1
+train_grpo.wandb_logging = False
+train_grpo.wandb_project = "onerec_grpo_{split}"
+train_grpo.wandb_log_interval = 10
+train_grpo.debug_logging = False
+train_grpo.amp = True
+train_grpo.mixed_precision_type = "bf16"

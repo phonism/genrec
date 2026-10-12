@@ -53,7 +53,13 @@ docs = [
     "mkdocs-material>=9.0.0",
     "mkdocs-static-i18n>=1.0.0",
 ]
+rpg = [
+    # Pinned to the version used by the 179 reproduction environment. Keep
+    # optional because faiss-cpu wheels are not available for every platform.
+    "faiss-cpu==1.10.0",
+]
 full = [
+    "faiss-cpu==1.10.0",
     "triton>=3.0.0",
     "torchvision>=0.15.0",
     "torch-geometric>=2.0.0",

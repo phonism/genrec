@@ -1,0 +1,71 @@
+# LC-Rec alignment recipe for Amazon-2014 Beauty.
+# Matches the public training recipe where the local framework supports it:
+# 4 codebooks, USM, all six alignment tasks, history 20, 4 epochs, effective
+# per-rank batch 16, LR 5e-5, and beam 20. Qwen3-4B substitutes for unavailable
+# LLaMA-7B and Amazon-2014 Beauty is not one of LC-Rec's three paper datasets.
+
+include "config/base.gin"
+
+import genrec.data.amazon_lcrec
+import genrec.models.lcrec
+
+train.epochs = 4
+# Qwen3-4B full-parameter AdamW is close to the 80 GiB limit.  A micro-batch
+# of four leaves enough room for the optimizer state while preserving the
+# paper recipe's effective per-rank batch of 16 through accumulation.
+train.batch_size = 4
+train.gradient_accumulate_every = 4
+train.learning_rate = 5e-5
+train.weight_decay = 0.01
+train.warmup_ratio = 0.0
+train.max_length = 512
+
+train.pretrained_path = %MODEL_HUB_QWEN3_4B
+train.use_lora = False
+
+train.num_codebooks = 4
+train.codebook_size = 256
+
+train.dataset = @AmazonLCRecDataset
+train.dataset_folder = "dataset/amazon"
+train.max_seq_len = 20
+train.max_text_len = 128
+train.pretrained_rqvae_path = "./out/lcrec/amazon/{split}/rqvae_paper_recipe/checkpoint_best_health.pt"
+
+AmazonLCRecDataset.split = "{split}"
+AmazonLCRecDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonLCRecDataset.rqvae_input_dim = 768
+AmazonLCRecDataset.rqvae_embed_dim = 32
+AmazonLCRecDataset.rqvae_hidden_dims = [2048, 1024, 512, 256, 128, 64]
+AmazonLCRecDataset.rqvae_codebook_size = 256
+AmazonLCRecDataset.rqvae_n_layers = 4
+AmazonLCRecDataset.uniform_semantic_mapping = True
+# Reject the known one-code collapse, while preserving LC-Rec's official
+# collision-selected/USM pipeline (the paper does not require TIGER's 80% raw
+# per-layer utilization threshold).
+AmazonLCRecDataset.min_raw_codebook_usage = 0.05
+AmazonLCRecDataset.enabled_tasks = [
+    "seqrec", "item2index", "index2item",
+    "fusionseqrec", "itemsearch", "preferenceobtain"
+]
+AmazonLCRecDataset.task_sample_weights = {
+    "seqrec": 1.0,
+    "item2index": 1.0,
+    "index2item": 1.0,
+    "fusionseqrec": 1.0,
+    "itemsearch": 1.0,
+    "preferenceobtain": 1.0
+}
+AmazonLCRecDataset.evaluation_protocol = "leave_one_out"
+
+train.do_eval = True
+train.eval_every_epoch = 1
+train.eval_batch_size = 16
+train.eval_beam_width = 20
+train.save_dir_root = "out/lcrec/amazon/{split}/paper_recipe_qwen3_4b"
+train.save_every_epoch = 1
+train.seed = 42
+train.wandb_logging = False
+train.debug_logging = False
+train.amp = True
+train.mixed_precision_type = "bf16"

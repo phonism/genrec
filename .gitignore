@@ -199,6 +199,7 @@ dataset/
 models_hub/
 wandb/
 .wandb/
+/private/
 
 # Local dev artifacts, media, and vendored third-party projects
 # (not part of the reproducible GenRec codebase)
@@ -208,4 +209,6 @@ wandb/
 video/
 assets/
 reference/
+!docs/zh/reference/
+!docs/zh/reference/*.md
 GRLM/

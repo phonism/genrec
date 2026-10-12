@@ -10,6 +10,7 @@ codes, which serve as the target vocabulary for the RPG model.
 import json
 import math
 import os
+import fcntl
 import gin
 import logging
 import numpy as np
@@ -19,6 +20,7 @@ from tqdm import tqdm
 from typing import Dict, List
 
 from genrec.data.amazon import DATASET_CONFIGS, parse_gzip_json
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
 logger = logging.getLogger(__name__)
 
@@ -181,6 +183,9 @@ class AmazonRPGDataset(Dataset):
         opq_use_gpu: bool = False,
         opq_gpu_id: int = 0,
         faiss_num_threads: int = 32,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         self.root = root
         self.split = split.lower()
@@ -195,6 +200,9 @@ class AmazonRPGDataset(Dataset):
         self.opq_use_gpu = opq_use_gpu
         self.opq_gpu_id = opq_gpu_id
         self.faiss_num_threads = faiss_num_threads
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         if self.split not in DATASET_CONFIGS:
             raise ValueError(f"Unknown split: {split}. Available: {list(DATASET_CONFIGS.keys())}")
@@ -239,17 +247,22 @@ class AmazonRPGDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        # Sort by timestamp and filter
-        self.sequences = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= self.min_seq_len:
-                self.sequences.append(items)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=self.min_seq_len,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
         self.num_items = len(self.item_id_mapping) + 1  # +1 for padding at index 0
         self.id2asin = {v: k for k, v in self.item_id_mapping.items()}
-        logger.info(f"Loaded {len(self.sequences)} sequences, {self.num_items - 1} items")
+        logger.info(
+            f"Loaded {len(self.sequences)} sequences, {self.num_items - 1} items "
+            f"(protocol={self.evaluation_protocol})"
+        )
 
         # Load metadata
         logger.info(f"Loading metadata from {meta_path}...")
@@ -267,74 +280,112 @@ class AmazonRPGDataset(Dataset):
         n_bits = int(math.log2(self.codebook_size))
         factory_str = f"OPQ{self.n_codebook},IVF1,PQ{self.n_codebook}x{n_bits}"
 
+        # OPQ is fitted only on items visible in the protocol's training
+        # interactions. LOO and global-temporal tokenizers are therefore
+        # different artifacts and must never share a cache. PCA geometry is
+        # part of the tokenizer identity as well.
         sem_ids_path = os.path.join(
-            self.processed_dir, f"{encoder_short}_{factory_str}.sem_ids.json"
+            self.processed_dir,
+            f"{encoder_short}_{factory_str}_pca{self.sent_emb_pca}_"
+            f"{self.evaluation_protocol}.sem_ids.json",
         )
         sent_emb_path = os.path.join(
             self.processed_dir, f"{encoder_short}.sent_emb.npy"
         )
 
         if os.path.exists(sem_ids_path):
-            logger.info(f"Loading cached semantic IDs from {sem_ids_path}")
-            with open(sem_ids_path, "r") as f:
-                asin2sem_ids = json.load(f)
-            self.asin2sem_ids = {k: tuple(v) for k, v in asin2sem_ids.items()}
+            self._load_semantic_ids(sem_ids_path)
             return
 
-        # Encode sentence embeddings
-        if os.path.exists(sent_emb_path):
-            logger.info(f"Loading cached sentence embeddings from {sent_emb_path}")
-            sent_embs = np.load(sent_emb_path)
-        else:
-            # Build sentences in item ID order (1-based)
+        # A cell lock prevents duplicate planned tasks; this file lock also
+        # protects against non-cooperating processes and the check/write race.
+        with open(sem_ids_path + ".lock", "a+") as sem_lock:
+            fcntl.flock(sem_lock, fcntl.LOCK_EX)
+            if os.path.exists(sem_ids_path):
+                self._load_semantic_ids(sem_ids_path)
+                return
+
+            sent_embs = self._load_or_create_sentence_embeddings(sent_emb_path)
+            logger.info(f"Sentence embeddings shape: {sent_embs.shape}")
+
+            # The selected train sequence includes two removable placeholders,
+            # so seq[:-2] is exactly the protocol-visible training prefix.
+            train_items = {
+                item_id for seq in self.sequences for item_id in seq[:-2]
+            }
+            train_mask = np.zeros(self.num_items - 1, dtype=bool)
+            for item_id in train_items:
+                train_mask[item_id - 1] = True
+            logger.info(
+                f"Training items: {train_mask.sum()} / {self.num_items - 1}"
+            )
+
+            pq_codes = _generate_opq_semantic_ids(
+                sent_embs,
+                train_mask,
+                self.n_codebook,
+                self.codebook_size,
+                pca_dim=self.sent_emb_pca,
+                use_gpu=self.opq_use_gpu,
+                gpu_id=self.opq_gpu_id,
+                num_threads=self.faiss_num_threads,
+            )
+
+            self.asin2sem_ids = {}
+            for item_id in range(1, self.num_items):
+                asin = self.id2asin[item_id]
+                self.asin2sem_ids[asin] = tuple(
+                    pq_codes[item_id - 1].tolist()
+                )
+
+            temporary = f"{sem_ids_path}.part.{os.getpid()}"
+            try:
+                with open(temporary, "w") as stream:
+                    json.dump(
+                        {k: list(v) for k, v in self.asin2sem_ids.items()},
+                        stream,
+                    )
+                os.replace(temporary, sem_ids_path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            logger.info(f"Saved semantic IDs to {sem_ids_path}")
+
+    def _load_semantic_ids(self, path: str) -> None:
+        logger.info(f"Loading cached semantic IDs from {path}")
+        with open(path, "r") as stream:
+            asin2sem_ids = json.load(stream)
+        self.asin2sem_ids = {key: tuple(value) for key, value in asin2sem_ids.items()}
+
+    def _load_or_create_sentence_embeddings(self, path: str) -> np.ndarray:
+        if os.path.exists(path):
+            logger.info(f"Loading cached sentence embeddings from {path}")
+            return np.load(path)
+
+        with open(path + ".lock", "a+") as embedding_lock:
+            fcntl.flock(embedding_lock, fcntl.LOCK_EX)
+            if os.path.exists(path):
+                logger.info(f"Loading cached sentence embeddings from {path}")
+                return np.load(path)
+
             sentences = []
             for item_id in range(1, self.num_items):
                 asin = self.id2asin[item_id]
-                text = self.item_meta.get(asin, asin)
-                sentences.append(text)
+                sentences.append(self.item_meta.get(asin, asin))
 
             sent_embs = _encode_sentence_embeddings(
                 sentences, self.encoder_model_name, self.sent_emb_batch_size
             )
-            np.save(sent_emb_path, sent_embs)
-            logger.info(f"Saved sentence embeddings to {sent_emb_path}")
-
-        logger.info(f"Sentence embeddings shape: {sent_embs.shape}")
-
-        # Build training mask: items that appear in training sequences
-        train_items = set()
-        for seq in self.sequences:
-            # Training uses seq[:-2]
-            for item_id in seq[:-2]:
-                train_items.add(item_id)
-
-        train_mask = np.zeros(self.num_items - 1, dtype=bool)
-        for item_id in train_items:
-            train_mask[item_id - 1] = True
-        logger.info(f"Training items: {train_mask.sum()} / {self.num_items - 1}")
-
-        # Generate OPQ codes
-        pq_codes = _generate_opq_semantic_ids(
-            sent_embs,
-            train_mask,
-            self.n_codebook,
-            self.codebook_size,
-            pca_dim=self.sent_emb_pca,
-            use_gpu=self.opq_use_gpu,
-            gpu_id=self.opq_gpu_id,
-            num_threads=self.faiss_num_threads,
-        )
-
-        # Map back to asin -> semantic IDs
-        self.asin2sem_ids = {}
-        for item_id in range(1, self.num_items):
-            asin = self.id2asin[item_id]
-            self.asin2sem_ids[asin] = tuple(pq_codes[item_id - 1].tolist())
-
-        # Save
-        with open(sem_ids_path, "w") as f:
-            json.dump({k: list(v) for k, v in self.asin2sem_ids.items()}, f)
-        logger.info(f"Saved semantic IDs to {sem_ids_path}")
+            temporary = f"{path}.part.{os.getpid()}"
+            try:
+                with open(temporary, "wb") as stream:
+                    np.save(stream, sent_embs)
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            logger.info(f"Saved sentence embeddings to {path}")
+            return sent_embs
 
     def _build_item_id2tokens(self) -> None:
         """Build item_id2tokens tensor: [num_items, n_codebook].

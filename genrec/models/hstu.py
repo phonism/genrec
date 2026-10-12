@@ -37,6 +37,12 @@ class HSTU(nn.Module):
         num_time_buckets: int = 64,
         max_position_distance: int = 128,
         use_temporal_bias: bool = True,
+        score_l2_norm: bool = False,
+        score_temperature: float = 1.0,
+        dqk: Optional[int] = None,
+        dv: Optional[int] = None,
+        use_position_bias: bool = True,
+        concat_ua: bool = False,
     ):
         """
         Args:
@@ -50,12 +56,18 @@ class HSTU(nn.Module):
             num_time_buckets: Number of buckets for temporal bias
             max_position_distance: Max distance for position bucketing
             use_temporal_bias: Whether to use temporal attention bias
+            score_l2_norm: L2-normalize query and item embeddings before dot product
+                (matches Meta HSTU sampled-softmax retrieval setup). Required so the
+                eval path uses the same score function as SS training.
+            score_temperature: divisor applied to logits after dot product.
         """
         super().__init__()
         self.num_items = num_items
         self.max_seq_len = max_seq_len
         self.embed_dim = embed_dim
         self.use_temporal_bias = use_temporal_bias
+        self.score_l2_norm = score_l2_norm
+        self.score_temperature = score_temperature
 
         # Item embedding (0 is padding)
         self.item_embedding = nn.Embedding(num_items + 1, embed_dim, padding_idx=0)
@@ -73,6 +85,11 @@ class HSTU(nn.Module):
                 num_time_buckets=num_time_buckets,
                 max_position_distance=max_position_distance,
                 use_temporal_bias=use_temporal_bias,
+                max_seq_len=max_seq_len,
+                dqk=dqk,
+                dv=dv,
+                use_position_bias=use_position_bias,
+                concat_ua=concat_ua,
             )
             for _ in range(num_blocks)
         ])
@@ -81,6 +98,16 @@ class HSTU(nn.Module):
         self.final_norm = nn.LayerNorm(embed_dim)
 
         self._init_weights()
+
+    def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
+        """Score `x` against the full item vocabulary, applying L2 norm + temperature
+        when configured (must be used by every train/eval path so they stay aligned).
+        eps=1e-6 matches Meta's `l2_norm_eps`."""
+        w = self.item_embedding.weight
+        if self.score_l2_norm:
+            x = F.normalize(x, dim=-1, eps=1e-6)
+            w = F.normalize(w, dim=-1, eps=1e-6)
+        return (x @ w.T) / self.score_temperature
 
     def _init_weights(self):
         for module in self.modules():
@@ -101,7 +128,10 @@ class HSTU(nn.Module):
         input_ids: torch.Tensor,  # [B, L]
         timestamps: Optional[torch.Tensor] = None,  # [B, L] unix timestamps
         targets: Optional[torch.Tensor] = None,  # [B, L] for training
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        sampled_softmax: bool = False,
+        num_negatives: int = 128,
+        sampling_strategy: str = "local",
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward pass.
 
@@ -109,11 +139,20 @@ class HSTU(nn.Module):
             input_ids: Item ID sequence [B, L], 0 is padding
             timestamps: Unix timestamps [B, L], optional for temporal bias
             targets: Target item IDs [B, L] for loss computation
+            sampled_softmax: dispatch to forward_sampled_softmax. The trainer must
+                route training through forward() (not call the method on the
+                unwrapped module) so DDP's gradient-sync hooks fire.
+            num_negatives / sampling_strategy: only used when sampled_softmax=True.
 
         Returns:
             logits: Prediction logits [B, L, num_items+1]
             loss: Cross-entropy loss if targets provided
         """
+        if sampled_softmax:
+            return self.forward_sampled_softmax(
+                input_ids, timestamps, targets,
+                num_negatives=num_negatives, sampling_strategy=sampling_strategy,
+            )
         B, L = input_ids.shape
         device = input_ids.device
 
@@ -133,8 +172,8 @@ class HSTU(nn.Module):
 
         x = self.final_norm(x)
 
-        # Prediction via dot product with item embeddings
-        logits = x @ self.item_embedding.weight.T  # [B, L, V]
+        # Prediction via dot product with item embeddings (optionally L2-normed + temp-scaled)
+        logits = self._compute_logits(x)  # [B, L, V]
 
         # Compute loss
         loss = None
@@ -153,14 +192,24 @@ class HSTU(nn.Module):
         timestamps: Optional[torch.Tensor] = None,
         targets: Optional[torch.Tensor] = None,
         num_negatives: int = 128,
-        temperature: float = 0.05,
-        l2_norm: bool = True,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        sampling_strategy: str = "local",  # Meta local-table; also in_batch/global
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Forward with sampled softmax loss (aligned with Meta's original HSTU).
 
-        Instead of computing logits over ALL items, samples a small set of
-        negatives per batch for efficiency and different optimization landscape.
+        Score function (L2 norm + temperature) comes from `self.score_l2_norm` and
+        `self.score_temperature` — the single source of truth shared with
+        `_compute_logits`, so training and eval can never disagree.
+
+        Negative sampling:
+            - "local": for every positive, independently sample ``num_negatives``
+              item IDs from the local embedding table.  This matches Meta's
+              ``LocalNegativesSampler`` ("local" refers to a non-sharded local
+              table, not to in-batch sampling).
+            - "in_batch": independently sample from unique valid targets in
+              the current batch, matching Meta's separately named sampler.
+            - "global": legacy GenRec behavior using one shared, deduplicated
+              uniform-negative set for the whole batch.
         """
         B, L = input_ids.shape
         device = input_ids.device
@@ -176,8 +225,12 @@ class HSTU(nn.Module):
 
         x = self.final_norm(x)  # [B, L, D]
 
-        # Full logits for eval (no loss)
-        logits = x @ self.item_embedding.weight.T  # [B, L, V]
+        # Full-vocab logits are only needed on the no-target (eval) path; during
+        # training they'd be a [B, L, V] matmul whose result the trainer discards.
+        logits = None if targets is not None else self._compute_logits(x)
+
+        use_l2 = self.score_l2_norm
+        temp = self.score_temperature
 
         loss = None
         if targets is not None:
@@ -194,20 +247,61 @@ class HSTU(nn.Module):
                 # Get positive embeddings
                 pos_emb = self.item_embedding(targets_valid)  # [N, D]
 
-                # Sample random negatives (shared across batch for efficiency)
-                neg_ids = torch.randint(1, self.num_items + 1, (num_negatives,), device=device)
-                neg_emb = self.item_embedding(neg_ids)  # [K, D]
+                # Meta's LocalNegativesSampler draws a separate [R] sample for
+                # every positive from all item IDs.  The previous implementation
+                # misread "local" as "in-batch" and also shared one small
+                # negative set across all positions, so it was not the published
+                # sampled-softmax objective.
+                if sampling_strategy == "local":
+                    neg_ids = torch.randint(
+                        1,
+                        self.num_items + 1,
+                        (x_valid.size(0), num_negatives),
+                        device=device,
+                    )
+                elif sampling_strategy == "in_batch":
+                    pool = targets_valid.unique()
+                    offsets = torch.randint(
+                        0,
+                        pool.numel(),
+                        (x_valid.size(0), num_negatives),
+                        device=device,
+                    )
+                    neg_ids = pool[offsets]
+                elif sampling_strategy == "global":
+                    neg_ids = torch.randint(
+                        1, self.num_items + 1, (num_negatives,), device=device
+                    ).unique()
+                else:
+                    raise ValueError(
+                        "sampling_strategy must be 'local', 'in_batch', or "
+                        f"'global', got {sampling_strategy!r}"
+                    )
+                neg_emb = self.item_embedding(neg_ids)
 
-                # L2 normalize if enabled (as in Meta's implementation)
-                if l2_norm:
-                    x_valid = F.normalize(x_valid, dim=-1)
-                    pos_emb = F.normalize(pos_emb, dim=-1)
-                    neg_emb = F.normalize(neg_emb, dim=-1)
+                if use_l2:
+                    # eps=1e-6 to match Meta's `l2_norm_eps`. Default F.normalize eps=1e-12.
+                    x_valid = F.normalize(x_valid, dim=-1, eps=1e-6)
+                    pos_emb = F.normalize(pos_emb, dim=-1, eps=1e-6)
+                    neg_emb = F.normalize(neg_emb, dim=-1, eps=1e-6)
 
                 # Compute logits: [N, 1+K]
                 pos_logits = (x_valid * pos_emb).sum(dim=-1, keepdim=True)  # [N, 1]
-                neg_logits = x_valid @ neg_emb.T  # [N, K]
-                all_logits = torch.cat([pos_logits, neg_logits], dim=-1) / temperature
+                if neg_emb.ndim == 3:
+                    neg_logits = torch.einsum("nd,nrd->nr", x_valid, neg_emb)
+                else:
+                    neg_logits = x_valid @ neg_emb.T
+
+                # Collision mask: when a sampled negative is the same item as the
+                # positive (frequent in in-batch sampling on small vocabs), exclude
+                # it from the softmax. Matches Meta's `torch.where(... == ..., -5e4, ...)`.
+                if neg_ids.ndim == 2:
+                    collision = targets_valid.unsqueeze(1) == neg_ids
+                else:
+                    collision = targets_valid.unsqueeze(1) == neg_ids.unsqueeze(0)
+                neg_logits = neg_logits.masked_fill(collision, -5e4)
+
+                all_logits = torch.cat([pos_logits, neg_logits], dim=-1) / temp
 
                 # Target is always index 0 (positive)
                 loss_targets = torch.zeros(x_valid.size(0), device=device, dtype=torch.long)
@@ -217,9 +311,9 @@ class HSTU(nn.Module):
 
     @torch.no_grad()
     def predict(self, input_ids: torch.Tensor, timestamps: Optional[torch.Tensor] = None, top_k: int = 10) -> torch.Tensor:
-        """Predict top-k items for next item."""
+        """Predict top-k items for next item (uses same score function as training)."""
         logits, _ = self.forward(input_ids, timestamps)
-        last_logits = logits[:, -1, :]
+        last_logits = logits[:, -1, :].clone()
         last_logits[:, 0] = float('-inf')  # Exclude padding
         _, top_k_items = torch.topk(last_logits, top_k, dim=-1)
         return top_k_items
@@ -244,24 +338,40 @@ class HSTULayer(nn.Module):
         num_time_buckets: int,
         max_position_distance: int,
         use_temporal_bias: bool,
+        max_seq_len: int = 50,
+        dqk: Optional[int] = None,
+        dv: Optional[int] = None,
+        use_position_bias: bool = True,
+        concat_ua: bool = False,
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
+        self.max_seq_len = max_seq_len
+        # Decoupled head dims: paper uses dqk=dv=25 with embed_dim=50, num_heads=2
+        # When unset, fall back to embed_dim/num_heads (legacy behavior).
+        if dqk is None or dv is None:
+            assert embed_dim % num_heads == 0, \
+                f"embed_dim ({embed_dim}) must be divisible by num_heads ({num_heads}) when dqk/dv are unset"
+        self.dqk = dqk if dqk is not None else embed_dim // num_heads
+        self.dv = dv if dv is not None else embed_dim // num_heads
+        self.qk_dim = num_heads * self.dqk
+        self.uv_dim = num_heads * self.dv
         self.use_temporal_bias = use_temporal_bias
+        self.use_position_bias = use_position_bias
+        self.concat_ua = concat_ua
 
-        assert embed_dim % num_heads == 0
+        # Pointwise projection: outputs [U | V | Q | K] with sizes [uv, uv, qk, qk]
+        self.projection = nn.Linear(embed_dim, 2 * (self.uv_dim + self.qk_dim))
 
-        # Pointwise projection: projects to 4 * embed_dim (for U, V, Q, K)
-        self.projection = nn.Linear(embed_dim, 4 * embed_dim)
-
-        # Relative attention bias (position-based, shared across heads)
-        self.position_bias = RelativePositionBias(
-            num_buckets=num_position_buckets,
-            max_distance=max_position_distance,
-            num_heads=num_heads,
-        )
+        # Relative attention bias (position-based, shared across heads).
+        # Paper's ML-1M setup uses only temporal RAB; position_bias kept for legacy.
+        if use_position_bias:
+            self.position_bias = RelativePositionBias(
+                num_buckets=num_position_buckets,
+                max_distance=max_position_distance,
+                num_heads=num_heads,
+            )
 
         # Temporal bias (optional)
         if use_temporal_bias:
@@ -270,10 +380,16 @@ class HSTULayer(nn.Module):
                 num_heads=num_heads,
             )
 
-        # Layer norm for attention output
-        self.attn_norm = nn.LayerNorm(embed_dim)
+        # Pre-norm on the layer input (matches Meta's `self._norm_input(x)` before projection)
+        self.input_norm = nn.LayerNorm(embed_dim)
+        # Layer norm for attention output (operates on V dim)
+        self.attn_norm = nn.LayerNorm(self.uv_dim)
+        # Output projection back to embed_dim for the residual connection.
+        # When concat_ua=True, gating produces 3*uv_dim and out_proj maps that to embed_dim.
+        out_in_dim = (3 * self.uv_dim) if concat_ua else self.uv_dim
+        self.out_proj = nn.Linear(out_in_dim, embed_dim)
 
-        # FFN (pointwise transformation)
+        # FFN block (kept for ML-1M; paper HSTU omits it but empirically it helps SS here)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, 4 * embed_dim),
             nn.SiLU(),
@@ -281,8 +397,6 @@ class HSTULayer(nn.Module):
             nn.Linear(4 * embed_dim, embed_dim),
             nn.Dropout(dropout),
         )
-
-        # Final layer norm
         self.ffn_norm = nn.LayerNorm(embed_dim)
 
         self.dropout = nn.Dropout(dropout)
@@ -297,23 +411,26 @@ class HSTULayer(nn.Module):
         B, L, D = x.shape
         residual = x
 
-        # === Pointwise Projection ===
-        # Project and apply SiLU, then split into U, V, Q, K
-        projected = F.silu(self.projection(x))  # [B, L, 4D]
-        U, V, Q, K = projected.chunk(4, dim=-1)  # Each [B, L, D]
+        # === Pointwise Projection (with pre-norm) ===
+        # Pre-norm matches Meta's `normed_x = self._norm_input(x)` before projection.
+        # SiLU is applied once on the attention scores below — projection is pure linear.
+        normed_x = self.input_norm(x)
+        projected = self.projection(normed_x)
+        U, V, Q, K = projected.split([self.uv_dim, self.uv_dim, self.qk_dim, self.qk_dim], dim=-1)
 
         # Reshape for multi-head attention
-        Q = Q.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, L, d]
-        K = K.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(B, L, self.num_heads, self.head_dim).transpose(1, 2)
+        Q = Q.view(B, L, self.num_heads, self.dqk).transpose(1, 2)  # [B, H, L, dqk]
+        K = K.view(B, L, self.num_heads, self.dqk).transpose(1, 2)
+        V = V.view(B, L, self.num_heads, self.dv).transpose(1, 2)   # [B, H, L, dv]
 
         # === Spatial Aggregation ===
         # Compute attention scores (without softmax!)
         scores = Q @ K.transpose(-2, -1)  # [B, H, L, L]
 
-        # Add relative position bias
-        pos_bias = self.position_bias(L, x.device)  # [H, L, L]
-        scores = scores + pos_bias.unsqueeze(0)
+        # Add relative position bias (paper's ML-1M setup uses only temporal RAB)
+        if self.use_position_bias:
+            pos_bias = self.position_bias(L, x.device)  # [H, L, L]
+            scores = scores + pos_bias.unsqueeze(0)
 
         # Add temporal bias if enabled and timestamps provided
         if self.use_temporal_bias and timestamps is not None:
@@ -326,18 +443,27 @@ class HSTULayer(nn.Module):
         # Apply padding mask
         scores = scores.masked_fill(padding_mask.unsqueeze(1).unsqueeze(2), -1e9)
 
-        # HSTU key: SiLU instead of softmax!
-        # This allows capturing preference intensity
-        attn_weights = F.silu(scores)
+        # HSTU attention activation: SiLU + divide by n (Meta: `F.silu(qk_attn) / n`).
+        # n must be the FIXED max_seq_len, not the batch's padded length L: collate
+        # pads to the batch max, so /L would make a sequence's representation depend
+        # on the longest sequence sharing its batch (metrics would shift with
+        # eval_batch_size / data order). Without the division, output magnitude
+        # scales with sequence length and destabilizes training.
+        attn_weights = F.silu(scores) / float(self.max_seq_len)
 
         # Apply attention to values
-        attn_output = attn_weights @ V  # [B, H, L, d]
-        attn_output = attn_output.transpose(1, 2).contiguous().view(B, L, D)  # [B, L, D]
+        attn_output = attn_weights @ V  # [B, H, L, dv]
+        attn_output = attn_output.transpose(1, 2).contiguous().view(B, L, self.uv_dim)  # [B, L, uv_dim]
 
         # === Pointwise Transformation ===
-        # Normalize and gate with U
-        attn_output = self.attn_norm(attn_output)
-        attn_output = attn_output * U  # Element-wise gating
+        # Normalize and gate with U. concat_ua=True uses paper's multi-channel
+        # gating `cat([u, a, u*a])` for richer interaction; default is just `u*a`.
+        a = self.attn_norm(attn_output)
+        if self.concat_ua:
+            gated = torch.cat([U, a, U * a], dim=-1)  # [B, L, 3*uv_dim]
+        else:
+            gated = a * U  # [B, L, uv_dim]
+        attn_output = self.out_proj(gated)  # -> embed_dim
 
         # Residual connection
         x = residual + self.dropout(attn_output)

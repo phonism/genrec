@@ -1,0 +1,77 @@
+# TIGER sequential recommender settings reported in Rajput et al. (NeurIPS 2023).
+
+include "config/base.gin"
+
+import genrec.data.amazon
+import genrec.models.tiger
+
+# Paper: batch 256, 200k steps for Beauty/Sports, lr=0.01 for the
+# first 10k steps followed by inverse-square-root decay.
+train.epochs = 200
+train.max_steps = 200000
+train.learning_rate = 0.01
+train.weight_decay = 0.0
+train.batch_size = 256
+train.infer_batch_size = 96
+# The paper names T5X but does not spell out the optimizer.  T5X's standard T5
+# configuration uses Adafactor; Adam at the published lr=0.01 is unstable in
+# our controlled Beauty probe, while Adafactor preserves the published LR.
+train.optimizer_name = "adafactor"
+train.lr_schedule = "inverse_sqrt"
+train.num_warmup_steps = 10000
+train.z_loss = 0.0001
+
+# Paper's approximately 13M encoder-decoder architecture.
+train.num_layers = 4
+train.num_decoder_layers = 4
+train.d_model = 128
+train.d_ff = 1024
+train.num_heads = 6
+train.d_kv = 64
+train.dropout_rate = 0.1
+train.feed_forward_proj = "relu"
+
+# Three learned RQ codes plus the paper's unique collision suffix.
+train.codebook_size = 256
+train.sem_id_dim = 4
+train.max_seq_len = 20
+train.include_user_token = True
+train.num_user_tokens = 2000
+train.padding_side = "right"
+
+train.dataset = @AmazonSeqDataset
+train.dataset_folder = "dataset/amazon"
+AmazonSeqDataset.split = "{split}"
+AmazonSeqDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonSeqDataset.item_text_format = "tiger_paper"
+AmazonSeqDataset.add_disambiguation = True
+AmazonSeqDataset.dedup_sinkhorn = False
+AmazonSeqDataset.user_hash_buckets = 2000
+AmazonSeqDataset.evaluation_protocol = "leave_one_out"
+AmazonSeqDataset.temporal_train_ratio = 0.8
+AmazonSeqDataset.temporal_valid_ratio = 0.1
+AmazonSeqDataset.rqvae_input_dim = 768
+AmazonSeqDataset.rqvae_embed_dim = 32
+AmazonSeqDataset.rqvae_hidden_dims = [512, 256, 128]
+AmazonSeqDataset.rqvae_codebook_size = 256
+AmazonSeqDataset.rqvae_n_layers = 3
+AmazonSeqDataset.rqvae_mlp_activation = "relu"
+AmazonSeqDataset.rqvae_mlp_bias = True
+AmazonSeqDataset.min_raw_codebook_usage = 0.8
+
+train.pretrained_rqvae_path = "./out/tiger/amazon/{split}/rqvae_paper_aligned/checkpoint_best_health.pt"
+
+# Selection is validation-only. Test is a separate, one-shot frozen-config run.
+train.beam_size = 20
+train.eval_every_steps = 10000
+train.save_training_state_every_steps = 10000
+train.resume_from_checkpoint = None
+train.eval_valid_every_n_epochs = 1
+train.early_stop_patience = 1000
+train.test_during_training = False
+train.eval_test_every_epoch = 0
+train.save_dir_root = "out/tiger/amazon/{split}/paper_aligned"
+
+train.wandb_logging = False
+train.wandb_project = "tiger_paper_aligned_{split}"
+train.wandb_log_interval = 100

@@ -1,0 +1,56 @@
+# OneRec CLM — OpenOneRec-style alternative SFT (flat token stream, one sample
+# per user, causal LM loss at every position). Same RQ-KMeans K=256 tokenizer
+# as the instruction-SFT pipeline so checkpoints stay stage-compatible.
+# Run: python genrec/trainers/onerec_clm_trainer.py config/onerec/amazon/clm.gin --split beauty
+
+include "config/base.gin"
+
+import genrec.data.amazon_onerec_clm
+import genrec.models.onerec
+
+# ---------- Training ----------
+train_clm.epochs = 5
+train_clm.batch_size = 32
+train_clm.learning_rate = 5e-5
+train_clm.weight_decay = 0.01
+train_clm.warmup_steps = 50
+train_clm.gradient_accumulate_every = 2
+train_clm.max_length = 256
+
+# ---------- Model / Codebook ----------
+train_clm.pretrained_path = %MODEL_HUB_QWEN3_1_7B
+train_clm.use_lora = False
+train_clm.num_codebooks = 3
+train_clm.codebook_size = 256
+
+# ---------- Dataset ----------
+train_clm.dataset = @AmazonOneRecCLMDataset
+train_clm.dataset_folder = "dataset/amazon"
+train_clm.max_seq_len = 50
+
+AmazonOneRecCLMDataset.split = "{split}"
+AmazonOneRecCLMDataset.tokenizer_type = "rqkmeans"
+AmazonOneRecCLMDataset.pretrained_rqkmeans_path = "./out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+AmazonOneRecCLMDataset.rqkmeans_codebook_size = 256
+AmazonOneRecCLMDataset.rqkmeans_n_layers = 3
+AmazonOneRecCLMDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
+AmazonOneRecCLMDataset.evaluation_protocol = "leave_one_out"
+AmazonOneRecCLMDataset.temporal_train_ratio = 0.8
+AmazonOneRecCLMDataset.temporal_valid_ratio = 0.1
+
+# ---------- Eval / Checkpoint / Logging ----------
+train_clm.do_eval = True
+train_clm.eval_every_epoch = 1
+train_clm.eval_batch_size = 64
+train_clm.eval_beam_width = 10
+train_clm.early_stopping_patience = 3
+
+train_clm.save_dir_root = "out/onerec/amazon/{split}/clm"
+train_clm.save_every_epoch = 1
+
+train_clm.wandb_logging = False
+train_clm.wandb_project = "onerec_clm_{split}"
+train_clm.wandb_log_interval = 10
+
+train_clm.amp = True
+train_clm.mixed_precision_type = "bf16"

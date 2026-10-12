@@ -16,6 +16,7 @@ train.infer_batch_size=96
 train.beam_size=30
 train.early_stop_patience=10
 train.eval_test_every_epoch=2
+train.test_during_training=False
 
 # Model architecture (HF T5 config)
 train.num_layers=4
@@ -38,6 +39,9 @@ train.dataset_folder="dataset/amazon"
 AmazonSeqDataset.split="{split}"
 AmazonSeqDataset.encoder_model_name=%MODEL_HUB_SENTENCE_T5_XL
 AmazonSeqDataset.add_disambiguation=False
+AmazonSeqDataset.evaluation_protocol="leave_one_out"
+AmazonSeqDataset.temporal_train_ratio=0.8
+AmazonSeqDataset.temporal_valid_ratio=0.1
 
 # RQVAE config (must match pretrained model)
 AmazonSeqDataset.rqvae_input_dim=768

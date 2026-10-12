@@ -1,0 +1,47 @@
+# NoteLLM exact full-catalog Amazon 2014 benchmark.
+
+include "config/base.gin"
+
+import genrec.data.amazon_notellm
+import genrec.models.notellm
+
+# Official NoteLLM fine-tuning uses one epoch.  This remains an Amazon/Qwen/LoRA
+# adaptation, but extra unvalidated epochs should not be presented as parity.
+train.epochs = 1
+# The official NoteLLM recipe uses 16 pairs per GPU.  GCL negatives exist only
+# inside a real forward/all-gather, so gradient accumulation cannot compensate
+# for a microbatch of four.  Keep this adaptation's effective batch at 32 while
+# exposing four times as many negatives per anchor.
+train.batch_size = 16
+train.gradient_accumulate_every = 2
+train.learning_rate = 2e-5
+train.weight_decay = 0.01
+train.warmup_ratio = 0.05
+
+train.pretrained_path = %MODEL_HUB_QWEN3_1_7B
+train.freeze_lm = False
+train.use_lora = True
+train.lora_r = 16
+train.lora_alpha = 32
+train.lora_dropout = 0.05
+
+train.dataset_folder = "dataset/amazon"
+train.split = "{split}"
+train.max_seq_len = 50
+train.max_text_length = 140
+train.eval_batch_size = 32
+train.catalog_batch_size = 64
+train.patience = 2
+train.enable_csft = True
+train.csft_alpha = 0.01
+
+AmazonNoteLLMDataset.split = "{split}"
+AmazonNoteLLMDataset.evaluation_protocol = "leave_one_out"
+AmazonNoteLLMDataset.temporal_train_ratio = 0.8
+AmazonNoteLLMDataset.temporal_valid_ratio = 0.1
+
+train.save_dir_root = "out/notellm/amazon/{split}"
+train.wandb_logging = False
+train.wandb_project = "notellm_{split}_training"
+train.amp = True
+train.mixed_precision_type = "bf16"

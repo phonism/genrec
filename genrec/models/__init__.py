@@ -21,6 +21,7 @@ from genrec.models.sasrec import SASRec
 from genrec.models.hstu import HSTU
 from genrec.models.lcrec import LCRec
 from genrec.models.cobra import Cobra
+from genrec.models.gram import GRAM
 
 __all__ = [
     "RqVae",
@@ -30,4 +31,5 @@ __all__ = [
     "HSTU",
     "LCRec",
     "Cobra",
+    "GRAM",
 ]

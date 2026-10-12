@@ -8,7 +8,7 @@ the corresponding partition of the shared embedding table.
 Graph-constrained decoding is used at test time to refine predictions
 via item-item similarity propagation.
 
-Reference: https://arxiv.org/abs/2501.12489
+Reference: https://arxiv.org/abs/2506.05781
 """
 import torch
 import torch.nn as nn

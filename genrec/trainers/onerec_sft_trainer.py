@@ -8,11 +8,12 @@ import os
 import gin
 import torch
 import wandb
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 from genrec.models.onerec import OneRec
 from genrec.modules.utils import parse_config, setup_logger, get_run_split
-from genrec.modules.metrics import TopKAccumulator
+from genrec.modules.metrics import SemanticIdItemMapper
+from genrec.modules.prefix_trie import PrefixTrie
 from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb, set_seed, save_run_results
 from genrec.trainers.lcrec_trainer import (
     lcrec_collate_fn,
@@ -56,7 +57,8 @@ def onerec_collate_fn(batch, tokenizer, max_length=512, num_codebooks=3, is_eval
 
 
 def evaluate_onerec(model, dataloader, accelerator, tokenizer, helper, num_codebooks,
-                    beam_width=10, logger=None, epoch=0, debug=False, eval_tasks=None):
+                    beam_width=10, logger=None, epoch=0, debug=False, eval_tasks=None,
+                    item_mapper=None, prefix_trie=None):
     """Evaluate OneRec model. Wraps lcrec_evaluate.
 
     `eval_tasks` defaults to {'seqrec', 'item2index'} — i.e. skip index2item, which
@@ -68,6 +70,7 @@ def evaluate_onerec(model, dataloader, accelerator, tokenizer, helper, num_codeb
     return lcrec_evaluate(
         model, dataloader, accelerator, tokenizer, helper,
         num_codebooks, beam_width, logger, epoch, debug, eval_tasks=eval_tasks,
+        item_mapper=item_mapper, prefix_trie=prefix_trie,
     )
 
 
@@ -152,6 +155,19 @@ def train_sft(
     train_ds = dataset(train_test_split="train", **ds_kwargs)
     valid_ds = dataset(train_test_split="valid", **ds_kwargs)
     test_ds = dataset(train_test_split="test", **ds_kwargs)
+    _run_config["evaluation_protocol"] = train_ds.evaluation_protocol
+    item_mapper = SemanticIdItemMapper.from_sequences(
+        train_ds.sem_ids_list, train_ds.sequences
+    )
+    prefix_trie = PrefixTrie(
+        train_ds.sem_ids_list, num_codebooks, codebook_size, tokenizer
+    )
+    logger.info(
+        "Honest SID resolver: most_popular(training-only), unique=%d/%d, "
+        "collision_rate=%.2f%%, max_group=%d",
+        item_mapper.num_unique_sids, item_mapper.num_items,
+        100.0 * item_mapper.collision_rate, item_mapper.max_collision_group,
+    )
 
     if max_train_samples > 0:
         train_ds.samples = train_ds.samples[:max_train_samples]
@@ -191,7 +207,8 @@ def train_sft(
     if eval_only:
         logger.info("Running eval-only mode...")
         metrics, topk = evaluate_onerec(model, valid_dl, accelerator, tokenizer, helper,
-                                        num_codebooks, eval_beam_width, logger, 0, debug_logging)
+                                        num_codebooks, eval_beam_width, logger, 0, debug_logging,
+                                        item_mapper=item_mapper, prefix_trie=prefix_trie)
         if accelerator.is_main_process:
             lcrec_log_metrics(metrics, topk, num_codebooks, 0, logger)
         accelerator.wait_for_everyone()
@@ -200,10 +217,13 @@ def train_sft(
     # Training loop with early stopping
     pbar = tqdm(total=total_steps, dynamic_ncols=True) if accelerator.is_main_process else None
     global_step = 0
-    best_recall10 = 0.0
+    # Treat the first validation pass as a best checkpoint even when Recall@10
+    # is exactly zero.  GRPO has an explicit dependency on checkpoint_best, so
+    # a weak or smoke-sized SFT run must still leave a complete artifact.
+    best_recall10 = float("-inf")
+    best_epoch = -1
     patience_counter = 0
-    last_test_topk: Dict[str, float] = {}
-    last_test_task_exact: Dict[str, float] = {}
+    best_state: Optional[Dict[str, torch.Tensor]] = None
 
     for epoch in range(epochs):
         model.train()
@@ -252,45 +272,34 @@ def train_sft(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics, topk = evaluate_onerec(model, valid_dl, accelerator, tokenizer, helper,
-                                            num_codebooks, eval_beam_width, logger, epoch, debug_logging)
+                                            num_codebooks, eval_beam_width, logger, epoch, debug_logging,
+                                            item_mapper=item_mapper, prefix_trie=prefix_trie)
 
             # `topk` is already reduced across ranks inside lcrec_evaluate, so
             # `current_recall10` is consistent everywhere — safe to compare without sync.
             current_recall10 = topk.get("Recall@10", 0.0)
             is_best = current_recall10 > best_recall10
-            # First eval (no cached test yet) also forces a test pass for the baseline.
-            need_test = is_best or not last_test_topk
 
             if accelerator.is_main_process:
                 logger.info(f"--- Valid ---")
                 lcrec_log_metrics(metrics, topk, num_codebooks, epoch, logger, wandb_logging)
 
-            if need_test:
-                test_metrics, test_topk = evaluate_onerec(model, test_dl, accelerator, tokenizer, helper,
-                                                          num_codebooks, eval_beam_width, logger, epoch, debug_logging)
-                if accelerator.is_main_process:
-                    logger.info(f"--- Test (refreshed) ---")
-                    lcrec_log_metrics(test_metrics, test_topk, num_codebooks, epoch, logger, wandb_log=False)
-                    last_test_topk = dict(test_topk)
-                    last_test_task_exact = {
-                        task: (test_metrics[task]['exact'] / test_metrics[task]['total'])
-                        for task in ('seqrec', 'item2index')
-                        if task in test_metrics and test_metrics[task].get('total', 0) > 0
-                    }
-                    if wandb_logging:
-                        test_log = {"epoch": epoch}
-                        for task, v in last_test_task_exact.items():
-                            test_log[f"test/{task}_exact"] = v
-                        for k, v in test_topk.items():
-                            test_log[f"test/seqrec_{k}"] = v
-                        wandb.log(test_log)
-            elif accelerator.is_main_process:
-                logger.info(f"--- Test (cached from previous best, skipped) ---")
-
             # Early stopping bookkeeping (kept consistent on all ranks).
             if is_best:
                 best_recall10 = current_recall10
+                best_epoch = epoch
                 patience_counter = 0
+                unwrapped = accelerator.unwrap_model(model)
+                trainable_names = {
+                    name for name, parameter in unwrapped.named_parameters()
+                    if parameter.requires_grad
+                }
+                current_state = accelerator.get_state_dict(model)
+                best_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in current_state.items()
+                    if name in trainable_names
+                }
             else:
                 patience_counter += 1
                 if accelerator.is_main_process:
@@ -356,10 +365,38 @@ def train_sft(
         if pbar:
             pbar.close()
 
+    # Strict one-shot test after validation-only checkpoint selection.
+    accelerator.wait_for_everyone()
+    if best_state is not None:
+        accelerator.unwrap_model(model).load_state_dict(best_state, strict=False)
+    test_metrics, test_topk = evaluate_onerec(
+        model, test_dl, accelerator, tokenizer, helper,
+        num_codebooks, eval_beam_width, logger, best_epoch, debug_logging,
+        item_mapper=item_mapper, prefix_trie=prefix_trie,
+    )
+    last_test_topk = dict(test_topk)
+    last_test_sid_topk = dict(test_metrics.get('sid_topk', {}))
+    last_test_task_exact = {
+        task: (test_metrics[task]['exact'] / test_metrics[task]['total'])
+        for task in ('seqrec', 'item2index')
+        if task in test_metrics and test_metrics[task].get('total', 0) > 0
+    }
+    if accelerator.is_main_process:
+        logger.info("--- Test (one-shot after validation selection) ---")
+        lcrec_log_metrics(
+            test_metrics, test_topk, num_codebooks, best_epoch, logger,
+            wandb_log=False,
+        )
+
     if wandb_logging and accelerator.is_main_process:
+        wandb.log({
+            "epoch": best_epoch,
+            **{f"test/{task}_exact": value for task, value in last_test_task_exact.items()},
+            **{f"test/seqrec_{key}": value for key, value in test_topk.items()},
+        })
         wandb.finish()
 
-    if accelerator.is_main_process and last_test_topk:
+    if accelerator.is_main_process:
         save_run_results(
             save_dir=save_dir_root,
             model="onerec_sft",
@@ -368,7 +405,11 @@ def train_sft(
             metrics=last_test_topk,
             config=_run_config,
             extra={
+                "best_epoch": best_epoch,
                 "best_valid_recall@10": best_recall10,
+                "evaluation_level": "item",
+                "sid_resolution": "most_popular_training_only",
+                "sid_reference_metrics": last_test_sid_topk,
                 "task_exact": last_test_task_exact,
             },
         )

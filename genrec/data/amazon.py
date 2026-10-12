@@ -3,6 +3,8 @@ Amazon Reviews Dataset for RQVAE training.
 Supports automatic download and processing of Amazon Review 2014 5-core data.
 """
 import gzip
+import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -15,9 +17,42 @@ import gin
 from torch.utils.data import Dataset
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
+from genrec.data.evaluation_protocol import select_protocol_sequences
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def semantic_id_layer_usage(
+    semantic_ids: torch.Tensor,
+    codebook_size: int,
+) -> List[float]:
+    """Return the fraction of used codes in each SID layer."""
+    semantic_ids = torch.as_tensor(semantic_ids)
+    if semantic_ids.ndim != 2:
+        raise ValueError("semantic_ids must have shape [items, layers]")
+    if codebook_size <= 0:
+        raise ValueError("codebook_size must be positive")
+    return [
+        int(torch.unique(semantic_ids[:, layer]).numel()) / codebook_size
+        for layer in range(semantic_ids.shape[1])
+    ]
+
+
+def stable_hash_bucket(value: str, num_buckets: int) -> int:
+    """Map a string to a stable feature-hashing bucket.
+
+    Python's built-in ``hash`` is salted per process, which makes a user token
+    change between training and a later standalone evaluation process.  TIGER
+    only specifies the hashing trick, not a concrete hash function, so use a
+    fixed BLAKE2 digest for reproducible bucket assignments.
+    """
+    if num_buckets <= 0:
+        raise ValueError("num_buckets must be positive")
+    digest = hashlib.blake2b(
+        value.encode("utf-8"), digest_size=8, person=b"genrec"
+    ).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False) % num_buckets
 
 
 # Amazon Review 2014 download URLs
@@ -117,11 +152,21 @@ class AmazonItemDataset(Dataset):
         train_test_split: str = "all",
         encoder_model_name: str = "sentence-transformers/sentence-t5-base",
         force_regenerate: bool = False,
+        item_text_format: str = "legacy",
     ) -> None:
         self.root = root
         self.split = split.lower()
         self.train_test_split = train_test_split
         self.encoder_model_name = encoder_model_name
+        self.force_regenerate = force_regenerate
+        self.item_text_format = item_text_format
+
+        if item_text_format not in {"legacy", "tiger_paper", "cobra_paper"}:
+            raise ValueError(
+                "item_text_format must be 'legacy', 'tiger_paper' or "
+                "'cobra_paper', got "
+                f"{item_text_format!r}"
+            )
 
         if self.split not in DATASET_CONFIGS:
             raise ValueError(f"Unknown split: {split}. Available: {list(DATASET_CONFIGS.keys())}")
@@ -130,7 +175,11 @@ class AmazonItemDataset(Dataset):
         self.raw_dir = os.path.join(root, "raw", self.split)
         self.processed_dir = os.path.join(root, "processed", self.split)
         encoder_short_name = os.path.basename(encoder_model_name.rstrip("/"))
-        self.parquet_path = os.path.join(self.processed_dir, f"item_emb_{encoder_short_name}.parquet")
+        format_suffix = "" if item_text_format == "legacy" else f"_{item_text_format}"
+        self.parquet_path = os.path.join(
+            self.processed_dir,
+            f"item_emb_{encoder_short_name}{format_suffix}.parquet",
+        )
 
         # Download if needed
         self._download_if_needed()
@@ -169,8 +218,21 @@ class AmazonItemDataset(Dataset):
         logger.info(f"Loaded {len(self.embeddings)} embeddings from {self.parquet_path}")
 
     def _generate_embeddings(self) -> None:
-        """Generate embeddings from raw data."""
+        """Generate embeddings once across concurrent Codex sessions."""
         os.makedirs(self.processed_dir, exist_ok=True)
+        lock_path = self.parquet_path + ".lock"
+        with open(lock_path, "a+") as lock_file:
+            logger.info(f"Waiting for embedding cache lock: {lock_path}")
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+            # Another task may have populated the cache while this constructor
+            # was waiting. Recheck only after acquiring the OS lock.
+            if os.path.exists(self.parquet_path) and not self.force_regenerate:
+                self._load_embeddings()
+                return
+            self._generate_embeddings_unlocked()
+
+    def _generate_embeddings_unlocked(self) -> None:
+        """Generate one cache while the caller owns its exclusive lock."""
         config = DATASET_CONFIGS[self.split]
 
         reviews_path = os.path.join(self.raw_dir, config["reviews"])
@@ -199,6 +261,7 @@ class AmazonItemDataset(Dataset):
                     'salesRank': meta.get('salesRank'),
                     'brand': meta.get('brand'),
                     'categories': meta.get('categories'),
+                    'description': meta.get('description'),
                 }
 
         logger.info(f"Loaded metadata for {len(item_info)} items")
@@ -211,13 +274,35 @@ class AmazonItemDataset(Dataset):
         texts = []
         for item_id in sorted_ids:
             info = item_info[item_id]
-            semantics = (
-                f"'title':{info.get('title', '')}\n"
-                f" 'price':{info.get('price', '')}\n"
-                f" 'salesRank':{info.get('salesRank', '')}\n"
-                f" 'brand':{info.get('brand', '')}\n"
-                f" 'categories':{info.get('categories', '')}"
-            )
+            if self.item_text_format == "tiger_paper":
+                # TIGER section 4.1: title, price, brand and category.  Keep a
+                # separate cache from the legacy template, which also includes
+                # salesRank, so changing formats can never silently reuse stale
+                # embeddings.
+                semantics = (
+                    f"title: {info.get('title', '')}\n"
+                    f"price: {info.get('price', '')}\n"
+                    f"brand: {info.get('brand', '')}\n"
+                    f"category: {info.get('categories', '')}"
+                )
+            elif self.item_text_format == "cobra_paper":
+                # COBRA section 4.1 lists exactly these four public-dataset
+                # attributes.  Keep it separate from the historical template,
+                # which used salesRank/brand and omitted description.
+                semantics = (
+                    f"title: {info.get('title', '')}\n"
+                    f"price: {info.get('price', '')}\n"
+                    f"category: {info.get('categories', '')}\n"
+                    f"description: {info.get('description', '')}"
+                )
+            else:
+                semantics = (
+                    f"'title':{info.get('title', '')}\n"
+                    f" 'price':{info.get('price', '')}\n"
+                    f" 'salesRank':{info.get('salesRank', '')}\n"
+                    f" 'brand':{info.get('brand', '')}\n"
+                    f" 'categories':{info.get('categories', '')}"
+                )
             texts.append(semantics)
 
         logger.info(f"Batch encoding {len(texts)} items...")
@@ -232,7 +317,13 @@ class AmazonItemDataset(Dataset):
 
         # Save to parquet
         df = pd.DataFrame(item_embeddings)
-        df.to_parquet(self.parquet_path, index=False)
+        temporary_path = f"{self.parquet_path}.part.{os.getpid()}"
+        try:
+            df.to_parquet(temporary_path, index=False)
+            os.replace(temporary_path, self.parquet_path)
+        finally:
+            if os.path.exists(temporary_path):
+                os.unlink(temporary_path)
         logger.info(f"Saved embeddings to {self.parquet_path}")
 
         # Store embeddings
@@ -285,14 +376,23 @@ class AmazonSeqDataset(Dataset):
         max_seq_len: int = 20,
         subsample: bool = True,  # Kept for backward compatibility, ignored
         add_disambiguation: bool = True,  # Add 4th code to disambiguate collisions
+        dedup_sinkhorn: bool = False,  # LC-Rec-style last-layer Sinkhorn dedup (keeps n codes)
+        user_hash_buckets: int = 10000,
         pretrained_rqvae_path: str = "./out/rqvae/amazon/{split}/checkpoint.pt",
         encoder_model_name: str = "sentence-transformers/sentence-t5-base",
+        item_text_format: str = "legacy",
         # RQVAE config - should match pretrained model
         rqvae_input_dim: int = 768,
         rqvae_embed_dim: int = 32,
         rqvae_hidden_dims: List[int] = [512, 256, 128, 64],
         rqvae_codebook_size: int = 256,
         rqvae_n_layers: int = 3,
+        rqvae_mlp_activation: str = "silu",
+        rqvae_mlp_bias: bool = False,
+        min_raw_codebook_usage: float = 0.0,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         from genrec.models.rqvae import RqVae
 
@@ -301,6 +401,18 @@ class AmazonSeqDataset(Dataset):
         self.train_test_split = train_test_split
         self._max_seq_len = max_seq_len
         self.add_disambiguation = add_disambiguation
+        self.dedup_sinkhorn = dedup_sinkhorn
+        self.user_hash_buckets = user_hash_buckets
+        self.item_text_format = item_text_format
+        self.rqvae_codebook_size = rqvae_codebook_size
+        self.rqvae_n_layers = rqvae_n_layers
+        self.rqvae_mlp_activation = rqvae_mlp_activation
+        self.rqvae_mlp_bias = rqvae_mlp_bias
+        if not 0.0 <= min_raw_codebook_usage <= 1.0:
+            raise ValueError("min_raw_codebook_usage must be in [0, 1]")
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         # Replace {split} placeholder in rqvae path
         pretrained_rqvae_path = pretrained_rqvae_path.format(split=self.split)
@@ -311,6 +423,7 @@ class AmazonSeqDataset(Dataset):
             split=split,
             train_test_split="all",
             encoder_model_name=encoder_model_name,
+            item_text_format=item_text_format,
         )
         self.item_embeddings = torch.tensor(item_dataset.embeddings, dtype=torch.float32)
 
@@ -326,15 +439,51 @@ class AmazonSeqDataset(Dataset):
             n_layers=rqvae_n_layers,
             n_cat_features=0,
             commitment_weight=0.25,
+            mlp_activation=rqvae_mlp_activation,
+            mlp_bias=rqvae_mlp_bias,
         )
         rqvae.load_pretrained(pretrained_rqvae_path)
         rqvae.eval()
 
         with torch.no_grad():
-            self.sem_ids_list = rqvae.get_semantic_ids(self.item_embeddings).sem_ids.tolist()
+            nearest_sem_ids = rqvae.get_semantic_ids(
+                self.item_embeddings
+            ).sem_ids
+            layer_usage = semantic_id_layer_usage(
+                nearest_sem_ids, rqvae_codebook_size
+            )
+            if min(layer_usage, default=0.0) < min_raw_codebook_usage:
+                raise RuntimeError(
+                    "Refusing to build TIGER data from an unhealthy RQ-VAE: "
+                    f"raw layer usage={layer_usage}, required minimum="
+                    f"{min_raw_codebook_usage:.2%}."
+                )
+            if self.dedup_sinkhorn:
+                # LC-Rec-style: resolve collisions by re-quantizing the last code
+                # with Sinkhorn, keeping the same number of codes (no 4th token).
+                final_sem_ids = rqvae.get_semantic_ids_dedup(
+                    self.item_embeddings
+                ).tolist()
+            else:
+                final_sem_ids = nearest_sem_ids.tolist()
 
-        # Add disambiguation suffix to handle collisions (optional)
-        if self.add_disambiguation:
+        self.raw_sem_ids_list = [list(codes) for codes in nearest_sem_ids.tolist()]
+        self.sem_ids_list = [list(codes) for codes in final_sem_ids]
+        print(
+            "TIGER RQ-VAE raw layer usage: "
+            f"{[round(value, 4) for value in layer_usage]}"
+        )
+
+        # Disambiguation suffix and Sinkhorn dedup are alternative collision
+        # strategies: running both would emit n+1-code IDs that downstream
+        # sem_id_dim=n consumers silently misalign (the 4th code aliases into
+        # codebook-0's token range). dedup_sinkhorn wins when both are set.
+        if self.add_disambiguation and self.dedup_sinkhorn:
+            logger.warning(
+                "dedup_sinkhorn=True already resolves collisions — "
+                "skipping the disambiguation suffix (add_disambiguation ignored)."
+            )
+        elif self.add_disambiguation:
             self.sem_ids_list = self._add_disambiguation_suffix(self.sem_ids_list)
 
         # Load user sequences and generate samples
@@ -360,6 +509,12 @@ class AmazonSeqDataset(Dataset):
         collision_count = sum(1 for items in code_to_items.values() if len(items) > 1)
         collision_items = sum(len(items) for items in code_to_items.values() if len(items) > 1)
         max_collision = max(len(items) for items in code_to_items.values())
+
+        if max_collision > self.rqvae_codebook_size:
+            raise ValueError(
+                "collision suffix exceeds the configured codebook token range: "
+                f"max_group={max_collision}, codebook_size={self.rqvae_codebook_size}"
+            )
 
         logger.info(f"Semantic ID collisions: {collision_count} groups, {collision_items} items affected, max group size: {max_collision}")
 
@@ -397,18 +552,21 @@ class AmazonSeqDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        # Sort by timestamp and filter short sequences
-        # Need at least 5 items for leave-one-out (train needs >= 3 items)
-        self.sequences = []
-        self.user_ids = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= 5:
-                self.sequences.append(items)
-                self.user_ids.append(uid)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=5,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.user_ids = [uid for uid, _ in selected]
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
-        logger.info(f"Loaded {len(self.sequences)} user sequences")
+        logger.info(
+            f"Loaded {len(self.sequences)} user sequences "
+            f"(protocol={self.evaluation_protocol})"
+        )
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples.
@@ -430,7 +588,9 @@ class AmazonSeqDataset(Dataset):
         if self.train_test_split == "train":
             # Sliding window for training
             for user_idx, full_seq in enumerate(tqdm(self.sequences, desc="Generating train samples")):
-                user_id = hash(self.user_ids[user_idx]) % 10000
+                user_id = stable_hash_bucket(
+                    self.user_ids[user_idx], self.user_hash_buckets
+                )
                 # Exclude last 2 items (for valid and test)
                 seq = full_seq[:-2]
                 # Generate sliding window samples
@@ -445,7 +605,9 @@ class AmazonSeqDataset(Dataset):
         elif self.train_test_split == "valid":
             # Valid: exclude last 1 item (test target)
             for user_idx, full_seq in enumerate(self.sequences):
-                user_id = hash(self.user_ids[user_idx]) % 10000
+                user_id = stable_hash_bucket(
+                    self.user_ids[user_idx], self.user_hash_buckets
+                )
                 seq = full_seq[:-1]
                 self.samples.append({
                     'user_id': user_id,
@@ -455,7 +617,9 @@ class AmazonSeqDataset(Dataset):
         else:  # test
             # Test: use full sequence
             for user_idx, full_seq in enumerate(self.sequences):
-                user_id = hash(self.user_ids[user_idx]) % 10000
+                user_id = stable_hash_bucket(
+                    self.user_ids[user_idx], self.user_hash_buckets
+                )
                 self.samples.append({
                     'user_id': user_id,
                     'history': full_seq[:-1],  # All except last
@@ -491,12 +655,22 @@ class AmazonSeqDataset(Dataset):
             if item_id < len(self.sem_ids_list):
                 item_sem_ids.extend(self.sem_ids_list[item_id])
 
-        target_sem_ids = self.sem_ids_list[target_item] if target_item < len(self.sem_ids_list) else [0, 0, 0]
+        sid_width = (
+            len(self.sem_ids_list[0])
+            if self.sem_ids_list
+            else self.rqvae_n_layers
+        )
+        target_sem_ids = (
+            self.sem_ids_list[target_item]
+            if target_item < len(self.sem_ids_list)
+            else [0] * sid_width
+        )
 
         return SeqData(
             user_id=user_id,
             item_ids=item_sem_ids,
             target_ids=target_sem_ids,
+            target_item=target_item,
         )
 
 

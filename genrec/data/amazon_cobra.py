@@ -14,7 +14,9 @@ from genrec.data.amazon import (
     AmazonItemDataset,
     DATASET_CONFIGS,
     parse_gzip_json,
+    semantic_id_layer_usage,
 )
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
 
 @gin.configurable
@@ -49,6 +51,12 @@ class AmazonCobraDataset(Dataset):
         rqvae_hidden_dims: List[int] = [512, 256, 128, 64],
         rqvae_codebook_size: int = 256,
         rqvae_n_layers: int = 3,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
+        item_text_format: str = "title_brand",
+        rqvae_item_text_format: str = "legacy",
+        min_raw_codebook_usage: float = 0.0,
     ) -> None:
         from genrec.models.rqvae import RqVae
 
@@ -59,6 +67,21 @@ class AmazonCobraDataset(Dataset):
         self.max_text_len = max_text_len
         self.n_codebooks = rqvae_n_layers
         self.codebook_size = rqvae_codebook_size
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
+        if item_text_format not in {
+            "title_brand", "flattened_attributes", "paper_attributes"
+        }:
+            raise ValueError(
+                "item_text_format must be 'title_brand', "
+                "'flattened_attributes' or 'paper_attributes', "
+                f"got {item_text_format!r}"
+            )
+        self.item_text_format = item_text_format
+        self.rqvae_item_text_format = rqvae_item_text_format
+        if not 0.0 <= min_raw_codebook_usage <= 1.0:
+            raise ValueError("min_raw_codebook_usage must be in [0, 1]")
 
         # Replace {split} placeholder in rqvae path
         pretrained_rqvae_path = pretrained_rqvae_path.format(split=self.split)
@@ -73,6 +96,7 @@ class AmazonCobraDataset(Dataset):
             split=split,
             train_test_split="all",
             encoder_model_name=encoder_model_name,
+            item_text_format=rqvae_item_text_format,
         )
         self.item_embeddings = torch.tensor(item_dataset.embeddings, dtype=torch.float32)
 
@@ -93,7 +117,21 @@ class AmazonCobraDataset(Dataset):
         rqvae.eval()
 
         with torch.no_grad():
-            self.sem_ids_list = rqvae.get_semantic_ids(self.item_embeddings).sem_ids.tolist()
+            semantic_ids = rqvae.get_semantic_ids(self.item_embeddings).sem_ids
+            layer_usage = semantic_id_layer_usage(
+                semantic_ids, rqvae_codebook_size
+            )
+            if min(layer_usage, default=0.0) < min_raw_codebook_usage:
+                raise RuntimeError(
+                    "Refusing to build COBRA data from an unhealthy RQ-VAE: "
+                    f"layer usage={layer_usage}, required minimum="
+                    f"{min_raw_codebook_usage:.2%}."
+                )
+            self.sem_ids_list = semantic_ids.tolist()
+        print(
+            "COBRA RQ-VAE raw layer usage: "
+            f"{[round(value, 4) for value in layer_usage]}"
+        )
 
         # Load item metadata for text
         self._load_item_metadata()
@@ -104,6 +142,26 @@ class AmazonCobraDataset(Dataset):
         # Load user sequences and generate samples
         self._load_sequences()
         self._generate_samples()
+
+    def _format_item_text(self, meta: Dict[str, Any], item_id: int) -> str:
+        if self.item_text_format == "paper_attributes":
+            text = (
+                f"title: {meta.get('title', '')}\n"
+                f"price: {meta.get('price', '')}\n"
+                f"category: {meta.get('categories', '')}\n"
+                f"description: {meta.get('description', '')}"
+            )
+        elif self.item_text_format == "flattened_attributes":
+            text = (
+                f"'title':{meta.get('title', '')}\n"
+                f" 'price':{meta.get('price', '')}\n"
+                f" 'salesRank':{meta.get('salesRank', '')}\n"
+                f" 'brand':{meta.get('brand', '')}\n"
+                f" 'categories':{meta.get('categories', '')}"
+            )
+        else:
+            text = f"{meta.get('title', '')} {meta.get('brand', '')}".strip()
+        return text.strip() or f"item_{item_id}"
 
     def _load_item_metadata(self) -> None:
         """Load item metadata for text generation."""
@@ -124,10 +182,10 @@ class AmazonCobraDataset(Dataset):
             asin = meta.get('asin')
             if asin in item_id_mapping:
                 item_id = item_id_mapping[asin]
-                title = meta.get('title', '')
-                brand = meta.get('brand', '')
-                text = f"{title} {brand}".strip() or f"item_{item_id}"
-                self.item_texts[item_id] = text
+                # Match the attribute flattening used to construct the
+                # Sentence-T5-XL vectors consumed by COBRA's RQ-VAE.  This is
+                # also the input representation described by the paper.
+                self.item_texts[item_id] = self._format_item_text(meta, item_id)
 
         # Fill missing items
         for i in range(len(item_id_mapping)):
@@ -172,17 +230,19 @@ class AmazonCobraDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        # Sort by timestamp and filter short sequences
-        self.sequences = []
-        self.user_ids = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= 5:
-                self.sequences.append(items)
-                self.user_ids.append(uid)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=5,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.user_ids = [uid for uid, _ in selected]
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
-        print(f"Loaded {len(self.sequences)} user sequences for COBRA")
+        print(f"Loaded {len(self.sequences)} user sequences for COBRA "
+              f"(protocol={self.evaluation_protocol})")
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples.
@@ -279,6 +339,7 @@ class AmazonCobraDataset(Dataset):
 
         return {
             'input_ids': item_sem_ids,  # List[int] of length T*C
+            'history_item_ids': history_items,
             'encoder_input_ids': encoder_input_ids,  # (T, L)
             'target_sem_ids': target_sem_ids,  # List[int] of length C
             'target_encoder_input_ids': target_encoder_input_ids,  # (1, L)

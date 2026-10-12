@@ -1,0 +1,90 @@
+# COBRA Beauty paper-alignment experiment.
+#
+# This is intentionally self-contained instead of including
+# cobra_optimized.gin: parse_config substitutes {split} in the top-level file
+# before Gin expands includes, so a nested experiment config would leave the
+# included file's {split} placeholders unresolved.
+
+include "config/base.gin"
+
+import genrec.data.amazon_cobra
+import genrec.models.cobra
+
+# Training budget
+train.epochs = 50
+train.batch_size = 32
+train.learning_rate = 1e-4
+train.weight_decay = 0.01
+train.num_warmup_steps = 500
+train.gradient_accumulate_every = 4
+
+# Public-dataset architecture reported by the COBRA paper
+train.encoder_n_layers = 1
+train.encoder_hidden_dim = 768
+train.encoder_num_heads = 6
+train.encoder_vocab_size = 32128
+train.encoder_type = "light"
+# Paper alignment: prepend [CLS] and extract its encoded representation.
+train.encoder_pooling = "cls"
+
+train.id_vocab_size = 32
+train.n_codebooks = 3
+train.d_model = 768
+train.max_len = 1024
+train.temperature = 0.07
+train.queue_size = 1024
+train.decoder_n_layers = 2
+train.decoder_num_heads = 6
+train.decoder_dropout = 0.1
+train.use_dense = True
+# Paper alignment: all other targets in the current batch are negatives.
+# The paper does not describe a cross-batch memory queue.
+train.dense_negative_scope = "all_batch"
+# Research extension kept off for the paper-aligned control. Enable only in a
+# separately named ablation; this queue is not described in the paper.
+train.use_dense_memory_queue = False
+
+# Paper objective: L_sparse + L_dense
+train.sparse_loss_weight = 1.0
+train.dense_loss_weight = 1.0
+
+# Corrected BeamFusion baseline; tau/psi will be selected on validation only.
+train.eval_n_beam = 64
+train.eval_tau = 1.0
+train.eval_psi = 16.0
+train.constrain_to_catalog = False
+
+# Dataset/tokenizer
+train.dataset = @AmazonCobraDataset
+train.dataset_folder = "dataset/amazon"
+train.max_seq_len = 50
+train.pretrained_rqvae_path = "./out/cobra/amazon/{split}/rqvae_paper_attributes/checkpoint_best_health.pt"
+AmazonCobraDataset.split = "{split}"
+AmazonCobraDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+AmazonCobraDataset.max_text_len = 128
+AmazonCobraDataset.rqvae_input_dim = 768
+AmazonCobraDataset.rqvae_embed_dim = 32
+AmazonCobraDataset.rqvae_hidden_dims = [512, 256, 128, 64]
+AmazonCobraDataset.rqvae_codebook_size = 32
+AmazonCobraDataset.rqvae_n_layers = 3
+# Paper section 4.1: title, price, category and description.
+AmazonCobraDataset.item_text_format = "paper_attributes"
+AmazonCobraDataset.rqvae_item_text_format = "cobra_paper"
+AmazonCobraDataset.min_raw_codebook_usage = 0.8
+AmazonCobraDataset.evaluation_protocol = "leave_one_out"
+AmazonCobraDataset.temporal_train_ratio = 0.8
+AmazonCobraDataset.temporal_valid_ratio = 0.1
+
+# Validation-only selection during training; test is a final one-shot evaluation.
+train.save_dir_root = "out/cobra/amazon/{split}_paper_aligned"
+train.save_every_epoch = 10
+train.eval_valid_every_epoch = 5
+train.eval_test_every_epoch = 0  # retained trainer arg; strict test is always one-shot
+train.do_eval = True
+
+train.wandb_logging = True
+train.wandb_project = "cobra_paper_aligned_{split}"
+train.wandb_log_interval = 10
+
+train.amp = False
+train.mixed_precision_type = "bf16"

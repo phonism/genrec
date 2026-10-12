@@ -7,10 +7,12 @@ import torch
 import wandb
 
 from genrec.models.hstu import HSTU
-from genrec.modules.utils import parse_config, setup_logger
+from genrec.modules.utils import parse_config, setup_logger, get_run_split
 from genrec.data.amazon_hstu import AmazonHSTUDataset, hstu_collate_fn, hstu_eval_collate_fn
+from genrec.data.ml1m_hstu import MovieLens1MHSTUDataset
 from genrec.trainers.trainer_utils import (
-    setup_accelerator, setup_wandb, save_checkpoint, log_training_info
+    setup_accelerator, setup_wandb, save_checkpoint, log_training_info,
+    set_seed, save_run_results,
 )
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -68,18 +70,39 @@ def evaluate(model, dataloader, accelerator, use_temporal_bias=True, top_ks=[1, 
 def train(
     epochs=200, batch_size=128, learning_rate=1e-3, weight_decay=0.0,
     max_seq_len=50, embed_dim=64, num_heads=2, num_blocks=2, dropout=0.2,
+    dqk=None, dv=None,
+    use_position_bias=True, concat_ua=False,
     num_position_buckets=32, num_time_buckets=64, use_temporal_bias=True,
     # Loss function: "ce" (full cross-entropy) or "sampled_softmax"
     loss_type="ce", num_negatives=128, ss_temperature=0.05, ss_l2_norm=True,
+    ss_sampling_strategy="local",  # Meta local-table sampler; also in_batch/global
     dataset_folder="dataset/amazon", split="beauty",
+    dataset_type="amazon",  # "amazon" or "ml1m"
     do_eval=True, eval_every_epoch=10, eval_batch_size=256,
     patience=50,
     save_dir_root="out/hstu/amazon/beauty", save_every_epoch=50,
     wandb_logging=False, wandb_project="hstu_training", wandb_log_interval=100,
     amp=True, mixed_precision_type="bf16",
+    seed=42,
 ):
     """Train HSTU model."""
+    valid_loss_types = {"ce", "sampled_softmax"}
+    if loss_type not in valid_loss_types:
+        raise ValueError(
+            f"loss_type must be one of {sorted(valid_loss_types)}, got {loss_type!r}"
+        )
+    valid_sampling_strategies = {"local", "in_batch", "global"}
+    if (
+        loss_type == "sampled_softmax"
+        and ss_sampling_strategy not in valid_sampling_strategies
+    ):
+        raise ValueError(
+            "ss_sampling_strategy must be one of "
+            f"{sorted(valid_sampling_strategies)}, got {ss_sampling_strategy!r}"
+        )
+    _run_config = dict(locals())
     logger = setup_logger(save_dir_root, name="hstu")
+    set_seed(seed)
     accelerator = setup_accelerator(amp=amp, mixed_precision_type=mixed_precision_type)
     device = accelerator.device
 
@@ -90,10 +113,20 @@ def train(
             step_metrics={"train/*": "global_step", "eval/*": "epoch"}
         )
 
-    # Dataset
-    train_ds = AmazonHSTUDataset(root=dataset_folder, split=split, train_test_split="train", max_seq_len=max_seq_len)
-    valid_ds = AmazonHSTUDataset(root=dataset_folder, split=split, train_test_split="valid", max_seq_len=max_seq_len)
-    test_ds = AmazonHSTUDataset(root=dataset_folder, split=split, train_test_split="test", max_seq_len=max_seq_len)
+    # Dataset (sample schema is identical across datasets, so collate fns are reused)
+    if dataset_type == "ml1m":
+        DatasetCls = MovieLens1MHSTUDataset
+    elif dataset_type == "amazon":
+        DatasetCls = AmazonHSTUDataset
+    else:
+        raise ValueError(f"Unknown dataset_type: {dataset_type}")
+
+    train_ds = DatasetCls(root=dataset_folder, split=split, train_test_split="train", max_seq_len=max_seq_len)
+    valid_ds = DatasetCls(root=dataset_folder, split=split, train_test_split="valid", max_seq_len=max_seq_len)
+    test_ds = DatasetCls(root=dataset_folder, split=split, train_test_split="test", max_seq_len=max_seq_len)
+    _run_config["evaluation_protocol"] = getattr(
+        train_ds, "evaluation_protocol", "leave_one_out"
+    )
 
     num_items = train_ds.num_items
     logger.info(f"Num items: {num_items}, Train: {len(train_ds)}, Valid: {len(valid_ds)}, Test: {len(test_ds)}")
@@ -105,7 +138,9 @@ def train(
     valid_dl = DataLoader(valid_ds, batch_size=eval_batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_eval)
     test_dl = DataLoader(test_ds, batch_size=eval_batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_eval)
 
-    # Model
+    # Score function: SS training requires L2-normalized retrieval at eval time too,
+    # otherwise eval falls back to un-normalized dot product and metrics collapse.
+    is_ss = (loss_type == "sampled_softmax")
     model = HSTU(
         num_items=num_items,
         max_seq_len=max_seq_len,
@@ -116,6 +151,12 @@ def train(
         num_position_buckets=num_position_buckets,
         num_time_buckets=num_time_buckets,
         use_temporal_bias=use_temporal_bias,
+        score_l2_norm=(is_ss and ss_l2_norm),
+        score_temperature=(ss_temperature if is_ss else 1.0),
+        dqk=dqk,
+        dv=dv,
+        use_position_bias=use_position_bias,
+        concat_ua=concat_ua,
     )
 
     optimizer = Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(0.9, 0.98))
@@ -127,7 +168,7 @@ def train(
 
     # Training
     global_step = 0
-    best_recall = 0.0
+    best_recall = float("-inf")
     wait = 0
 
     for epoch in range(epochs):
@@ -140,10 +181,14 @@ def train(
             targets = data['targets']
             timestamps = data['timestamps'] if use_temporal_bias else None
 
+            # Both loss paths must go through the prepared model's forward() —
+            # calling a method on the unwrapped module would bypass DDP's
+            # gradient-sync hooks and silently train each rank independently.
             if loss_type == "sampled_softmax":
-                _, loss = accelerator.unwrap_model(model).forward_sampled_softmax(
+                _, loss = model(
                     input_ids, timestamps, targets,
-                    num_negatives=num_negatives, temperature=ss_temperature, l2_norm=ss_l2_norm,
+                    sampled_softmax=True, num_negatives=num_negatives,
+                    sampling_strategy=ss_sampling_strategy,
                 )
             else:
                 _, loss = model(input_ids, timestamps, targets)
@@ -166,26 +211,30 @@ def train(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics = evaluate(model, valid_dl, accelerator, use_temporal_bias)
-            test_metrics_epoch = evaluate(model, test_dl, accelerator, use_temporal_bias)
             if accelerator.is_main_process:
                 logger.info(f"Epoch {epoch} - Valid: " + ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()]))
-                logger.info(f"Epoch {epoch} - Test:  " + ", ".join([f"{k}={v:.4f}" for k, v in test_metrics_epoch.items()]))
                 if wandb_logging:
-                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}, **{f"test_epoch/{k}": v for k, v in test_metrics_epoch.items()}})
+                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}})
 
-                # Save best model + early stopping
-                if metrics['Recall@10'] > best_recall:
-                    best_recall = metrics['Recall@10']
+            # Best/early-stop state must be tracked on EVERY rank (evaluate()
+            # returns globally reduced metrics, so all ranks agree). A main-only
+            # break would leave the other ranks training and deadlock the next
+            # collective op. Checkpoint I/O stays main-only.
+            if metrics['Recall@10'] > best_recall:
+                best_recall = metrics['Recall@10']
+                wait = 0
+                if accelerator.is_main_process:
                     save_path = os.path.join(save_dir_root, "best_model.pt")
                     torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
                     logger.info(f"New best Recall@10: {best_recall:.4f}, saved to {save_path}")
-                    wait = 0
-                else:
-                    wait += 1
+            else:
+                wait += 1
+                if accelerator.is_main_process:
                     logger.info(f"No improvement for {wait}/{patience} epochs")
-                    if wait >= patience:
+                if wait >= patience:
+                    if accelerator.is_main_process:
                         logger.info(f"Early stopping at epoch {epoch}")
-                        break
+                    break
 
             model.train()
 
@@ -195,11 +244,15 @@ def train(
             torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
             logger.info(f"Saved checkpoint to {save_path}")
 
-    # Final test
-    if accelerator.is_main_process:
-        best_path = os.path.join(save_dir_root, "best_model.pt")
-        if os.path.exists(best_path):
-            accelerator.unwrap_model(model).load_state_dict(torch.load(best_path))
+    # The test split is touched exactly once after validation-only selection.
+    # Reload the best checkpoint on EVERY rank — a main-only load
+    # would blend best weights (rank 0) with last-epoch weights (other ranks)
+    # in the all-reduced test metrics. Barrier first so main's save is complete.
+    accelerator.wait_for_everyone()
+    best_path = os.path.join(save_dir_root, "best_model.pt")
+    if os.path.exists(best_path):
+        state = torch.load(best_path, map_location=device)
+        accelerator.unwrap_model(model).load_state_dict(state)
 
     test_metrics = evaluate(model, test_dl, accelerator, use_temporal_bias)
     if accelerator.is_main_process:
@@ -207,6 +260,19 @@ def train(
         if wandb_logging:
             wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
             wandb.finish()
+        save_run_results(
+            save_dir=save_dir_root,
+            model="hstu",
+            split=get_run_split(default=split),
+            seed=seed,
+            metrics=test_metrics,
+            config=_run_config,
+            extra={
+                "best_valid_recall@10": best_recall,
+                "loss_type": loss_type,
+                "evaluation_level": "item",
+            },
+        )
 
     accelerator.wait_for_everyone()
 

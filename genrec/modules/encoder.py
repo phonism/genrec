@@ -27,6 +27,7 @@ class LightT5Encoder(nn.Module):
         vocab_size: int = 32128,
         max_seq_len: int = 512,
         dropout: float = 0.1,
+        pooling: str = "mean",
     ) -> None:
         """
         Initialize a lightweight encoder (randomly initialized).
@@ -40,11 +41,24 @@ class LightT5Encoder(nn.Module):
             vocab_size: vocabulary size
             max_seq_len: maximum sequence length
             dropout: dropout rate
+            pooling: sequence pooling strategy (``mean`` or paper-aligned ``cls``)
         """
         super().__init__()
 
+        if pooling not in {"mean", "cls"}:
+            raise ValueError(f"Unsupported LightT5Encoder pooling: {pooling}")
+        self.pooling = pooling
+
         self.embedding = nn.Embedding(vocab_size, hidden_dim)
-        self.pos_embedding = nn.Embedding(max_seq_len, hidden_dim)
+        # Mean pooling keeps the historical parameter shape and token positions
+        # exactly unchanged so old checkpoints remain loadable.  CLS pooling is
+        # a new, paper-aligned variant and needs one additional position.
+        self.pos_embedding = nn.Embedding(
+            max_seq_len + int(pooling == "cls"), hidden_dim
+        )
+        if pooling == "cls":
+            self.cls_embedding = nn.Parameter(torch.empty(hidden_dim))
+            nn.init.normal_(self.cls_embedding, mean=0.0, std=0.02)
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -58,7 +72,10 @@ class LightT5Encoder(nn.Module):
         self.proj = nn.Linear(hidden_dim, output_dim)
         self.layer_norm = nn.LayerNorm(hidden_dim)
 
-        print(f"Initialized LightT5Encoder with {n_layers} layers (random init)")
+        print(
+            f"Initialized LightT5Encoder with {n_layers} layers "
+            f"(random init, pooling={pooling})"
+        )
 
     def forward(self, batch_tokens: torch.Tensor) -> torch.Tensor:
         """
@@ -80,21 +97,34 @@ class LightT5Encoder(nn.Module):
         else:
             raise ValueError(f"Expected 2D or 3D input, got {batch_tokens.dim()}D")
 
-        # Embeddings
-        positions = torch.arange(L, device=flat_tokens.device).unsqueeze(0)
-        x = self.embedding(flat_tokens) + self.pos_embedding(positions)
-
-        # Attention mask (True = ignore)
-        attention_mask = (flat_tokens == 0)
+        # Embeddings and attention mask (True = ignore).  The paper extracts
+        # the dense item representation from a prepended [CLS] token.  Keep
+        # mean pooling as a compatibility option for historical checkpoints.
+        if self.pooling == "cls":
+            positions = torch.arange(L + 1, device=flat_tokens.device).unsqueeze(0)
+            token_x = self.embedding(flat_tokens) + self.pos_embedding(positions[:, 1:])
+            cls_x = self.cls_embedding.view(1, 1, -1).expand(flat_tokens.size(0), 1, -1)
+            cls_x = cls_x + self.pos_embedding(positions[:, :1])
+            x = torch.cat([cls_x, token_x], dim=1)
+            attention_mask = torch.cat([
+                torch.zeros(flat_tokens.size(0), 1, dtype=torch.bool, device=flat_tokens.device),
+                flat_tokens == 0,
+            ], dim=1)
+        else:
+            positions = torch.arange(L, device=flat_tokens.device).unsqueeze(0)
+            x = self.embedding(flat_tokens) + self.pos_embedding(positions)
+            attention_mask = flat_tokens == 0
 
         # Encode
         hidden = self.encoder(x, src_key_padding_mask=attention_mask)
         hidden = self.layer_norm(hidden)
 
-        # Mean pooling
-        mask = (~attention_mask).unsqueeze(-1).float()
-        sum_hidden = (hidden * mask).sum(dim=1)
-        pooled = sum_hidden / mask.sum(dim=1).clamp(min=1e-9)
+        if self.pooling == "cls":
+            pooled = hidden[:, 0]
+        else:
+            mask = (~attention_mask).unsqueeze(-1).float()
+            sum_hidden = (hidden * mask).sum(dim=1)
+            pooled = sum_hidden / mask.sum(dim=1).clamp(min=1e-9)
 
         # Project and normalize
         projected = self.proj(pooled)
@@ -387,7 +417,10 @@ class MLP(nn.Module):
         hidden_dims: List[int],
         out_dim: int,
         dropout: float = 0.0,
-        normalize: bool = False
+        normalize: bool = False,
+        activation: str = "silu",
+        bias: bool = False,
+        weight_init: str = "default",
     ) -> None:
         super().__init__()
 
@@ -395,17 +428,40 @@ class MLP(nn.Module):
         self.hidden_dims = hidden_dims
         self.out_dim = out_dim
         self.dropout = dropout
+        self.activation = activation
+        if weight_init not in {"default", "xavier_normal"}:
+            raise ValueError(
+                "weight_init must be 'default' or 'xavier_normal', "
+                f"got {weight_init!r}"
+            )
+        self.weight_init = weight_init
+
+        activations = {
+            "relu": nn.ReLU,
+            "silu": nn.SiLU,
+        }
+        if activation not in activations:
+            raise ValueError(
+                f"Unsupported MLP activation {activation!r}; "
+                f"expected one of {sorted(activations)}"
+            )
 
         dims = [self.input_dim] + self.hidden_dims + [self.out_dim]
         
         self.mlp = nn.Sequential()
         for i, (in_d, out_d) in enumerate(zip(dims[:-1], dims[1:])):
-            self.mlp.append(nn.Linear(in_d, out_d, bias=False))
+            self.mlp.append(nn.Linear(in_d, out_d, bias=bias))
             if i != len(dims) - 2:
-                self.mlp.append(nn.SiLU())
+                self.mlp.append(activations[activation]())
                 if dropout != 0:
                     self.mlp.append(nn.Dropout(dropout))
         self.mlp.append(L2Norm() if normalize else nn.Identity())
+        if weight_init == "xavier_normal":
+            for module in self.mlp.modules():
+                if isinstance(module, nn.Linear):
+                    nn.init.xavier_normal_(module.weight)
+                    if module.bias is not None:
+                        nn.init.zeros_(module.bias)
 
     def forward(self, x: Tensor) -> torch.Tensor:
         """

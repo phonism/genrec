@@ -33,19 +33,38 @@ class OneRec(nn.Module):
         self.model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
             pretrained_path, torch_dtype=torch_dtype,
         )
-        # Fix checkpoints saved via OneRec.save_pretrained() with accelerator.save —
-        # they may have "model.model." prefix instead of "model." due to the OneRec
-        # wrapper. Detect and reload with corrected keys if needed.
+        # Checkpoints saved via OneRec.save_pretrained() carry an extra "model."
+        # prefix (model.model.* / model.lm_head.*) from the OneRec wrapper, so the
+        # from_pretrained above silently leaves the backbone randomly initialized
+        # (hence the big "newly initialized" warning it logs). Detect that, reload
+        # ALL shards with corrected keys, and assert nothing is dropped — otherwise a
+        # sharded checkpoint (e.g. 4B) would train on partially-loaded / random weights.
         import safetensors.torch, glob, os
-        sf_files = glob.glob(os.path.join(pretrained_path, "*.safetensors"))
+        sf_files = sorted(glob.glob(os.path.join(pretrained_path, "*.safetensors")))
         if sf_files:
-            sd = safetensors.torch.load_file(sf_files[0])
+            sd = {}
+            for f in sf_files:
+                sd.update(safetensors.torch.load_file(f))
             if any(k.startswith("model.model.") for k in sd.keys()):
                 fixed = {k.replace("model.model.", "model.", 1).replace("model.lm_head.", "lm_head.", 1): v
                          for k, v in sd.items()}
-                self.model.load_state_dict(fixed, strict=False)
+                missing, unexpected = self.model.load_state_dict(fixed, strict=False)
+                # lm_head may be legitimately tied to the embeddings; anything else
+                # missing/unexpected means the remap is wrong and we'd train on garbage.
+                missing = [k for k in missing if "lm_head" not in k]
+                if missing or unexpected:
+                    raise RuntimeError(
+                        f"OneRec checkpoint remap failed for {pretrained_path}: "
+                        f"{len(missing)} missing (e.g. {missing[:3]}), "
+                        f"{len(unexpected)} unexpected (e.g. {unexpected[:3]})."
+                    )
+                print(f"[OneRec] remapped + loaded {len(fixed)} tensors from "
+                      f"{len(sf_files)} shard(s); state_dict verified.")
 
     def gradient_checkpointing_enable(self, use_reentrant=True):
+        # Remember the flag so generate_for_grpo restores checkpointing with the
+        # caller's setting instead of clobbering it with a hardcoded default.
+        self._gc_use_reentrant = use_reentrant
         self.model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={'use_reentrant': use_reentrant}
         )
@@ -91,17 +110,38 @@ class OneRec(nn.Module):
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
+        prompt_len: Optional[int] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
+        # prompt_len dispatches to compute_log_probs so the GRPO trainer can run
+        # its gradient-bearing forward through the DDP/FSDP wrapper (calling a
+        # custom method on the unwrapped module would skip gradient sync).
+        if prompt_len is not None:
+            return self.compute_log_probs(input_ids, prompt_len, attention_mask)
         return self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
     def save_pretrained(self, save_dir: str, **kwargs):
-        # Explicitly pass the HF model's state dict to avoid double "model." prefix
-        # when accelerator.save is used as save_function
+        # Accelerator returns the outer OneRec state dict.  Normalize it to
+        # the inner HF/PEFT model namespace before save_pretrained; otherwise
+        # checkpoints get an extra ``model.`` prefix and reload with randomly
+        # initialized backbone weights.
         if "state_dict" not in kwargs:
             kwargs["state_dict"] = self.model.state_dict()
+        else:
+            state_dict = kwargs["state_dict"]
+            inner_keys = set(self.model.state_dict())
+            stripped = {
+                (key[6:] if key.startswith("model.") else key): value
+                for key, value in state_dict.items()
+            }
+            direct_overlap = len(inner_keys.intersection(state_dict))
+            stripped_overlap = len(inner_keys.intersection(stripped))
+            if stripped_overlap > direct_overlap:
+                kwargs["state_dict"] = stripped
+        is_main_process = kwargs.get("is_main_process", True)
         self.model.save_pretrained(save_dir, **kwargs)
-        self.tokenizer.save_pretrained(save_dir)
+        if is_main_process:
+            self.tokenizer.save_pretrained(save_dir)
 
     def load_pretrained(self, load_dir: str):
         self.tokenizer = AutoTokenizer.from_pretrained(load_dir)
@@ -122,6 +162,7 @@ class OneRec(nn.Module):
         num_codebooks: int,
         beam_width: int = 10,
         topk: int = 10,
+        prefix_trie=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Custom constrained beam search with KV cache reuse.
@@ -147,8 +188,18 @@ class OneRec(nn.Module):
         logits = out.logits[:, -1, :]  # [B, V]
         past_kv = out.past_key_values
 
-        # Apply step-0 mask
-        mask_0 = position_mask[0].unsqueeze(0)  # [1, V]
+        # Apply step-0 mask.  Position-only constraints admit K**C semantic-ID
+        # combinations even though only ``num_items`` of them are deployable.
+        # OneRec's catalog trie keeps every live beam on an existing item path.
+        mask_0 = position_mask[0]
+        if prefix_trie is not None:
+            catalog_mask = torch.zeros_like(mask_0)
+            allowed = torch.tensor(
+                prefix_trie.allowed_token_ids(()), device=device, dtype=torch.long
+            )
+            catalog_mask[allowed] = True
+            mask_0 = mask_0 & catalog_mask
+        mask_0 = mask_0.unsqueeze(0)  # [1, V]
         logits = logits.masked_fill(~mask_0, float('-inf'))
         log_probs = F.log_softmax(logits, dim=-1)  # [B, V]
 
@@ -178,8 +229,25 @@ class OneRec(nn.Module):
             logits = out.logits[:, -1, :]  # [B*bw, V]
             past_kv = out.past_key_values
 
-            # Apply step mask
-            mask_s = position_mask[step].unsqueeze(0)  # [1, V]
+            # Apply the position mask and, when provided, the per-beam catalog
+            # prefix constraint.  One CPU transfer per semantic-ID depth is far
+            # cheaper than spending beam slots on non-existent item IDs.
+            if prefix_trie is None:
+                mask_s = position_mask[step].unsqueeze(0)  # [1, V]
+            else:
+                prefixes = beam_tokens.reshape(B * beam_width, -1).detach().cpu().tolist()
+                row_indices = []
+                token_indices = []
+                for row, prefix in enumerate(prefixes):
+                    allowed = prefix_trie.allowed_token_ids(prefix)
+                    row_indices.extend([row] * len(allowed))
+                    token_indices.extend(allowed)
+                mask_s = torch.zeros_like(logits, dtype=torch.bool)
+                mask_s[
+                    torch.tensor(row_indices, device=device, dtype=torch.long),
+                    torch.tensor(token_indices, device=device, dtype=torch.long),
+                ] = True
+                mask_s &= position_mask[step].unsqueeze(0)
             logits = logits.masked_fill(~mask_s, float('-inf'))
             log_probs = F.log_softmax(logits, dim=-1)  # [B*bw, V]
             log_probs = log_probs.view(B, beam_width, -1)  # [B, bw, V]
@@ -386,7 +454,25 @@ class OneRec(nn.Module):
         if prefix_allowed_tokens_fn is not None:
             gen_kwargs['prefix_allowed_tokens_fn'] = prefix_allowed_tokens_fn
 
-        generated_ids = self.model.generate(**gen_kwargs)  # [B*G, L+T']
+        # Generation runs under no_grad, so gradient checkpointing buys nothing here
+        # but forces use_cache=False (no KV cache) -> every decoding step recomputes the
+        # full sequence, which is very slow and scales superlinearly with num_generations.
+        # Temporarily disable checkpointing + enable the KV cache for decoding only.
+        gc_was_enabled = getattr(self.model, "is_gradient_checkpointing", False)
+        prev_use_cache = self.model.config.use_cache
+        if gc_was_enabled:
+            self.model.gradient_checkpointing_disable()
+        self.model.config.use_cache = True
+        try:
+            generated_ids = self.model.generate(**gen_kwargs)  # [B*G, L+T']
+        finally:
+            self.model.config.use_cache = prev_use_cache
+            if gc_was_enabled:
+                self.model.gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={
+                        'use_reentrant': getattr(self, '_gc_use_reentrant', True)
+                    }
+                )
 
         # Pad to consistent length (L + max_new_tokens)
         target_len = L + max_new_tokens

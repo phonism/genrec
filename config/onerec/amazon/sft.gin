@@ -40,6 +40,9 @@ AmazonOneRecSFTDataset.rqkmeans_codebook_size = 256
 AmazonOneRecSFTDataset.rqkmeans_n_layers = 3
 AmazonOneRecSFTDataset.encoder_model_name = %MODEL_HUB_QWEN3_EMBEDDING_8B
 AmazonOneRecSFTDataset.enabled_tasks = ["sidsft", "title2sid", "sid2title", "fusionseqrec"]
+AmazonOneRecSFTDataset.evaluation_protocol = "leave_one_out"
+AmazonOneRecSFTDataset.temporal_train_ratio = 0.8
+AmazonOneRecSFTDataset.temporal_valid_ratio = 0.1
 
 # ---------- Eval / Checkpoint / Logging ----------
 train_sft.do_eval = True

@@ -13,6 +13,9 @@ class SeqData(NamedTuple):
     user_id: int
     item_ids: List[int]
     target_ids: List[int]
+    # Raw catalog item id used by collision-aware evaluation.  A default keeps
+    # older datasets that only produce semantic IDs source-compatible.
+    target_item: int = -1
 
 class SeqBatch(NamedTuple):
     """

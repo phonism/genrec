@@ -54,12 +54,19 @@ AmazonCobraDataset.rqvae_embed_dim = 32
 AmazonCobraDataset.rqvae_hidden_dims = [512, 256, 128, 64]
 AmazonCobraDataset.rqvae_codebook_size = 32
 AmazonCobraDataset.rqvae_n_layers = 3
+AmazonCobraDataset.evaluation_protocol = "leave_one_out"
+AmazonCobraDataset.temporal_train_ratio = 0.8
+AmazonCobraDataset.temporal_valid_ratio = 0.1
 
 # Checkpointing
 train.save_dir_root = "out/cobra/amazon/{split}"
 train.save_every_epoch = 10
-train.eval_valid_every_epoch = 1
-train.eval_test_every_epoch = 1
+# BeamFusion full-catalog evaluation is expensive and this trainer reports the
+# final checkpoint (it does not select by validation metrics).  Evaluate once
+# at the end of the 20-epoch budget; intermediate evaluation cannot change the
+# selected model or the reported result.
+train.eval_valid_every_epoch = 20
+train.eval_test_every_epoch = 20
 train.do_eval = True
 
 # Logging

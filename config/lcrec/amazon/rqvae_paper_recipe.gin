@@ -1,0 +1,64 @@
+# LC-Rec indexer recipe on the repository's Amazon-2014/Sentence-T5 adapter.
+# The RQ-VAE depth/width, optimizer, scheduler and Sinkhorn settings match the
+# vendored official `reference/LC-Rec/index/run.sh`.  Input embeddings remain
+# Sentence-T5-XL (768d) rather than the paper release's LLaMA-derived vectors,
+# so results must be labelled an adaptation rather than an exact reproduction.
+
+include "config/base.gin"
+
+import genrec.data.amazon
+import genrec.models.rqvae
+
+train.epochs = 10000
+train.warmup_epochs = 50
+train.learning_rate = 0.001
+train.weight_decay = 0.0001
+train.batch_size = 1024
+train.optimizer_name = "adamw"
+train.lr_schedule = "linear"
+# The official run.sh does not override argparse's kmeans_init=True default.
+# It initializes every residual layer from the first 1024-item training batch.
+train.use_kmeans_init = True
+train.kmeans_init_samples = 1024
+
+train.vae_input_dim = 768
+train.vae_n_cat_feats = 0
+train.vae_hidden_dims = [2048, 1024, 512, 256, 128, 64]
+train.vae_embed_dim = 32
+train.vae_codebook_size = 256
+train.vae_codebook_normalize = False
+train.vae_sim_vq = False
+train.vae_n_layers = 4
+train.vae_codebook_mode = %genrec.models.rqvae.QuantizeForwardMode.STE
+train.vae_codebook_last_layer_mode = %genrec.models.rqvae.QuantizeForwardMode.SINKHORN
+train.commitment_weight = 0.25
+train.mlp_activation = "relu"
+train.mlp_bias = True
+train.mlp_weight_init = "xavier_normal"
+train.decoder_normalize = False
+train.loss_reduction = "mean"
+
+train.dataset = @AmazonItemDataset
+train.dataset_folder = "dataset/amazon"
+train.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
+# The reference indexer is fitted to the complete item-embedding array.  Item
+# metadata is transductive in this benchmark; the generic trainer's 95/5
+# tokenizer holdout would leave catalog items unseen and is not paper parity.
+train.train_item_split = "all"
+train.eval_item_split = "all"
+AmazonItemDataset.split = "{split}"
+
+train.save_model_every = 100
+train.eval_every = 100
+# LC-Rec selects its indexer by full-tuple collision rate and repairs residual
+# collisions with USM.  Unlike TIGER, its paper/code does not impose 80% raw
+# usage per residual layer; a small non-zero floor still rejects the observed
+# one-code collapse without overriding the reference selection criterion.
+train.min_codebook_usage = 0.05
+train.save_dir_root = "out/lcrec/amazon/{split}/rqvae_paper_recipe"
+
+train.wandb_logging = False
+train.wandb_project = "lcrec_rqvae_paper_recipe_{split}"
+train.do_eval = True
+train.amp = True
+train.mixed_precision_type = "bf16"

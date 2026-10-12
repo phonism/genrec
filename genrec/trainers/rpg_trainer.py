@@ -15,11 +15,13 @@ from genrec.data.amazon_rpg import (
     rpg_train_collate_fn,
     rpg_eval_collate_fn,
 )
-from genrec.modules.utils import parse_config, setup_logger
+from genrec.modules.utils import parse_config, setup_logger, get_run_split
 from genrec.trainers.trainer_utils import (
     setup_accelerator,
     setup_wandb,
     log_training_info,
+    set_seed,
+    save_run_results,
 )
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -145,10 +147,13 @@ def train_rpg(
     # Accelerator
     amp=True,
     mixed_precision_type="bf16",
+    seed=42,
 ):
     """Train RPG model."""
+    _run_config = dict(locals())
     save_dir_root = save_dir_root.replace("{split}", split)
     logger = setup_logger(save_dir_root, name="rpg")
+    set_seed(seed)
     accelerator = setup_accelerator(amp=amp, mixed_precision_type=mixed_precision_type)
     device = accelerator.device
 
@@ -173,6 +178,7 @@ def train_rpg(
     train_ds = AmazonRPGDataset(train_test_split="train", **ds_kwargs)
     valid_ds = AmazonRPGDataset(train_test_split="valid", **ds_kwargs)
     test_ds = AmazonRPGDataset(train_test_split="test", **ds_kwargs)
+    _run_config["evaluation_protocol"] = train_ds.evaluation_protocol
 
     logger.info(
         f"Items: {train_ds.num_items - 1}, "
@@ -284,23 +290,17 @@ def train_rpg(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics = evaluate(model, valid_dl, accelerator)
-            test_metrics = evaluate(model, test_dl, accelerator)
 
             if accelerator.is_main_process:
                 logger.info(
                     f"Epoch {epoch} - Valid: "
                     + ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()])
                 )
-                logger.info(
-                    f"Epoch {epoch} - Test:  "
-                    + ", ".join([f"{k}={v:.4f}" for k, v in test_metrics.items()])
-                )
 
                 if wandb_logging:
                     wandb.log({
                         "epoch": epoch,
                         **{f"eval/{k}": v for k, v in metrics.items()},
-                        **{f"test_epoch/{k}": v for k, v in test_metrics.items()},
                     })
 
                 # Early stopping
@@ -331,12 +331,19 @@ def train_rpg(
             torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
             logger.info(f"Saved checkpoint to {save_path}")
 
-    # Final test with graph decoding
-    if accelerator.is_main_process:
-        best_path = os.path.join(save_dir_root, "best_model.pt")
-        if os.path.exists(best_path):
-            accelerator.unwrap_model(model).load_state_dict(torch.load(best_path))
-            logger.info(f"Loaded best model from {best_path}")
+    # Load the validation-selected checkpoint on every rank before the one-shot
+    # test evaluation.  Keeping this outside the main-process guard matters for
+    # distributed runs: otherwise non-main ranks would evaluate the final epoch
+    # while rank 0 evaluates the best validation epoch.
+    accelerator.wait_for_everyone()
+    best_path = os.path.join(save_dir_root, "best_model.pt")
+    if os.path.exists(best_path):
+        accelerator.unwrap_model(model).load_state_dict(
+            torch.load(best_path, map_location=device)
+        )
+        if accelerator.is_main_process:
+            logger.info(f"Loaded validation-selected model from {best_path}")
+    accelerator.wait_for_everyone()
 
     # Standard test
     test_metrics = evaluate(model, test_dl, accelerator)
@@ -366,6 +373,18 @@ def train_rpg(
         if wandb_logging:
             wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
             wandb.finish()
+        extra = {"best_valid_ndcg@10": best_recall, "evaluation_level": "item"}
+        if eval_with_graph:
+            extra["graph_metrics"] = dict(graph_metrics)
+        save_run_results(
+            save_dir=save_dir_root,
+            model="rpg",
+            split=get_run_split(default=split),
+            seed=seed,
+            metrics=test_metrics,
+            config=_run_config,
+            extra=extra,
+        )
 
     accelerator.wait_for_everyone()
 

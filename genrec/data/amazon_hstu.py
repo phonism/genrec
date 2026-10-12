@@ -10,6 +10,7 @@ from typing import Dict, List
 from tqdm import tqdm
 
 from genrec.data.amazon import DATASET_CONFIGS, parse_gzip_json
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
 
 @gin.configurable
@@ -27,12 +28,18 @@ class AmazonHSTUDataset(Dataset):
         train_test_split: str = "train",
         max_seq_len: int = 50,
         min_seq_len: int = 5,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         self.root = root
         self.split = split.lower()
         self.train_test_split = train_test_split
         self.max_seq_len = max_seq_len
         self.min_seq_len = min_seq_len
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         self._load_sequences()
         self._generate_samples()
@@ -60,17 +67,23 @@ class AmazonHSTUDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        # Sort by timestamp and filter short sequences
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=self.min_seq_len,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
         self.sequences = []  # List of (items, timestamps)
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
+        for _, seq in selected:
             timestamps = [x[0] for x in seq]
             items = [x[1] for x in seq]
-            if len(items) >= self.min_seq_len:
-                self.sequences.append((items, timestamps))
+            self.sequences.append((items, timestamps))
 
         self.num_items = len(self.item_id_mapping)
-        print(f"Loaded {len(self.sequences)} sequences, {self.num_items} items")
+        print(f"Loaded {len(self.sequences)} sequences, {self.num_items} items "
+              f"(protocol={self.evaluation_protocol})")
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples."""

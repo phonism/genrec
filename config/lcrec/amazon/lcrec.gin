@@ -45,7 +45,11 @@ AmazonLCRecDataset.rqvae_embed_dim = 64
 AmazonLCRecDataset.rqvae_hidden_dims = [512, 256, 128]
 AmazonLCRecDataset.rqvae_codebook_size = 256
 AmazonLCRecDataset.rqvae_n_layers = 5
+AmazonLCRecDataset.uniform_semantic_mapping = True
 AmazonLCRecDataset.enabled_tasks = ["seqrec", "item2index", "index2item"]
+AmazonLCRecDataset.evaluation_protocol = "leave_one_out"
+AmazonLCRecDataset.temporal_train_ratio = 0.8
+AmazonLCRecDataset.temporal_valid_ratio = 0.1
 
 # =============================================================================
 # Evaluation Settings

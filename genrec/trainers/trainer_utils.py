@@ -5,6 +5,7 @@ Provides shared functionality to reduce code duplication across trainers.
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -78,6 +79,9 @@ def set_seed(seed: int, deterministic: bool = False) -> None:
 
 def get_git_sha() -> str:
     """Return short HEAD git SHA or 'unknown' if not in a git repo."""
+    source_sha = os.environ.get("GENREC_SOURCE_GIT_SHA", "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{7,40}", source_sha):
+        return source_sha
     try:
         out = subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],
@@ -129,10 +133,19 @@ def save_run_results(
         "split": split,
         "seed": int(seed),
         "git_sha": get_git_sha(),
+        "source_bundle": os.environ.get("GENREC_SOURCE_BUNDLE_NAME"),
+        "source_bundle_sha256": os.environ.get("GENREC_SOURCE_BUNDLE_SHA256"),
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "metrics": _jsonable(metrics),
         "config": _jsonable(config or {}),
     }
+    execution = {
+        "cell_id": os.environ.get("GENREC_CELL_ID"),
+        "physical_gpus": os.environ.get("GENREC_PHYSICAL_GPUS"),
+    }
+    execution = {key: value for key, value in execution.items() if value}
+    if execution:
+        payload["execution"] = execution
     if extra:
         payload["extra"] = _jsonable(extra)
 

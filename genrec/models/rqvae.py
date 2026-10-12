@@ -20,6 +20,8 @@ References:
     - TIGER: https://arxiv.org/abs/2305.05065
     - Rotation Trick: https://arxiv.org/abs/2410.06424
 """
+import logging
+import inspect
 import torch
 import gin
 from typing import List
@@ -158,9 +160,14 @@ class Quantize(nn.Module):
         return self.embedding.weight.device
 
     def _init_weights(self) -> None:
-        for m in self.modules():
-            if isinstance(m, nn.Embedding):
-                nn.init.uniform_(m.weight)
+        # Match the TIGER/LC-Rec reference implementation.  The previous
+        # default ``uniform_(0, 1)`` initialization put every code vector in
+        # the positive orthant and far away from the small, zero-centred
+        # encoder outputs.  With the paper's ``kmeans_init=False`` recipe that
+        # made the first residual codebooks immediately select one entry and
+        # never recover (observed usage: 1/256 for the first three layers).
+        bound = 1.0 / self.n_embed
+        nn.init.uniform_(self.embedding.weight, -bound, bound)
     
     @torch.no_grad()
     def _kmeans_init(self, x: Tensor) -> None:
@@ -172,6 +179,25 @@ class Quantize(nn.Module):
         Get item embeddings by ids.
         """
         return self.out_proj(self.embedding(item_ids))
+
+    def distances(self, x: Tensor) -> Tensor:
+        """
+        Distance from each input vector to every codebook entry, (B, n_embed).
+        Respects the layer's configured distance_mode (L2 / cosine).
+        """
+        codebook = self.out_proj(self.embedding.weight)
+        if self.distance_mode == QuantizeDistance.L2:
+            return (
+                (x ** 2).sum(axis=1, keepdim=True) +
+                (codebook.T ** 2).sum(axis=0, keepdim=True) -
+                2 * x @ codebook.T
+            )
+        elif self.distance_mode == QuantizeDistance.COSINE:
+            return -(
+                x / x.norm(dim=1, keepdim=True) @
+                (codebook.T / codebook.T.norm(dim=0, keepdim=True))
+            )
+        raise ValueError(f"Unsupported Quantize distance mode: {self.distance_mode}")
 
     def forward(self, x, temperature) -> QuantizeOutput:
         """
@@ -293,8 +319,18 @@ class RqVae(nn.Module):
         n_layers: int = 3,
         commitment_weight: float = 0.25,
         n_cat_features: int = 18,
+        mlp_activation: str = "silu",
+        mlp_bias: bool = False,
+        mlp_weight_init: str = "default",
+        decoder_normalize: bool = True,
+        loss_reduction: str = "sum",
     ) -> None:
-        self._config = locals()
+        # Persist constructor arguments only.  Keeping ``self`` here makes
+        # every checkpoint's model_config recursively pickle the model object
+        # in addition to the explicit state_dict.
+        self._config = {
+            key: value for key, value in locals().items() if key != "self"
+        }
         
         super().__init__()
 
@@ -305,6 +341,13 @@ class RqVae(nn.Module):
         self.codebook_size = codebook_size
         self.commitment_weight = commitment_weight
         self.n_cat_feats = n_cat_features
+        self.decoder_normalize = decoder_normalize
+        if loss_reduction not in {"sum", "mean"}:
+            raise ValueError(
+                "loss_reduction must be 'sum' or 'mean', "
+                f"got {loss_reduction!r}"
+            )
+        self.loss_reduction = loss_reduction
 
         self.layers = []
         for i in range(n_layers):
@@ -328,14 +371,20 @@ class RqVae(nn.Module):
             input_dim=input_dim,
             hidden_dims=hidden_dims,
             out_dim=embed_dim,
-            normalize=codebook_normalize
+            normalize=codebook_normalize,
+            activation=mlp_activation,
+            bias=mlp_bias,
+            weight_init=mlp_weight_init,
         )
 
         self.decoder = MLP(
             input_dim=embed_dim,
             hidden_dims=hidden_dims[-1::-1],
             out_dim=input_dim,
-            normalize=True
+            normalize=decoder_normalize,
+            activation=mlp_activation,
+            bias=mlp_bias,
+            weight_init=mlp_weight_init,
         )
 
         self.reconstruction_loss = (
@@ -363,6 +412,14 @@ class RqVae(nn.Module):
         """
         state = torch.load(path, map_location=self.device, weights_only=False)
         self.load_state_dict(state["model"])
+        # K-means initialization is a one-time training bootstrap, not part of
+        # inference. ``kmeans_initted`` is a Python flag and is absent from the
+        # state dict, so a checkpoint reconstructed with the original
+        # codebook_kmeans_init=True would otherwise overwrite its trained
+        # codebooks on the first call to get_semantic_ids().
+        for layer in self.layers:
+            layer.do_kmeans_init = False
+            layer.kmeans_initted = True
         # Handle both iter-based and epoch-based checkpoints
         if "iter" in state:
             print(f"---Loaded RQVAE Iter {state['iter']}---")
@@ -370,6 +427,26 @@ class RqVae(nn.Module):
             print(f"---Loaded RQVAE Epoch {state['epoch']}---")
         else:
             print(f"---Loaded RQVAE from {path}---")
+
+    @classmethod
+    def from_pretrained(cls, path: str, map_location="cpu") -> "RqVae":
+        """Reconstruct an RQ-VAE from its saved geometry without reinit."""
+        state = torch.load(path, map_location=map_location, weights_only=False)
+        valid = set(inspect.signature(cls.__init__).parameters) - {"self"}
+        config = {
+            key: value
+            for key, value in state.get("model_config", {}).items()
+            if key in valid
+        }
+        # Disable the bootstrap before any forward call. load_pretrained also
+        # enforces this for explicitly constructed legacy consumers.
+        config["codebook_kmeans_init"] = False
+        model = cls(**config)
+        model.load_state_dict(state["model"])
+        for layer in model.layers:
+            layer.do_kmeans_init = False
+            layer.kmeans_initted = True
+        return model
 
     def encode(self, x: Tensor) -> Tensor:
         """
@@ -411,6 +488,86 @@ class RqVae(nn.Module):
             quantize_loss=quantize_loss
         )
 
+    @torch.no_grad()
+    def get_semantic_ids_dedup(
+        self,
+        x: Tensor,
+        max_iter: int = 20,
+        sk_epsilon: float = 0.003,
+        sk_iters: int = 100,
+    ) -> Tensor:
+        """
+        Tokenize items into semantic IDs and resolve collisions LC-Rec-style.
+
+        After the standard greedy (argmin) assignment, items with near-identical
+        embeddings (e.g. same product, different shade) collapse onto the same
+        code tuple. We repeatedly re-quantize the LAST codebook for the colliding
+        items using a Sinkhorn (balanced optimal-transport) assignment, which
+        spreads them onto distinct last codes. The first n-1 codes are left
+        untouched so most items keep their original semantic ID; only collided
+        items have their last code reshuffled. Iterates until unique or max_iter
+        (true duplicates with identical embeddings may remain, matching LC-Rec).
+
+        No retraining required — runs on a pretrained checkpoint.
+        Returns a LongTensor of shape (N, n_layers).
+        """
+        self.eval()
+        res = self.encode(x)
+        fixed_ids: List[Tensor] = []
+        for layer in self.layers[:-1]:
+            out = layer(res, temperature=0.001)
+            fixed_ids.append(out.ids)
+            res = res - out.embeddings
+
+        last = self.layers[-1]
+        dist = last.distances(res)                       # (N, K)
+        last_ids = dist.detach().min(axis=1).indices
+        sem = torch.stack(fixed_ids + [last_ids], dim=1)  # (N, L)
+
+        def collision_groups(sem_t: Tensor) -> List[List[int]]:
+            buckets: dict = {}
+            for i, key in enumerate(map(tuple, sem_t.tolist())):
+                buckets.setdefault(key, []).append(i)
+            return [idx for idx in buckets.values() if len(idx) > 1]
+
+        prev_groups = None
+        for _ in range(max_iter):
+            groups = collision_groups(sem)
+            if not groups:
+                break
+            if groups == prev_groups:
+                # dist is fixed and Sinkhorn is deterministic, so an unchanged
+                # collision set is a fixed point — further iterations would just
+                # recompute the exact same assignment.
+                break
+            prev_groups = groups
+            for g in groups:
+                idx = torch.as_tensor(g, device=sem.device)
+                d = dist[idx]                            # (k, K)
+                max_d, min_d = d.max(), d.min()
+                mid = (max_d + min_d) / 2
+                amp = max_d - mid + 1e-5
+                d_norm = ((d - mid) / amp).double()
+                row = torch.full((d.shape[0],), 1.0 / d.shape[0], device=sem.device, dtype=torch.double)
+                col = torch.full((d.shape[1],), 1.0 / d.shape[1], device=sem.device, dtype=torch.double)
+                P = _sinkhorn_knopp(
+                    cost=d_norm, row_marginals=row, col_marginals=col,
+                    eps=sk_epsilon, max_iter=sk_iters,
+                )
+                sem[idx, -1] = P.argmax(dim=1)
+
+        # Reassignment can also CREATE collisions with previously-unique items,
+        # so never return silently — downstream eval treats these sem ids as
+        # unique item identities.
+        leftover = collision_groups(sem)
+        if leftover:
+            logging.getLogger(__name__).warning(
+                "Sinkhorn dedup left %d collision group(s) covering %d items "
+                "(identical embeddings cannot be separated deterministically).",
+                len(leftover), sum(len(g) for g in leftover),
+            )
+        return sem
+
     @torch.compile(mode="reduce-overhead")
     def forward(self, batch: Tensor, gumbel_t: float) -> RqVaeComputedLosses:
         """
@@ -426,15 +583,27 @@ class RqVae(nn.Module):
         quantized = self.get_semantic_ids(x, gumbel_t)
         embs, residuals = quantized.embeddings, quantized.residuals
         x_hat = self.decode(embs.sum(axis=-1))
-        if self.n_cat_feats > 0:
+        if self.n_cat_feats > 0 and self.decoder_normalize:
             x_hat = torch.cat([
                 l2norm(x_hat[..., :-self.n_cat_feats]),
                 x_hat[..., -self.n_cat_feats:]
             ], dim=-1)
-        else:
+        elif self.n_cat_feats == 0 and self.decoder_normalize:
             x_hat = l2norm(x_hat)
         reconstruction_loss = self.reconstruction_loss(x_hat, x)
         rqvae_loss = quantized.quantize_loss
+        if self.loss_reduction == "mean":
+            if self.n_cat_feats:
+                raise ValueError(
+                    "mean loss reduction is currently defined only for "
+                    "continuous RQ-VAE inputs (n_cat_features=0)"
+                )
+            # LC-Rec's reference uses F.mse_loss(..., reduction='mean')
+            # independently for reconstruction and every VQ layer, then means
+            # the layer losses.  The legacy GenRec path sums both dimensions
+            # and layers; normalize here without changing legacy checkpoints.
+            reconstruction_loss = reconstruction_loss / self.input_dim
+            rqvae_loss = rqvae_loss / (self.embed_dim * self.n_layers)
         loss = (reconstruction_loss + rqvae_loss).mean()
 
         with torch.no_grad():

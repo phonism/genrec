@@ -1,0 +1,60 @@
+# GRAM — Generative Retrieval via Multi-Granularity Late Fusion (ACL 2025).
+# T5 FiD encoder over item text + hierarchical lexical IDs, constrained beam
+# search over a candidate Trie.
+# Data: pre-processed GRAM rec_datasets files under dataset/gram/<Split>/
+# (user_sequence.txt, item_plain_text.txt, similar_item_sasrec.txt, item id file).
+# Run: ./scripts/train_gram.sh Beauty 2
+#  or: python -m genrec.trainers.gram_trainer config/gram/amazon/gram.gin --split Beauty
+
+import genrec.data.amazon_gram
+import genrec.models.gram
+
+# ---------- Model ----------
+train_gram.backbone = "t5-small"
+train_gram.max_his = 20
+train_gram.use_position_embedding = True
+
+# ---------- Training ----------
+train_gram.epochs = 30
+train_gram.batch_size = 32
+train_gram.learning_rate = 1e-3
+train_gram.weight_decay = 0.01
+train_gram.warmup_ratio = 0.05
+train_gram.gradient_accumulate_every = 2
+train_gram.max_grad_norm = 1.0
+train_gram.seed = 42
+
+# ---------- Dataset ----------
+train_gram.dataset = @AmazonGRAMDataset
+train_gram.dataset_folder = "dataset/gram"
+train_gram.split = "{split}"
+train_gram.item_prompt_max_len = 128
+train_gram.target_max_len = 50
+train_gram.item_id_file = "item_generative_indexing_hierarchy_v1_c128_l7_len32768_split.txt"
+train_gram.item_prompt = "all_text"
+train_gram.top_k_similar_item = 10
+train_gram.cf_model = "sasrec"
+train_gram.reverse_history = True
+
+# ---------- Evaluation ----------
+train_gram.do_eval = True
+train_gram.eval_every_epoch = 1
+train_gram.num_beams = 50
+# split_batches=True divides each batch across processes, so this must be a
+# multiple of the GPU count (train_gram.sh defaults to 2; 4 also covers 4-GPU).
+train_gram.eval_batch_size = 4
+train_gram.length_penalty = 0.0
+train_gram.metrics = "hit@5,hit@10,ndcg@5,ndcg@10"
+
+# ---------- Checkpoint / Logging ----------
+train_gram.save_dir_root = "out/gram/{split}"
+train_gram.save_every_epoch = 5
+
+train_gram.wandb_logging = False
+train_gram.wandb_project = "gram"
+train_gram.wandb_log_interval = 10
+
+# ---------- Accelerator ----------
+train_gram.split_batches = True
+train_gram.amp = True
+train_gram.mixed_precision_type = "bf16"

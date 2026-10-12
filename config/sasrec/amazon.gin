@@ -56,3 +56,7 @@ train.wandb_log_interval = 100
 # =============================================================================
 train.amp = True
 train.mixed_precision_type = "bf16"
+# Evaluation protocol: "leave_one_out" or leakage-resistant "global_temporal"
+AmazonSASRecDataset.evaluation_protocol = "leave_one_out"
+AmazonSASRecDataset.temporal_train_ratio = 0.8
+AmazonSASRecDataset.temporal_valid_ratio = 0.1

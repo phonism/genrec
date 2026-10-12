@@ -13,6 +13,7 @@ import os
 import gin
 import torch
 import random
+from collections import defaultdict
 
 from torch.utils.data import Dataset
 from typing import Dict, List, Any, Optional, Set
@@ -22,6 +23,7 @@ from genrec.data.amazon import (
     DATASET_CONFIGS,
     parse_gzip_json,
 )
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
 
 # SFT prompt format (same as LCRec)
@@ -33,6 +35,39 @@ SFT_PROMPT = (
 
 HISTORY_SEP = ", "
 ADD_PREFIX = True
+
+
+def add_disambiguation_suffix(
+    sem_ids_list: List[List[int]], codebook_size: int
+) -> tuple[List[List[int]], Dict[str, int]]:
+    """Append a deterministic within-bucket code so every catalog SID is unique."""
+    buckets: Dict[tuple, List[int]] = defaultdict(list)
+    for item_id, sem_ids in enumerate(sem_ids_list):
+        buckets[tuple(sem_ids)].append(item_id)
+
+    max_group = max((len(items) for items in buckets.values()), default=0)
+    if max_group > codebook_size:
+        raise ValueError(
+            "collision suffix exceeds codebook token range: "
+            f"max_group={max_group}, codebook_size={codebook_size}"
+        )
+
+    offsets: Dict[tuple, int] = defaultdict(int)
+    disambiguated = []
+    for sem_ids in sem_ids_list:
+        key = tuple(sem_ids)
+        suffix = offsets[key]
+        offsets[key] += 1
+        disambiguated.append(list(sem_ids) + [suffix])
+
+    collision_groups = sum(len(items) > 1 for items in buckets.values())
+    collision_items = sum(len(items) for items in buckets.values() if len(items) > 1)
+    return disambiguated, {
+        "raw_unique": len(buckets),
+        "collision_groups": collision_groups,
+        "collision_items": collision_items,
+        "max_group": max_group,
+    }
 
 
 # Prompt templates for OneRec tasks (5 per task, simplified from LCRec)
@@ -98,15 +133,22 @@ class AmazonOneRecSFTDataset(Dataset):
         pretrained_rqkmeans_path: str = "",
         rqkmeans_codebook_size: int = 8192,
         rqkmeans_n_layers: int = 3,
+        add_disambiguation: bool = False,
         # Task configuration
         enabled_tasks: List[str] = None,
         task_sample_weights: Dict[str, float] = None,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         self.root = root
         self.split = split.lower()
         self.train_test_split = train_test_split
         self._max_seq_len = max_seq_len
         self.max_text_len = max_text_len
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         self.enabled_tasks: Set[str] = set(enabled_tasks or [
             "sidsft", "title2sid", "sid2title", "fusionseqrec"
@@ -158,6 +200,20 @@ class AmazonOneRecSFTDataset(Dataset):
             rqvae.eval()
             with torch.no_grad():
                 self.sem_ids_list = rqvae.get_semantic_ids(self.item_embeddings).sem_ids.tolist()
+
+        self.raw_sem_ids_list = [list(sem_ids) for sem_ids in self.sem_ids_list]
+        if add_disambiguation:
+            self.sem_ids_list, suffix_stats = add_disambiguation_suffix(
+                self.sem_ids_list, self.codebook_size
+            )
+            self.n_codebooks += 1
+            print(
+                "OneRec SID disambiguation: "
+                f"raw_unique={suffix_stats['raw_unique']}/{len(self.sem_ids_list)}, "
+                f"collision_groups={suffix_stats['collision_groups']}, "
+                f"collision_items={suffix_stats['collision_items']}, "
+                f"max_group={suffix_stats['max_group']}, final_unique=100%"
+            )
 
         self._load_item_metadata()
         self._load_sequences()
@@ -214,16 +270,19 @@ class AmazonOneRecSFTDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        self.sequences = []
-        self.user_ids = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= 5:
-                self.sequences.append(items)
-                self.user_ids.append(uid)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=5,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.user_ids = [uid for uid, _ in selected]
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
-        print(f"Loaded {len(self.sequences)} user sequences for OneRec SFT")
+        print(f"Loaded {len(self.sequences)} user sequences for OneRec SFT "
+              f"(protocol={self.evaluation_protocol})")
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples."""
@@ -468,14 +527,22 @@ class AmazonOneRecRLDataset(Dataset):
         pretrained_rqkmeans_path: str = "",
         rqkmeans_codebook_size: int = 8192,
         rqkmeans_n_layers: int = 3,
+        add_disambiguation: bool = False,
         # RL-specific
         max_cross_modal: int = 10000,
         rl_tasks: List[str] = None,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         self.root = root
         self.split = split.lower()
         self._max_seq_len = max_seq_len
         self.max_cross_modal = max_cross_modal
+        self.train_test_split = "train"
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         self.rl_tasks = set(rl_tasks or ["sidsft", "title2sid", "title_seqrec"])
 
@@ -518,6 +585,20 @@ class AmazonOneRecRLDataset(Dataset):
             rqvae.eval()
             with torch.no_grad():
                 self.sem_ids_list = rqvae.get_semantic_ids(self.item_embeddings).sem_ids.tolist()
+
+        self.raw_sem_ids_list = [list(sem_ids) for sem_ids in self.sem_ids_list]
+        if add_disambiguation:
+            self.sem_ids_list, suffix_stats = add_disambiguation_suffix(
+                self.sem_ids_list, self.codebook_size
+            )
+            self.n_codebooks += 1
+            print(
+                "OneRec RL SID disambiguation: "
+                f"raw_unique={suffix_stats['raw_unique']}/{len(self.sem_ids_list)}, "
+                f"collision_groups={suffix_stats['collision_groups']}, "
+                f"collision_items={suffix_stats['collision_items']}, "
+                f"max_group={suffix_stats['max_group']}, final_unique=100%"
+            )
 
         self._load_item_metadata()
         self._load_sequences()
@@ -571,14 +652,18 @@ class AmazonOneRecRLDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        self.sequences = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= 5:
-                self.sequences.append(items)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            "train",
+            protocol=self.evaluation_protocol,
+            min_seq_len=5,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
-        print(f"Loaded {len(self.sequences)} user sequences for OneRec RL")
+        print(f"Loaded {len(self.sequences)} user sequences for OneRec RL "
+              f"(protocol={self.evaluation_protocol})")
 
     def _sem_ids_to_tokens(self, sem_ids: List[int]) -> str:
         return "".join(f"<C{c}_{code}>" for c, code in enumerate(sem_ids))

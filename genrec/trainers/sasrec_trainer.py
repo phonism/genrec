@@ -7,10 +7,11 @@ import torch
 import wandb
 
 from genrec.models.sasrec import SASRec
-from genrec.modules.utils import parse_config, setup_logger
+from genrec.modules.utils import parse_config, setup_logger, get_run_split
 from genrec.data.amazon_sasrec import AmazonSASRecDataset, sasrec_collate_fn, sasrec_eval_collate_fn
 from genrec.trainers.trainer_utils import (
-    setup_accelerator, setup_wandb, save_checkpoint, get_parameter_count, log_training_info
+    setup_accelerator, setup_wandb, save_checkpoint, get_parameter_count, log_training_info,
+    set_seed, save_run_results,
 )
 from torch.optim import Adam
 from torch.utils.data import DataLoader
@@ -76,9 +77,12 @@ def train(
     save_dir_root="out/sasrec/amazon/beauty", save_every_epoch=50,
     wandb_logging=False, wandb_project="sasrec_training", wandb_log_interval=100,
     amp=True, mixed_precision_type="bf16",
+    seed=42,
 ):
     """Train SASRec model."""
+    _run_config = dict(locals())  # snapshot hyperparams for results.json
     logger = setup_logger(save_dir_root, name="sasrec")
+    set_seed(seed)
     accelerator = setup_accelerator(amp=amp, mixed_precision_type=mixed_precision_type)
     device = accelerator.device
 
@@ -93,6 +97,7 @@ def train(
     train_ds = AmazonSASRecDataset(root=dataset_folder, split=split, train_test_split="train", max_seq_len=max_seq_len)
     valid_ds = AmazonSASRecDataset(root=dataset_folder, split=split, train_test_split="valid", max_seq_len=max_seq_len)
     test_ds = AmazonSASRecDataset(root=dataset_folder, split=split, train_test_split="test", max_seq_len=max_seq_len)
+    _run_config["evaluation_protocol"] = train_ds.evaluation_protocol
 
     num_items = train_ds.num_items
     logger.info(f"Num items: {num_items}, Train: {len(train_ds)}, Valid: {len(valid_ds)}, Test: {len(test_ds)}")
@@ -124,7 +129,7 @@ def train(
 
     # Training
     global_step = 0
-    best_recall = 0.0
+    best_recall = float("-inf")
     wait = 0
 
     for epoch in range(epochs):
@@ -157,26 +162,28 @@ def train(
         # Evaluation
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             metrics = evaluate(model, valid_dl, accelerator)
-            test_metrics_epoch = evaluate(model, test_dl, accelerator)
             if accelerator.is_main_process:
                 logger.info(f"Epoch {epoch} - Valid: " + ", ".join([f"{k}={v:.4f}" for k, v in metrics.items()]))
-                logger.info(f"Epoch {epoch} - Test:  " + ", ".join([f"{k}={v:.4f}" for k, v in test_metrics_epoch.items()]))
                 if wandb_logging:
-                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}, **{f"test_epoch/{k}": v for k, v in test_metrics_epoch.items()}})
+                    wandb.log({"epoch": epoch, **{f"eval/{k}": v for k, v in metrics.items()}})
 
-                # Save best model + early stopping
-                if metrics['Recall@10'] > best_recall:
-                    best_recall = metrics['Recall@10']
+            # Validation alone selects checkpoints.  Keep this state on every
+            # rank so early stopping cannot split a distributed job.
+            if metrics['Recall@10'] > best_recall:
+                best_recall = metrics['Recall@10']
+                wait = 0
+                if accelerator.is_main_process:
                     save_path = os.path.join(save_dir_root, "best_model.pt")
                     torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
                     logger.info(f"New best Recall@10: {best_recall:.4f}, saved to {save_path}")
-                    wait = 0
-                else:
-                    wait += 1
+            else:
+                wait += 1
+                if accelerator.is_main_process:
                     logger.info(f"No improvement for {wait}/{patience} epochs")
-                    if wait >= patience:
+                if wait >= patience:
+                    if accelerator.is_main_process:
                         logger.info(f"Early stopping at epoch {epoch}")
-                        break
+                    break
 
             model.train()
 
@@ -186,12 +193,15 @@ def train(
             torch.save(accelerator.unwrap_model(model).state_dict(), save_path)
             logger.info(f"Saved checkpoint to {save_path}")
 
-    # Final test evaluation
-    if accelerator.is_main_process:
-        # Load best model
-        best_path = os.path.join(save_dir_root, "best_model.pt")
-        if os.path.exists(best_path):
-            accelerator.unwrap_model(model).load_state_dict(torch.load(best_path))
+    # The test split is touched exactly once, after validation-only selection.
+    # Reload on every rank; otherwise distributed metrics mix best and final
+    # epoch weights.
+    accelerator.wait_for_everyone()
+    best_path = os.path.join(save_dir_root, "best_model.pt")
+    if os.path.exists(best_path):
+        accelerator.unwrap_model(model).load_state_dict(
+            torch.load(best_path, map_location=device)
+        )
 
     test_metrics = evaluate(model, test_dl, accelerator)
     if accelerator.is_main_process:
@@ -199,6 +209,15 @@ def train(
         if wandb_logging:
             wandb.log({f"test/{k}": v for k, v in test_metrics.items()})
             wandb.finish()
+        save_run_results(
+            save_dir=save_dir_root,
+            model="sasrec",
+            split=get_run_split(default=split),
+            seed=seed,
+            metrics=test_metrics,
+            config=_run_config,
+            extra={"best_valid_recall@10": best_recall, "evaluation_level": "item"},
+        )
 
     accelerator.wait_for_everyone()
 

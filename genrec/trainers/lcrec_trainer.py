@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional, Set, Callable, Tuple
 
 from genrec.models.lcrec import LCRec
 from genrec.modules.utils import parse_config, setup_logger, get_run_split
-from genrec.modules.metrics import TopKAccumulator
+from genrec.modules.metrics import SemanticIdItemMapper, TopKAccumulator
 from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb, set_seed, save_run_results
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
@@ -134,7 +134,9 @@ class ConstrainedDecodingHelper:
         return [int(matches[i][1]) for i in range(self.num_codebooks)] if len(matches) >= self.num_codebooks else None
 
 
-def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, beam_width=10, logger=None, epoch=0, debug=False, eval_tasks=None):
+def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks,
+             beam_width=10, logger=None, epoch=0, debug=False, eval_tasks=None,
+             item_mapper=None, prefix_trie=None):
     """Run evaluation on dataloader.
 
     Args:
@@ -146,14 +148,21 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
     device = accelerator.device
     metrics = {k: {'correct': [0]*num_codebooks, 'total': 0, 'exact': 0} for k in ['seqrec', 'item2index']}
     metrics['index2item'] = {'total': 0, 'exact': 0}
+    if item_mapper is None:
+        raise ValueError("item_mapper is required for honest item-level evaluation")
     topk_acc = TopKAccumulator(ks=[1, 5, 10])
+    sid_topk_acc = TopKAccumulator(ks=[1, 5, 10])
     debug_count = 0
     task_timings: Dict[str, float] = {k: 0.0 for k in ('seqrec', 'item2index', 'index2item')}
     eval_t0 = time.time()
 
     raw_model = accelerator.unwrap_model(model)
     has_custom_beam = hasattr(raw_model, 'generate_constrained_beam')
-    prefix_fn = helper.get_prefix_allowed_tokens_fn() if not has_custom_beam else None
+    prefix_fn = (
+        prefix_trie.get_prefix_allowed_tokens_fn()
+        if prefix_trie is not None
+        else helper.get_prefix_allowed_tokens_fn()
+    ) if not has_custom_beam else None
 
     # One-time H2D move; .to() is idempotent so re-calls are free.
     helper.to(device)
@@ -191,6 +200,9 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                     inp = data["input_ids"][mask].to(device)
                     attn = data["attention_mask"][mask].to(device)
                     tgt = data["target_sem_ids"][mask].to(device)  # [N, num_codebooks]
+                    target_items = data["target_items"][mask].to(device)
+                    if (target_items < 0).any():
+                        raise ValueError("seqrec batch is missing raw target item IDs")
                     N = inp.size(0)
 
                     if has_custom_beam:
@@ -198,6 +210,7 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                         pred_ids, _ = raw_model.generate_constrained_beam(
                             inp, attn, helper.position_mask, helper.code_map,
                             num_codebooks, beam_width=beam_width, topk=beam_width,
+                            prefix_trie=prefix_trie,
                         )
                     else:
                         # Fallback: HF generate + extract sem_ids
@@ -227,8 +240,15 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                     metrics['seqrec']['total'] += N
                     metrics['seqrec']['exact'] += exact_match.sum().item()
 
-                    # TopK accumulator
-                    topk_acc.accumulate(tgt, pred_ids)
+                    # Headline: deployable item-level metric.  One generated SID
+                    # resolves to exactly one training-popularity representative;
+                    # repeated items are removed before applying K.
+                    pred_items = item_mapper.map_predictions(pred_ids)
+                    topk_acc.accumulate(
+                        target_items.unsqueeze(-1), pred_items.unsqueeze(-1)
+                    )
+                    # Keep the collision-prone pre-resolution SID metric only as a diagnostic.
+                    sid_topk_acc.accumulate(tgt, pred_ids)
 
                     if debug and debug_count < 3 and accelerator.is_main_process and logger:
                         for i in range(min(3 - debug_count, N)):
@@ -250,6 +270,7 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
                         pred_ids, _ = raw_model.generate_constrained_beam(
                             inp, attn, helper.position_mask, helper.code_map,
                             num_codebooks, beam_width=1, topk=1,
+                            prefix_trie=prefix_trie,
                         )
                         pred = pred_ids[:, 0, :]  # [N, num_codebooks]
                     else:
@@ -291,7 +312,14 @@ def evaluate(model, dataloader, accelerator, tokenizer, helper, num_codebooks, b
     if fsdp_ctx is not None:
         fsdp_ctx.__exit__(None, None, None)
 
+    # All-reduce the top-k counts BEFORE computing ratios — otherwise the
+    # returned Recall@K/NDCG@K cover only this rank's shard, and any is_best
+    # decision derived from them diverges across ranks (→ NCCL deadlock when
+    # one rank enters the test-eval collectives alone).
+    topk_acc.sync_across_processes(accelerator)
     topk_metrics = topk_acc.reduce()
+    sid_topk_acc.sync_across_processes(accelerator)
+    metrics['sid_topk'] = sid_topk_acc.reduce()
 
     # Gather from all GPUs
     def gather(v):
@@ -329,9 +357,15 @@ def log_metrics(metrics, topk_metrics, num_codebooks, epoch, logger, wandb_log=F
                 log_dict[f"eval/{task}_c{c}"] = c_accs[c]
 
     if metrics['seqrec']['total'] > 0:
-        logger.info(f"Epoch {epoch} - seqrec TopK: " + ", ".join([f"{k}={v:.4f}" for k, v in topk_metrics.items()]))
+        logger.info(f"Epoch {epoch} - seqrec TopK (ITEM-level): " + ", ".join([f"{k}={v:.4f}" for k, v in topk_metrics.items()]))
+        sid_topk = metrics.get('sid_topk', {})
+        if sid_topk:
+            logger.info(f"Epoch {epoch} - seqrec TopK (SID-level pre-resolution diagnostic): " +
+                        ", ".join([f"{k}={v:.4f}" for k, v in sid_topk.items()]))
         for k, v in topk_metrics.items():
             log_dict[f"eval/seqrec_{k}"] = v
+        for k, v in metrics.get('sid_topk', {}).items():
+            log_dict[f"eval/seqrec_sid_ref_{k}"] = v
 
     if metrics['index2item']['total'] > 0:
         rate = metrics['index2item']['exact'] / metrics['index2item']['total']
@@ -404,6 +438,16 @@ def train(
     train_ds = dataset(train_test_split="train", **ds_kwargs)
     valid_ds = dataset(train_test_split="valid", **ds_kwargs)
     test_ds = dataset(train_test_split="test", **ds_kwargs)
+    _run_config["evaluation_protocol"] = train_ds.evaluation_protocol
+    item_mapper = SemanticIdItemMapper.from_sequences(
+        train_ds.sem_ids_list, train_ds.sequences
+    )
+    logger.info(
+        "Honest SID resolver: most_popular(training-only), unique=%d/%d, "
+        "collision_rate=%.2f%%, max_group=%d",
+        item_mapper.num_unique_sids, item_mapper.num_items,
+        100.0 * item_mapper.collision_rate, item_mapper.max_collision_group,
+    )
 
     if max_train_samples > 0:
         train_ds.samples = train_ds.samples[:max_train_samples]
@@ -438,7 +482,10 @@ def train(
     # Eval only mode
     if eval_only:
         logger.info("Running eval-only mode...")
-        metrics, topk = evaluate(model, valid_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, 0, debug_logging)
+        metrics, topk = evaluate(
+            model, valid_dl, accelerator, tokenizer, helper, num_codebooks,
+            eval_beam_width, logger, 0, debug_logging, item_mapper=item_mapper,
+        )
         if accelerator.is_main_process:
             log_metrics(metrics, topk, num_codebooks, 0, logger)
         accelerator.wait_for_everyone()
@@ -447,9 +494,9 @@ def train(
     # Training loop
     pbar = tqdm(total=total_steps, dynamic_ncols=True) if accelerator.is_main_process else None
     global_step = 0
-    last_test_topk: Dict[str, float] = {}
-    last_test_task_exact: Dict[str, float] = {}
-    best_valid_recall10 = 0.0
+    best_valid_recall10 = float("-inf")
+    best_epoch = -1
+    best_state: Optional[Dict[str, torch.Tensor]] = None
 
     for epoch in range(epochs):
         model.train()
@@ -495,38 +542,45 @@ def train(
         # Evaluation (skip index2item during training — 50-token free generation is slow)
         if do_eval and (epoch + 1) % eval_every_epoch == 0:
             train_eval_tasks = {'seqrec', 'item2index'}
-            metrics, topk = evaluate(model, valid_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
+            metrics, topk = evaluate(
+                model, valid_dl, accelerator, tokenizer, helper, num_codebooks,
+                eval_beam_width, logger, epoch, debug_logging,
+                eval_tasks=train_eval_tasks, item_mapper=item_mapper,
+            )
 
             current_recall10 = topk.get("Recall@10", 0.0)
             is_best = current_recall10 > best_valid_recall10
-            need_test = is_best or not last_test_topk
             if is_best:
                 best_valid_recall10 = current_recall10
+                best_epoch = epoch
 
             if accelerator.is_main_process:
                 logger.info(f"--- Valid ---")
                 log_metrics(metrics, topk, num_codebooks, epoch, logger, wandb_logging)
 
-            if need_test:
-                test_metrics, test_topk = evaluate(model, test_dl, accelerator, tokenizer, helper, num_codebooks, eval_beam_width, logger, epoch, debug_logging, eval_tasks=train_eval_tasks)
+            if is_best:
+                # Keep an exact in-memory snapshot on every rank.  Filtering to
+                # trainable parameters makes LoRA checkpoints compact; for full
+                # tuning this intentionally captures the complete model.
+                unwrapped = accelerator.unwrap_model(model)
+                trainable_names = {
+                    name for name, parameter in unwrapped.named_parameters()
+                    if parameter.requires_grad
+                }
+                current_state = accelerator.get_state_dict(model)
+                best_state = {
+                    name: tensor.detach().cpu().clone()
+                    for name, tensor in current_state.items()
+                    if name in trainable_names
+                }
                 if accelerator.is_main_process:
-                    logger.info(f"--- Test (refreshed) ---")
-                    log_metrics(test_metrics, test_topk, num_codebooks, epoch, logger, wandb_log=False)
-                    last_test_topk = dict(test_topk)
-                    last_test_task_exact = {
-                        task: (test_metrics[task]['exact'] / test_metrics[task]['total'])
-                        for task in ['seqrec', 'item2index']
-                        if test_metrics[task]['total'] > 0
-                    }
-                    if wandb_logging:
-                        test_log = {"epoch": epoch}
-                        for task, v in last_test_task_exact.items():
-                            test_log[f"test/{task}_exact"] = v
-                        for k, v in test_topk.items():
-                            test_log[f"test/seqrec_{k}"] = v
-                        wandb.log(test_log)
-            elif accelerator.is_main_process:
-                logger.info(f"--- Test (cached from previous best, skipped) ---")
+                    best_path = os.path.join(save_dir_root, "checkpoint_best")
+                    os.makedirs(best_path, exist_ok=True)
+                    unwrapped.save_pretrained(best_path)
+                    logger.info(
+                        "New best validation Recall@10 %.4f; saved %s",
+                        best_valid_recall10, best_path,
+                    )
 
             model.train()
 
@@ -546,10 +600,36 @@ def train(
         if pbar:
             pbar.close()
 
+    # Strict one-shot test: validation selects the epoch, then every rank loads
+    # the same snapshot before the test split is touched for the first time.
+    accelerator.wait_for_everyone()
+    if best_state is not None:
+        accelerator.unwrap_model(model).load_state_dict(best_state, strict=False)
+    test_metrics, test_topk = evaluate(
+        model, test_dl, accelerator, tokenizer, helper, num_codebooks,
+        eval_beam_width, logger, best_epoch, debug_logging,
+        eval_tasks={'seqrec', 'item2index'}, item_mapper=item_mapper,
+    )
+    last_test_topk = dict(test_topk)
+    last_test_sid_topk = dict(test_metrics.get('sid_topk', {}))
+    last_test_task_exact = {
+        task: (test_metrics[task]['exact'] / test_metrics[task]['total'])
+        for task in ['seqrec', 'item2index']
+        if test_metrics[task]['total'] > 0
+    }
+    if accelerator.is_main_process:
+        logger.info("--- Test (one-shot after validation selection) ---")
+        log_metrics(test_metrics, test_topk, num_codebooks, best_epoch, logger, wandb_log=False)
+
     if wandb_logging and accelerator.is_main_process:
+        wandb.log({
+            "epoch": best_epoch,
+            **{f"test/{task}_exact": value for task, value in last_test_task_exact.items()},
+            **{f"test/seqrec_{key}": value for key, value in test_topk.items()},
+        })
         wandb.finish()
 
-    if accelerator.is_main_process and last_test_topk:
+    if accelerator.is_main_process:
         save_run_results(
             save_dir=save_dir_root,
             model="lcrec",
@@ -557,7 +637,14 @@ def train(
             seed=seed,
             metrics=last_test_topk,
             config=_run_config,
-            extra={"task_exact": last_test_task_exact},
+            extra={
+                "best_epoch": best_epoch,
+                "best_valid_recall@10": best_valid_recall10,
+                "evaluation_level": "item",
+                "sid_resolution": "most_popular_training_only",
+                "sid_reference_metrics": last_test_sid_topk,
+                "task_exact": last_test_task_exact,
+            },
         )
 
     accelerator.wait_for_everyone()

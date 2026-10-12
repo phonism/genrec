@@ -28,6 +28,11 @@ train.loss_type = "sampled_softmax"
 train.num_negatives = 128
 train.ss_temperature = 0.05
 train.ss_l2_norm = True
+# Meta's "local" means a local (non-sharded) item embedding table: every
+# positive independently draws 128 uniform catalog IDs with replacement.
+# It is distinct from Meta's separately named "in-batch" sampler. Legacy
+# GenRec shared one deduplicated negative set via "global".
+train.ss_sampling_strategy = "local"
 
 # =============================================================================
 # HSTU-specific: Relative Attention Bias

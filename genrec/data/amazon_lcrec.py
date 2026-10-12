@@ -22,7 +22,9 @@ from genrec.data.amazon import (
     AmazonItemDataset,
     DATASET_CONFIGS,
     parse_gzip_json,
+    semantic_id_layer_usage,
 )
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
 
 # SFT prompt format (matching official LC-Rec implementation)
@@ -190,9 +192,14 @@ class AmazonLCRecDataset(Dataset):
         rqvae_hidden_dims: List[int] = [512, 256, 128],  # Official config
         rqvae_codebook_size: int = 256,
         rqvae_n_layers: int = 5,  # Official: 5 codebooks
+        uniform_semantic_mapping: bool = False,
+        min_raw_codebook_usage: float = 0.0,
         # Task configuration
         enabled_tasks: List[str] = None,
         task_sample_weights: Dict[str, float] = None,
+        evaluation_protocol: str = "leave_one_out",
+        temporal_train_ratio: float = 0.8,
+        temporal_valid_ratio: float = 0.1,
     ) -> None:
         from genrec.models.rqvae import RqVae
 
@@ -203,6 +210,13 @@ class AmazonLCRecDataset(Dataset):
         self.max_text_len = max_text_len
         self.n_codebooks = rqvae_n_layers
         self.codebook_size = rqvae_codebook_size
+        self.uniform_semantic_mapping = uniform_semantic_mapping
+        if not 0.0 <= min_raw_codebook_usage <= 1.0:
+            raise ValueError("min_raw_codebook_usage must be in [0, 1]")
+        self.min_raw_codebook_usage = min_raw_codebook_usage
+        self.evaluation_protocol = evaluation_protocol
+        self.temporal_train_ratio = temporal_train_ratio
+        self.temporal_valid_ratio = temporal_valid_ratio
 
         # Default: enable all tasks
         self.enabled_tasks: Set[str] = set(enabled_tasks or [
@@ -232,24 +246,74 @@ class AmazonLCRecDataset(Dataset):
         )
         self.item_embeddings = torch.tensor(item_dataset.embeddings, dtype=torch.float32)
 
-        # Load pretrained RQVAE and generate semantic IDs
-        rqvae = RqVae(
-            input_dim=rqvae_input_dim,
-            embed_dim=rqvae_embed_dim,
-            hidden_dims=rqvae_hidden_dims,
-            codebook_size=rqvae_codebook_size,
-            codebook_kmeans_init=False,
-            codebook_normalize=False,
-            codebook_sim_vq=False,
-            n_layers=rqvae_n_layers,
-            n_cat_features=0,
-            commitment_weight=0.25,
-        )
-        rqvae.load_pretrained(pretrained_rqvae_path)
+        # Reconstruct the tokenizer from the checkpoint rather than assuming
+        # the legacy GenRec defaults.  Paper-aligned LC-Rec checkpoints use a
+        # different MLP activation/bias/initialization and decoder setting;
+        # manually rebuilding them with the old defaults either fails strict
+        # state-dict loading or, for shape-compatible options, silently changes
+        # inference semantics.
+        rqvae = RqVae.from_pretrained(pretrained_rqvae_path, map_location="cpu")
+        expected_geometry = {
+            "input_dim": rqvae_input_dim,
+            "embed_dim": rqvae_embed_dim,
+            "hidden_dims": list(rqvae_hidden_dims),
+            "codebook_size": rqvae_codebook_size,
+            "n_layers": rqvae_n_layers,
+        }
+        actual_geometry = {
+            "input_dim": rqvae.input_dim,
+            "embed_dim": rqvae.embed_dim,
+            "hidden_dims": list(rqvae.hidden_dims),
+            "codebook_size": rqvae.codebook_size,
+            "n_layers": rqvae.n_layers,
+        }
+        mismatches = {
+            key: (expected_geometry[key], actual_geometry[key])
+            for key in expected_geometry
+            if expected_geometry[key] != actual_geometry[key]
+        }
+        if mismatches:
+            raise ValueError(
+                "LCRec RQ-VAE checkpoint geometry does not match the dataset "
+                f"configuration: {mismatches}"
+            )
         rqvae.eval()
 
         with torch.no_grad():
-            self.sem_ids_list = rqvae.get_semantic_ids(self.item_embeddings).sem_ids.tolist()
+            raw_semantic_ids = rqvae.get_semantic_ids(
+                self.item_embeddings
+            ).sem_ids
+            raw_layer_usage = semantic_id_layer_usage(
+                raw_semantic_ids, rqvae_codebook_size
+            )
+            if min(raw_layer_usage, default=0.0) < min_raw_codebook_usage:
+                raise RuntimeError(
+                    "Refusing to build LCRec data from an unhealthy RQ-VAE: "
+                    f"raw layer usage={raw_layer_usage}, required minimum="
+                    f"{min_raw_codebook_usage:.2%}. Retrain the tokenizer; USM "
+                    "cannot repair collapsed early codebooks."
+                )
+            if uniform_semantic_mapping:
+                # LC-Rec does not consume the raw nearest-code tuples directly.
+                # Its index-generation pass repeatedly applies a balanced
+                # Sinkhorn assignment to the final codebook for collision
+                # groups (official ``index/generate_indices.py``).  The model
+                # already provides that paper-aligned post-processing; use it
+                # here so the IDs seen by every alignment task and evaluator
+                # are the same non-conflicting mapping.
+                semantic_ids = rqvae.get_semantic_ids_dedup(self.item_embeddings)
+            else:
+                semantic_ids = raw_semantic_ids
+            self.sem_ids_list = semantic_ids.tolist()
+
+        unique_ids = len({tuple(row) for row in self.sem_ids_list})
+        print(
+            "LCRec semantic mapping: "
+            f"{'uniform_sinkhorn' if uniform_semantic_mapping else 'raw_argmin'}, "
+            f"raw_layer_usage={[round(value, 4) for value in raw_layer_usage]}, "
+            f"unique={unique_ids}/{len(self.sem_ids_list)}, "
+            f"collision_rate={1.0 - unique_ids / max(len(self.sem_ids_list), 1):.4%}"
+        )
 
         # Load item metadata for text
         self._load_item_metadata()
@@ -326,17 +390,19 @@ class AmazonLCRecDataset(Dataset):
                     user_sequences[user_id] = []
                 user_sequences[user_id].append((timestamp, item_id))
 
-        # Sort by timestamp and filter short sequences
-        self.sequences = []
-        self.user_ids = []
-        for uid, seq in user_sequences.items():
-            seq.sort(key=lambda x: x[0])
-            items = [x[1] for x in seq]
-            if len(items) >= 5:
-                self.sequences.append(items)
-                self.user_ids.append(uid)
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            self.train_test_split,
+            protocol=self.evaluation_protocol,
+            min_seq_len=5,
+            temporal_train_ratio=self.temporal_train_ratio,
+            temporal_valid_ratio=self.temporal_valid_ratio,
+        )
+        self.user_ids = [uid for uid, _ in selected]
+        self.sequences = [[item_id for _, item_id in seq] for _, seq in selected]
 
-        print(f"Loaded {len(self.sequences)} user sequences for LCRec")
+        print(f"Loaded {len(self.sequences)} user sequences for LCRec "
+              f"(protocol={self.evaluation_protocol})")
 
     def _generate_samples(self) -> None:
         """Generate training/evaluation samples based on enabled tasks."""

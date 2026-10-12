@@ -14,7 +14,7 @@ from genrec.trainers.trainer_utils import setup_accelerator, setup_wandb, set_se
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from transformers.optimization import get_cosine_schedule_with_warmup
 
 
@@ -44,6 +44,7 @@ def cobra_collate_fn(
         max_items = max(len(x['input_ids']) // n_codebooks + 1 for x in batch)  # +1 for target
 
         input_ids = torch.full((B, max_items * n_codebooks), pad_id, dtype=torch.long)
+        item_ids = torch.full((B, max_items), -1, dtype=torch.long)
         encoder_input_ids = torch.zeros((B, max_items, max_text_len), dtype=torch.long)
         target_sem_ids = torch.zeros((B, n_codebooks), dtype=torch.long)
 
@@ -54,6 +55,8 @@ def cobra_collate_fn(
             # Append target to history semantic IDs
             full_sem_ids = sample['input_ids'] + sample['target_sem_ids']
             input_ids[i, :len(full_sem_ids)] = torch.tensor(full_sem_ids)
+            full_item_ids = sample['history_item_ids'] + [sample['target_item']]
+            item_ids[i, :len(full_item_ids)] = torch.tensor(full_item_ids)
 
             # Append target encoder input to history
             encoder_input_ids[i, :n_history_items] = sample['encoder_input_ids']
@@ -66,6 +69,7 @@ def cobra_collate_fn(
         max_items = max(len(x['input_ids']) // n_codebooks for x in batch)
 
         input_ids = torch.full((B, max_items * n_codebooks), pad_id, dtype=torch.long)
+        item_ids = torch.full((B, max_items), -1, dtype=torch.long)
         encoder_input_ids = torch.zeros((B, max_items, max_text_len), dtype=torch.long)
         target_sem_ids = torch.zeros((B, n_codebooks), dtype=torch.long)
 
@@ -74,6 +78,7 @@ def cobra_collate_fn(
             n_items = seq_len // n_codebooks
 
             input_ids[i, :seq_len] = torch.tensor(sample['input_ids'])
+            item_ids[i, :n_items] = torch.tensor(sample['history_item_ids'])
             encoder_input_ids[i, :n_items] = sample['encoder_input_ids']
             target_sem_ids[i] = torch.tensor(sample['target_sem_ids'])
 
@@ -81,6 +86,7 @@ def cobra_collate_fn(
 
     return {
         'input_ids': input_ids,
+        'item_ids': item_ids,
         'encoder_input_ids': encoder_input_ids,
         'target_sem_ids': target_sem_ids,
         'target_item_ids': target_item_ids,  # ground-truth item id for honest item-level eval
@@ -104,6 +110,7 @@ def train(
     wandb_log_interval: int = 10,
     mixed_precision_type: str = "fp16",
     gradient_accumulate_every: int = 1,
+    max_train_batches: Optional[int] = None,
     save_every_epoch: int = 10,
     eval_valid_every_epoch: int = 5,
     eval_test_every_epoch: int = 10,
@@ -125,6 +132,9 @@ def train(
     decoder_dropout: float = 0.1,
     # Encoder type: "light" (random init) or "pretrained" (sentence-t5)
     encoder_type: str = "light",
+    encoder_pooling: str = "mean",
+    dense_negative_scope: str = "cross_sequence",
+    use_dense_memory_queue: bool = False,
     # Training
     num_warmup_steps: int = 500,
     max_seq_len: int = 20,
@@ -134,11 +144,24 @@ def train(
     # Loss weights
     sparse_loss_weight: float = 1.0,
     dense_loss_weight: float = 1.0,
+    # BeamFusion inference.  Catalog constraints keep the finite beam budget on
+    # semantic IDs that can resolve to real items.
+    eval_n_beam: int = 32,
+    eval_tau: float = 1.0,
+    eval_psi: float = 16.0,
+    constrain_to_catalog: bool = False,
+    # Paper's "w/o Dense" ablation: train the sparse branch alone (dense inputs
+    # zeroed, InfoNCE off). Eval-side BeamFusion then ranks buckets with the
+    # untrained pretrained-encoder table — read the Sparse-only metrics.
+    use_dense: bool = True,
     seed: int = 42,
 ):
     """
     Trains a COBRA model.
     """
+    if max_train_batches is not None and max_train_batches <= 0:
+        raise ValueError("max_train_batches must be positive when provided")
+
     _run_config = dict(locals())
     # Setup logger
     logger = setup_logger(save_dir_root, name="cobra")
@@ -199,6 +222,7 @@ def train(
         # (e.g. 6901 -> 529 unique on Beauty). base/xl share the T5 tokenizer, so the
         # text the model's encoder sees is unchanged.
     )
+    _run_config["evaluation_protocol"] = train_dataset.evaluation_protocol
 
     pad_id = id_vocab_size * n_codebooks
     train_collate_fn = lambda x: cobra_collate_fn(x, pad_id=pad_id, n_codebooks=n_codebooks, is_train=True)
@@ -260,6 +284,10 @@ def train(
         decoder_dropout=decoder_dropout,
         encoder_type=encoder_type,
         encoder_model_name=encoder_model_name,
+        encoder_pooling=encoder_pooling,
+        dense_negative_scope=dense_negative_scope,
+        use_dense_memory_queue=use_dense_memory_queue,
+        use_dense=use_dense,
     )
 
     optimizer = AdamW(
@@ -268,7 +296,12 @@ def train(
         weight_decay=weight_decay,
     )
 
-    total_steps = len(train_dataloader) * epochs // gradient_accumulate_every
+    train_batches_per_epoch = len(train_dataloader)
+    if max_train_batches is not None:
+        train_batches_per_epoch = min(train_batches_per_epoch, max_train_batches)
+    total_steps = (
+        train_batches_per_epoch * epochs + gradient_accumulate_every - 1
+    ) // gradient_accumulate_every
     lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=num_warmup_steps,
@@ -354,15 +387,85 @@ def train(
                 vecs = torch.nn.functional.normalize(vecs, p=2, dim=-1)
                 all_vecs.append(vecs.cpu())
 
-        model.train()
+        # The caller enters evaluation mode before computing the catalog and
+        # immediately uses the same model for BeamFusion.  Do not silently
+        # re-enable dropout/gradient checkpointing here: that made query-side
+        # dense vectors stochastic while catalog vectors were deterministic.
         return torch.cat(all_vecs, dim=0).to(device)  # (N, D)
+
+    @torch.no_grad()
+    def evaluate_recommendation_split(dataloader, item_dense_vecs, description):
+        """Evaluate one split without using it for any other decision."""
+        item_accumulator = TopKAccumulator()
+        sid_accumulator = TopKAccumulator()
+        sparse_accumulator = TopKAccumulator()
+        codebook_correct = [0] * n_codebooks
+        codebook_total = 0
+
+        for data in tqdm(
+            dataloader, description,
+            disable=not accelerator.is_main_process,
+        ):
+            generated = accelerator.unwrap_model(model).beam_fusion(
+                input_ids=data["input_ids"].to(device),
+                encoder_input_ids=data["encoder_input_ids"].to(device),
+                item_dense_vecs=item_dense_vecs,
+                item_sem_ids=item_sem_ids,
+                sem_id_to_items=sem_id_to_items,
+                n_candidates=10,
+                n_beam=eval_n_beam,
+                tau=eval_tau,
+                psi=eval_psi,
+                constrain_to_catalog=constrain_to_catalog,
+            )
+            target_item = data["target_item_ids"].to(device)
+            target_sid = data["target_sem_ids"].to(device)
+            item_accumulator.accumulate(
+                actual=target_item.unsqueeze(-1),
+                top_k=generated.item_ids.unsqueeze(-1),
+            )
+            sid_accumulator.accumulate(actual=target_sid, top_k=generated.sem_ids)
+
+            sparse_gen = accelerator.unwrap_model(model).generate(
+                input_ids=data["input_ids"].to(device),
+                encoder_input_ids=data["encoder_input_ids"].to(device),
+                n_candidates=10,
+            )
+            sparse_accumulator.accumulate(
+                actual=target_sid, top_k=sparse_gen.sem_ids
+            )
+            top1 = generated.sem_ids[:, 0, :]
+            for codebook in range(n_codebooks):
+                codebook_correct[codebook] += (
+                    top1[:, codebook] == target_sid[:, codebook]
+                ).sum().item()
+            codebook_total += target_sid.size(0)
+
+        item_accumulator.sync_across_processes(accelerator)
+        sid_accumulator.sync_across_processes(accelerator)
+        sparse_accumulator.sync_across_processes(accelerator)
+        counts = torch.tensor(
+            codebook_correct + [codebook_total],
+            device=device,
+            dtype=torch.float64,
+        )
+        counts = accelerator.reduce(counts, reduction="sum")
+        total = max(int(counts[-1].item()), 1)
+        codebook_accuracy = [float(value) / total for value in counts[:-1]]
+        return (
+            item_accumulator.reduce(),
+            sid_accumulator.reduce(),
+            sparse_accumulator.reduce(),
+            codebook_accuracy,
+        )
 
     # Training loop
     model.train()
     global_step = -1
 
-    last_test_metrics: Dict[str, float] = {}
-    last_test_sparse_metrics: Dict[str, float] = {}
+    best_valid_recall10 = float("-inf")
+    best_epoch = -1
+    best_model_state: Optional[Dict[str, torch.Tensor]] = None
     for epoch in range(start_epoch, epochs):
         # Reset epoch accumulators
         epoch_acc_correct = 0
@@ -379,6 +482,7 @@ def train(
                     output = model(
                         input_ids=data["input_ids"].to(device),
                         encoder_input_ids=data["encoder_input_ids"].to(device),
+                        item_ids=data["item_ids"].to(device),
                     )
 
                     # Weighted loss
@@ -426,6 +530,9 @@ def train(
 
             accelerator.wait_for_everyone()
 
+            if max_train_batches is not None and step + 1 >= max_train_batches:
+                break
+
         # End of epoch logging
         epoch_acc = epoch_acc_correct / max(epoch_acc_total, 1)
         epoch_recall = epoch_recall_correct / max(epoch_recall_total, 1)
@@ -439,65 +546,19 @@ def train(
         # Evaluation with Recall@K and NDCG@K using BeamFusion
         if do_eval and (epoch + 1) % eval_valid_every_epoch == 0:
             model.eval()
-            item_metrics_accumulator = TopKAccumulator()    # honest item-id level (headline)
-            metrics_accumulator = TopKAccumulator()         # sem-id level (collision-inflated reference)
-
-            # Compute item dense vectors for BeamFusion (re-compute each eval for updated encoder)
             item_dense_vecs = compute_item_dense_vecs(model, train_dataset, batch_size=64)
-
-            # Per-codebook accuracy tracking
-            codebook_correct = [0, 0, 0]
-            codebook_total = 0
-
-            # Also track sparse-only metrics (without BeamFusion)
-            sparse_metrics_accumulator = TopKAccumulator()
-
-            with torch.no_grad():
-                for data in tqdm(valid_dataloader, desc=f"Valid Eval (Epoch {epoch})"):
-                    # Generate predictions using BeamFusion (coarse-to-fine)
-                    generated = accelerator.unwrap_model(model).beam_fusion(
-                        input_ids=data["input_ids"].to(device),
-                        encoder_input_ids=data["encoder_input_ids"].to(device),
-                        item_dense_vecs=item_dense_vecs,
-                        item_sem_ids=item_sem_ids,
-                        sem_id_to_items=sem_id_to_items,
-                        n_candidates=10,
-                        n_beam=32,  # widen to codebook size: +13% item R@10 vs 20 on Beauty test
-                        tau=1.0,   # coefficient for beam score
-                        psi=16.0,  # coefficient for similarity score
-                    )
-                    # Honest item-level: does the ground-truth ITEM appear in the
-                    # top-K retrieved ITEMS? (the .unsqueeze(-1) lets TopKAccumulator
-                    # treat a scalar id as a length-1 "sem id")
-                    target_item = data["target_item_ids"].to(device)  # (B,)
-                    item_metrics_accumulator.accumulate(
-                        actual=target_item.unsqueeze(-1), top_k=generated.item_ids.unsqueeze(-1))
-                    # Sem-id level (collision-inflated): kept only as a reference
-                    target = data["target_sem_ids"].to(device)  # (B, C)
-                    topk = generated.sem_ids  # (B, K, C)
-                    metrics_accumulator.accumulate(actual=target, top_k=topk)
-
-                    # Also eval sparse-only (direct generate without BeamFusion)
-                    sparse_gen = accelerator.unwrap_model(model).generate(
-                        input_ids=data["input_ids"].to(device),
-                        encoder_input_ids=data["encoder_input_ids"].to(device),
-                        n_candidates=10,
-                    )
-                    sparse_metrics_accumulator.accumulate(actual=target, top_k=sparse_gen.sem_ids)
-
-                    # Per-codebook accuracy (top-1 only)
-                    top1 = topk[:, 0, :]  # (B, C)
-                    for c in range(n_codebooks):
-                        codebook_correct[c] += (top1[:, c] == target[:, c]).sum().item()
-                    codebook_total += target.size(0)
-
-            item_metrics = item_metrics_accumulator.reduce()
-            metrics = metrics_accumulator.reduce()
-            sparse_metrics = sparse_metrics_accumulator.reduce()
-            # Print per-codebook accuracy
-            c_accs = [codebook_correct[c] / max(codebook_total, 1) for c in range(n_codebooks)]
+            item_metrics, metrics, sparse_metrics, c_accs = (
+                evaluate_recommendation_split(
+                    valid_dataloader,
+                    item_dense_vecs,
+                    f"Valid Eval (Epoch {epoch})",
+                )
+            )
             logger.info(f"Epoch {epoch} - Valid (BeamFusion ITEM-level): {item_metrics}")
-            logger.info(f"Epoch {epoch} - Valid (BeamFusion sem-id, inflated ref): {metrics}")
+            logger.info(
+                f"Epoch {epoch} - Valid (BeamFusion sem-id pre-resolution "
+                f"diagnostic; not directly comparable): {metrics}"
+            )
             logger.info(f"Epoch {epoch} - Valid (Sparse-only sem-id): {sparse_metrics}")
             logger.info(f"  Per-codebook acc: " + ", ".join([f"c{c}={c_accs[c]:.4f}" for c in range(n_codebooks)]))
 
@@ -505,50 +566,29 @@ def train(
                 for k, v in item_metrics.items():
                     log_dict[f"eval/valid_{k}"] = v
 
-            # Test evaluation
-            test_item_metrics_accumulator = TopKAccumulator()  # honest item-id level (headline)
-            test_metrics_accumulator = TopKAccumulator()
-            test_sparse_metrics_accumulator = TopKAccumulator()
-            with torch.no_grad():
-                for data in tqdm(test_dataloader, desc=f"Test Eval (Epoch {epoch})"):
-                    generated = accelerator.unwrap_model(model).beam_fusion(
-                        input_ids=data["input_ids"].to(device),
-                        encoder_input_ids=data["encoder_input_ids"].to(device),
-                        item_dense_vecs=item_dense_vecs,
-                        item_sem_ids=item_sem_ids,
-                        sem_id_to_items=sem_id_to_items,
-                        n_candidates=10,
-                        n_beam=32,
-                        tau=1.0,
-                        psi=16.0,
+            valid_recall10 = item_metrics.get("Recall@10", 0.0)
+            if valid_recall10 > best_valid_recall10:
+                best_valid_recall10 = valid_recall10
+                best_epoch = epoch
+                best_model_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in accelerator.get_state_dict(model).items()
+                }
+                if accelerator.is_main_process:
+                    best_path = os.path.join(save_dir_root, "best_model.pt")
+                    os.makedirs(save_dir_root, exist_ok=True)
+                    torch.save(
+                        {
+                            "epoch": best_epoch,
+                            "valid_metrics": item_metrics,
+                            "model": best_model_state,
+                        },
+                        best_path,
                     )
-                    target_item = data["target_item_ids"].to(device)
-                    test_item_metrics_accumulator.accumulate(
-                        actual=target_item.unsqueeze(-1), top_k=generated.item_ids.unsqueeze(-1))
-                    target = data["target_sem_ids"].to(device)
-                    test_metrics_accumulator.accumulate(actual=target, top_k=generated.sem_ids)
-
-                    sparse_gen = accelerator.unwrap_model(model).generate(
-                        input_ids=data["input_ids"].to(device),
-                        encoder_input_ids=data["encoder_input_ids"].to(device),
-                        n_candidates=10,
+                    logger.info(
+                        "New best validation Recall@10 %.4f; saved %s",
+                        best_valid_recall10, best_path,
                     )
-                    test_sparse_metrics_accumulator.accumulate(actual=target, top_k=sparse_gen.sem_ids)
-
-            test_item_metrics = test_item_metrics_accumulator.reduce()
-            test_metrics = test_metrics_accumulator.reduce()
-            test_sparse_metrics = test_sparse_metrics_accumulator.reduce()
-            last_test_metrics = dict(test_item_metrics)  # honest item-level is the saved headline
-            last_test_sparse_metrics = dict(test_sparse_metrics)
-            logger.info(f"Epoch {epoch} - Test (BeamFusion ITEM-level): {test_item_metrics}")
-            logger.info(f"Epoch {epoch} - Test (BeamFusion sem-id, inflated ref): {test_metrics}")
-            logger.info(f"Epoch {epoch} - Test (Sparse-only sem-id): {test_sparse_metrics}")
-
-            if wandb_logging and accelerator.is_main_process:
-                for k, v in test_item_metrics.items():
-                    log_dict[f"eval/test_{k}"] = v
-                for k, v in test_metrics.items():
-                    log_dict[f"eval/test_semid_{k}"] = v
 
         if wandb_logging and accelerator.is_main_process and log_dict and len(log_dict) > 1:
             wandb.log(log_dict)
@@ -569,6 +609,45 @@ def train(
             os.path.join(save_dir_root, "checkpoint_final.pt")
         )
 
+    last_test_metrics: Dict[str, float] = {}
+    last_test_sparse_metrics: Dict[str, float] = {}
+    if do_eval:
+        # Strict one-shot test after validation-only checkpoint selection.
+        accelerator.wait_for_everyone()
+        if best_model_state is not None:
+            accelerator.unwrap_model(model).load_state_dict(
+                best_model_state, strict=True
+            )
+        model.eval()
+        best_item_dense_vecs = compute_item_dense_vecs(
+            model, train_dataset, batch_size=64
+        )
+        test_item_metrics, test_sid_metrics, test_sparse_metrics, _ = (
+            evaluate_recommendation_split(
+                test_dataloader,
+                best_item_dense_vecs,
+                "Test Eval (one-shot)",
+            )
+        )
+        last_test_metrics = dict(test_item_metrics)
+        last_test_sparse_metrics = dict(test_sparse_metrics)
+        if accelerator.is_main_process:
+            logger.info(
+                "Test (one-shot, best epoch %d; BeamFusion ITEM-level): %s",
+                best_epoch, test_item_metrics,
+            )
+            logger.info(
+                "Test (BeamFusion sem-id diagnostic; not directly comparable): %s",
+                test_sid_metrics,
+            )
+            logger.info("Test (Sparse-only sem-id): %s", test_sparse_metrics)
+            if wandb_logging:
+                wandb.log({
+                    "epoch": best_epoch,
+                    **{f"test/{key}": value for key, value in test_item_metrics.items()},
+                    **{f"test_semid/{key}": value for key, value in test_sid_metrics.items()},
+                })
+
     if wandb_logging and accelerator.is_main_process:
         wandb.finish()
 
@@ -580,7 +659,20 @@ def train(
             seed=seed,
             metrics=last_test_metrics,
             config=_run_config,
-            extra={"sparse_only_metrics": last_test_sparse_metrics},
+            extra={
+                "evaluation_level": "item",
+                "best_epoch": best_epoch,
+                "best_valid_recall@10": best_valid_recall10,
+                "test_policy": "one_shot_after_validation_selection",
+                "sid_reference_note": "logged only; not used for selection or headline",
+                "sparse_only_metrics": last_test_sparse_metrics,
+                "beam_fusion": {
+                    "n_beam": eval_n_beam,
+                    "tau": eval_tau,
+                    "psi": eval_psi,
+                    "constrain_to_catalog": constrain_to_catalog,
+                },
+            },
         )
 
     accelerator.wait_for_everyone()

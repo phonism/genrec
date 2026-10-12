@@ -22,10 +22,10 @@ train_rpg.attn_pdrop = 0.5
 train_rpg.resid_pdrop = 0.0
 
 # =============================================================================
-# Graph Decoding Settings
+# Graph Decoding Settings (paper Appendix B, Table 6)
 # =============================================================================
-train_rpg.num_beams = 20
-train_rpg.n_edges = 200
+train_rpg.num_beams = 10
+train_rpg.n_edges = 100
 train_rpg.propagation_steps = 3
 train_rpg.chunk_size = 1024
 
@@ -46,8 +46,10 @@ train_rpg.max_seq_len = 50
 train_rpg.dataset_folder = "dataset/amazon"
 train_rpg.split = "{split}"
 
-# Sentence embedding model for OPQ tokenization
-train_rpg.encoder_model_name = "text-embedding-3-large"
+# Sentence embedding model for OPQ tokenization. The dataset uses
+# SentenceTransformer directly, so this must be a local/HuggingFace model path
+# rather than an OpenAI embedding API model name.
+train_rpg.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
 train_rpg.sent_emb_pca = 512
 
 # =============================================================================
@@ -77,3 +79,7 @@ train_rpg.wandb_log_interval = 100
 # =============================================================================
 train_rpg.amp = False
 train_rpg.mixed_precision_type = "no"
+# Evaluation protocol: "leave_one_out" or leakage-resistant "global_temporal"
+AmazonRPGDataset.evaluation_protocol = "leave_one_out"
+AmazonRPGDataset.temporal_train_ratio = 0.8
+AmazonRPGDataset.temporal_valid_ratio = 0.1

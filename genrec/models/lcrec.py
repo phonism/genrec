@@ -141,8 +141,25 @@ class LCRec(nn.Module):
             save_dir (str): directory to save the model and tokenizer.
             **kwargs: additional arguments to pass to the tokenizer and model.
         """
+        state_dict = kwargs.get("state_dict")
+        if state_dict is not None:
+            # ``Accelerator.get_state_dict(LCRec)`` includes this wrapper's
+            # leading ``model.`` while the inner HF model does not.  Passing it
+            # through unchanged creates a checkpoint that from_pretrained
+            # silently treats as missing/random weights.
+            inner_keys = set(self.model.state_dict())
+            stripped = {
+                (key[6:] if key.startswith("model.") else key): value
+                for key, value in state_dict.items()
+            }
+            direct_overlap = len(inner_keys.intersection(state_dict))
+            stripped_overlap = len(inner_keys.intersection(stripped))
+            if stripped_overlap > direct_overlap:
+                kwargs["state_dict"] = stripped
+        is_main_process = kwargs.get("is_main_process", True)
         self.model.save_pretrained(save_dir, **kwargs)
-        self.tokenizer.save_pretrained(save_dir)
+        if is_main_process:
+            self.tokenizer.save_pretrained(save_dir)
 
     def load_pretrained(self, load_dir: str):
         """

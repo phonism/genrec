@@ -17,7 +17,9 @@ Usage (on gpu-remote, inside venv):
         --split beauty [--max-batches N]
 """
 import argparse
+import json
 import math
+import os
 from collections import defaultdict
 
 import torch
@@ -104,29 +106,78 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--split", default="beauty")
     ap.add_argument("--eval-split", default="test", choices=["valid", "test"])
+    ap.add_argument(
+        "--protocol", default="leave_one_out",
+        choices=["leave_one_out", "global_temporal"],
+    )
+    ap.add_argument("--max-seq-len", type=int, default=100)
+    ap.add_argument("--encoder-type", choices=["pretrained", "light"], default="pretrained")
+    ap.add_argument("--encoder-model-name", default=ENC_BASE)
+    ap.add_argument("--encoder-n-layers", type=int, default=1)
+    ap.add_argument("--encoder-num-heads", type=int, default=6)
+    ap.add_argument("--decoder-n-layers", type=int, default=DEC_LAYERS)
+    ap.add_argument("--decoder-num-heads", type=int, default=DEC_HEADS)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--n-beam", type=int, default=20)
     ap.add_argument("--tau", type=float, default=1.0)
     ap.add_argument("--psi", type=float, default=16.0)
+    ap.add_argument(
+        "--fusion-grid",
+        help=(
+            "comma-separated tau:psi pairs; generate the beam once per batch "
+            "and evaluate every pair, e.g. 0.5:4,0.5:8,1:16"
+        ),
+    )
+    ap.add_argument("--encoder-pooling", choices=("mean", "cls"), default="mean")
+    ap.add_argument(
+        "--item-text-format",
+        choices=("title_brand", "flattened_attributes"),
+        default="title_brand",
+    )
+    ap.add_argument("--constrain-to-catalog", action="store_true")
     ap.add_argument("--max-batches", type=int, default=0, help="0 = all")
+    ap.add_argument("--output-json")
     args = ap.parse_args()
     dev = "cuda"
+    fusion_grid = [(args.tau, args.psi)]
+    if args.fusion_grid:
+        fusion_grid = []
+        for raw_pair in args.fusion_grid.split(","):
+            try:
+                raw_tau, raw_psi = raw_pair.split(":", 1)
+                pair = (float(raw_tau), float(raw_psi))
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid --fusion-grid pair {raw_pair!r}; expected tau:psi"
+                ) from exc
+            if pair not in fusion_grid:
+                fusion_grid.append(pair)
+        if not fusion_grid:
+            raise ValueError("--fusion-grid cannot be empty")
 
     ds = AmazonCobraDataset(
         root="dataset/amazon", split=args.split, train_test_split=args.eval_split,
-        max_seq_len=100, pretrained_rqvae_path=RQVAE.format(split=args.split),
+        max_seq_len=args.max_seq_len,
+        pretrained_rqvae_path=RQVAE.format(split=args.split),
         encoder_model_name=ENC_XL, max_text_len=128,
         rqvae_input_dim=768, rqvae_embed_dim=32,
         rqvae_hidden_dims=[512, 256, 128, 64],
         rqvae_codebook_size=ID_VOCAB, rqvae_n_layers=N_CODEBOOKS,
+        evaluation_protocol=args.protocol,
+        item_text_format=args.item_text_format,
     )
     pad_id = ID_VOCAB * N_CODEBOOKS
 
     model = Cobra(
         id_vocab_size=ID_VOCAB, n_codebooks=N_CODEBOOKS, d_model=D_MODEL,
         max_len=MAX_LEN, temperature=TEMPERATURE,
-        decoder_n_layers=DEC_LAYERS, decoder_num_heads=DEC_HEADS,
-        encoder_type="pretrained", encoder_model_name=ENC_BASE,
+        encoder_n_layers=args.encoder_n_layers,
+        encoder_num_heads=args.encoder_num_heads,
+        decoder_n_layers=args.decoder_n_layers,
+        decoder_num_heads=args.decoder_num_heads,
+        encoder_type=args.encoder_type,
+        encoder_model_name=args.encoder_model_name,
+        encoder_pooling=args.encoder_pooling,
     ).to(dev)
     sd = torch.load(args.ckpt, map_location=dev)["model"]
     missing, unexpected = model.load_state_dict(sd, strict=False)
@@ -154,9 +205,10 @@ def main():
             vecs.append(normalize(v, p=2, dim=-1))
     item_dense_vecs = torch.cat(vecs, 0)
 
-    m_item = Metric()
-    m_semid = Metric()
-    m_sparse_item = Metric()   # sparse-only generate, item-level (best-effort: 1 item per gen sem-id)
+    grid_metrics = {
+        pair: {"item": Metric(), "semid": Metric()}
+        for pair in fusion_grid
+    }
     order = list(range(len(ds.samples)))
     nb = 0
     with torch.no_grad():
@@ -166,16 +218,25 @@ def main():
             input_ids, enc_ids = input_ids.to(dev), enc_ids.to(dev)
             tgt_sem, tgt_item = tgt_sem.to(dev), tgt_item.to(dev)
 
-            bf = model.beam_fusion(
+            generated = model.generate(
                 input_ids=input_ids, encoder_input_ids=enc_ids,
-                item_dense_vecs=item_dense_vecs, item_sem_ids=item_sem_ids,
-                sem_id_to_items=sem_id_to_items, n_candidates=10,
-                n_beam=args.n_beam, tau=args.tau, psi=args.psi,
+                n_candidates=args.n_beam,
+                valid_sem_ids=(
+                    item_sem_ids if args.constrain_to_catalog else None
+                ),
             )
-            # item-level: ground-truth ITEM id vs retrieved item ids
-            m_item.add(rank_of(tgt_item, bf.item_ids))
-            # sem-id level: reproduce the repo's inflated metric
-            m_semid.add(rank_of(tgt_sem, bf.sem_ids))
+            for tau, psi in fusion_grid:
+                bf = model.fuse_generated(
+                    gen_output=generated,
+                    item_dense_vecs=item_dense_vecs,
+                    item_sem_ids=item_sem_ids,
+                    sem_id_to_items=sem_id_to_items,
+                    n_candidates=10,
+                    tau=tau,
+                    psi=psi,
+                )
+                grid_metrics[(tau, psi)]["item"].add(rank_of(tgt_item, bf.item_ids))
+                grid_metrics[(tau, psi)]["semid"].add(rank_of(tgt_sem, bf.sem_ids))
 
             nb += 1
             if nb % 10 == 0:
@@ -184,11 +245,74 @@ def main():
                 break
 
     print(f"\n==== COBRA {args.split} honest re-eval ({args.eval_split}) ====")
-    r_item = m_item.report("BeamFusion ITEM-level (honest)")
-    r_semid = m_semid.report("BeamFusion SEM-ID level (repo metric)")
-    if r_semid["R@10"] > 0:
-        print(f"\ninflation R@10 (semid/item) = {r_semid['R@10'] / max(r_item['R@10'],1e-9):.2f}x")
+    grid_results = []
+    for tau, psi in fusion_grid:
+        print(f"\n-- tau={tau:g} psi={psi:g} --")
+        r_item = grid_metrics[(tau, psi)]["item"].report(
+            "BeamFusion ITEM-level (honest)"
+        )
+        r_semid = grid_metrics[(tau, psi)]["semid"].report(
+            "BeamFusion SEM-ID pre-resolution diagnostic"
+        )
+        grid_results.append({
+            "tau": tau,
+            "psi": psi,
+            "item_level": r_item,
+            "sem_id_level": r_semid,
+        })
     print("paper COBRA Beauty: R@5=0.0537 R@10=0.0725 N@5=0.0395 N@10=0.0456")
+
+    if args.output_json:
+        payload = {
+            "model": "cobra",
+            "split": args.split,
+            "eval_split": args.eval_split,
+            "protocol": args.protocol,
+            "checkpoint": os.path.abspath(args.ckpt),
+            "max_seq_len": args.max_seq_len,
+            "architecture": {
+                "encoder_type": args.encoder_type,
+                "encoder_pooling": args.encoder_pooling,
+                "item_text_format": args.item_text_format,
+                "encoder_model_name": args.encoder_model_name,
+                "encoder_n_layers": args.encoder_n_layers,
+                "encoder_num_heads": args.encoder_num_heads,
+                "decoder_n_layers": args.decoder_n_layers,
+                "decoder_num_heads": args.decoder_num_heads,
+                "d_model": D_MODEL,
+            },
+            "n_beam": args.n_beam,
+            "tau": fusion_grid[0][0] if len(fusion_grid) == 1 else None,
+            "psi": fusion_grid[0][1] if len(fusion_grid) == 1 else None,
+            "constrain_to_catalog": args.constrain_to_catalog,
+            "max_batches": args.max_batches,
+            "n_examples": next(iter(grid_metrics.values()))["item"].total,
+            "n_items": n_items,
+            "n_unique_sem_ids": uniq,
+            "source": {
+                "bundle": os.environ.get("GENREC_SOURCE_BUNDLE_NAME"),
+                "bundle_sha256": os.environ.get("GENREC_SOURCE_BUNDLE_SHA256"),
+                "git_sha": os.environ.get("GENREC_SOURCE_GIT_SHA"),
+                "cell_id": os.environ.get("GENREC_CELL_ID"),
+                "physical_gpus": os.environ.get("GENREC_PHYSICAL_GPUS"),
+            },
+            "metrics": (
+                {
+                    "item_level": grid_results[0]["item_level"],
+                    "sem_id_level": grid_results[0]["sem_id_level"],
+                }
+                if len(grid_results) == 1 else None
+            ),
+            "fusion_grid": grid_results,
+        }
+        output_dir = os.path.dirname(os.path.abspath(args.output_json))
+        os.makedirs(output_dir, exist_ok=True)
+        tmp_path = args.output_json + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, args.output_json)
+        print(f"saved {args.output_json}")
 
 
 if __name__ == "__main__":
