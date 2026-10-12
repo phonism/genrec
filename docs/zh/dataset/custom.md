@@ -1,454 +1,198 @@
-# 自定义数据集
+# 添加自定义数据集
 
-本指南介绍如何为 genrec 框架添加自定义数据集。
+当前仓库没有 `BaseRecommenderDataset`、`DatasetFactory` 或 dataclass 配置系统。添加数据集的正确方式是：选一个任务 schema 最接近的现有 adapter，复用协议与 collate 约定，再通过 Gin 把 trainer 的 `dataset` 参数绑定到新类。
 
-## 基本概念
+## 先选择接入层
 
-### 数据集类型
+| 目标 | 推荐参考 |
+|---|---|
+| 单 item embedding / tokenizer | `AmazonItemDataset` |
+| item-ID next-item baseline | `AmazonSASRecDataset` |
+| 带 timestamp HSTU | `AmazonHSTUDataset` |
+| SID encoder–decoder | `AmazonSeqDataset` |
+| LLM prompt/SFT/RL | `AmazonOneRecSFTDataset`, `AmazonOneRecRLDataset` |
+| parallel OPQ | `AmazonRPGDataset` |
+| dense item-to-item retrieval | `AmazonNoteLLMDataset` |
+| lexical ID + multi-passage | `AmazonGRAMDataset` |
 
-框架支持两种主要的数据集类型：
+不要先造一个抽象基类再强迫所有模型适配。模型之间的 ID base、padding、文本输入和训练样本增强确实不同，隐藏这些差异会让评测静默错位。
 
-1. **ItemDataset**: 物品级数据集，用于训练 RQVAE
-2. **SequenceDataset**: 序列级数据集，用于训练 TIGER
+## 最小原始 schema
 
-### 基础架构
+推荐先规范为两张逻辑表：
 
-所有数据集都继承自 `BaseRecommenderDataset`：
-
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
-
-class MyCustomDataset(BaseRecommenderDataset):
-    def __init__(self, config):
-        super().__init__(config)
-        # 初始化自定义参数
-        
-    def download(self):
-        # 实现数据下载逻辑
-        pass
-        
-    def load_raw_data(self):
-        # 加载原始数据文件
-        pass
-        
-    def preprocess_data(self, raw_data):
-        # 预处理数据
-        pass
-        
-    def extract_items(self, processed_data):
-        # 提取物品信息
-        pass
-        
-    def extract_interactions(self, processed_data):
-        # 提取用户交互信息
-        pass
+```text
+interactions: user_key, item_key, timestamp[, rating/action]
+items:        item_key, title[, description, brand, category, ...]
 ```
 
-## 实现步骤
+硬要求：
 
-### 1. 创建配置类
+1. `(user,item,timestamp)` 可稳定解析；
+2. 同一用户按 timestamp 排序时有确定 tie-break；
+3. item mapping 在 train/valid/test 与 embedding catalog 间一致；
+4. 所有测试 target 都能映射到 catalog；
+5. 数据版本、过滤与 checksum 可记录。
 
-首先定义数据集特定的配置：
+## 示例：item-ID 序列 adapter
 
-```python
-from dataclasses import dataclass
-from genrec.data.configs import DatasetConfig
-
-@dataclass
-class MyDatasetConfig(DatasetConfig):
-    # 数据集特定参数
-    api_key: str = ""
-    data_format: str = "json"
-    categories: List[str] = None
-```
-
-### 2. 实现数据下载
+下面只展示接口骨架；切分逻辑复用仓库函数，而不是自己再实现一套 LOO：
 
 ```python
-def download(self):
-    """下载数据集到本地"""
-    if self._data_exists():
-        return
-        
-    print("Downloading custom dataset...")
-    
-    # 示例：从 API 下载数据
-    import requests
-    response = requests.get(f"https://api.example.com/data?key={self.config.api_key}")
-    
-    # 保存到本地
-    data_path = self.root_path / "raw" / "data.json"
-    data_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(data_path, 'w') as f:
-        json.dump(response.json(), f)
-    
-    print("Download completed.")
+from collections import defaultdict
+from torch.utils.data import Dataset
 
-def _data_exists(self):
-    """检查数据是否已存在"""
-    data_path = self.root_path / "raw" / "data.json"
-    return data_path.exists()
-```
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
-### 3. 实现数据加载
 
-```python
-def load_raw_data(self):
-    """加载原始数据"""
-    data_path = self.root_path / "raw" / "data.json"
-    
-    with open(data_path, 'r') as f:
-        raw_data = json.load(f)
-    
-    # 解析数据结构
-    users = raw_data.get('users', [])
-    items = raw_data.get('items', [])
-    interactions = raw_data.get('interactions', [])
-    
-    return {
-        "users": pd.DataFrame(users),
-        "items": pd.DataFrame(items), 
-        "interactions": pd.DataFrame(interactions)
-    }
-```
-
-### 4. 实现数据预处理
-
-```python
-def preprocess_data(self, raw_data):
-    """预处理数据"""
-    # 清洗物品数据
-    items_df = self._clean_items(raw_data["items"])
-    
-    # 清洗交互数据
-    interactions_df = self._clean_interactions(raw_data["interactions"])
-    
-    # 过滤低频用户和物品
-    interactions_df = self.filter_low_interactions(
-        interactions_df,
-        min_user_interactions=self.config.processing_config.min_user_interactions,
-        min_item_interactions=self.config.processing_config.min_item_interactions
-    )
-    
-    # 处理物品特征
-    items_df = self._process_item_features(items_df)
-    
-    return {
-        "items": items_df,
-        "interactions": interactions_df
-    }
-
-def _clean_items(self, items_df):
-    """清洗物品数据"""
-    # 填充缺失值
-    items_df["title"] = items_df["title"].fillna("Unknown")
-    items_df["category"] = items_df["category"].fillna("Unknown")
-    
-    # 标准化文本
-    items_df["title"] = items_df["title"].str.strip()
-    
-    return items_df
-
-def _clean_interactions(self, interactions_df):
-    """清洗交互数据"""
-    # 移除重复交互
-    interactions_df = interactions_df.drop_duplicates(["user_id", "item_id"])
-    
-    # 添加时间戳（如果没有）
-    if "timestamp" not in interactions_df.columns:
-        interactions_df["timestamp"] = range(len(interactions_df))
-    
-    return interactions_df
-```
-
-### 5. 实现特征提取
-
-```python
-def _process_item_features(self, items_df):
-    """处理物品特征"""
-    # 使用文本处理器生成嵌入
-    cache_key = f"custom_dataset_{self.config.split}"
-    embeddings = self.text_processor.encode_item_features(
-        items_df,
-        cache_key=cache_key,
-        force_reload=self.config.force_reload
-    )
-    
-    # 添加嵌入特征
-    items_df = items_df.copy()
-    items_df["features"] = embeddings.tolist()
-    
-    # 创建文本字段用于参考
-    texts = []
-    for _, row in items_df.iterrows():
-        text = f"Title: {row['title']}; Category: {row['category']}"
-        texts.append(text)
-    
-    items_df["text"] = texts
-    
-    return items_df
-
-def extract_items(self, processed_data):
-    """提取物品信息"""
-    return processed_data["items"]
-
-def extract_interactions(self, processed_data):
-    """提取交互信息"""
-    return processed_data["interactions"]
-```
-
-## 创建数据集包装器
-
-### 物品数据集
-
-```python
-from genrec.data.base_dataset import ItemDataset
-import gin
-
-@gin.configurable
-class MyItemDataset(ItemDataset):
-    """自定义物品数据集"""
-    
+class MySASRecDataset(Dataset):
     def __init__(
         self,
-        root: str,
-        split: str = "default",
-        train_test_split: str = "all",
-        api_key: str = "",
-        **kwargs
+        root,
+        split,
+        train_test_split="train",
+        max_seq_len=50,
+        min_seq_len=5,
+        evaluation_protocol="leave_one_out",
+        temporal_train_ratio=0.8,
+        temporal_valid_ratio=0.1,
     ):
-        # 创建配置
-        config = MyDatasetConfig(
-            root_dir=root,
-            split=split,
-            api_key=api_key,
-            **kwargs
+        rows = load_my_interactions(root, split)
+
+        # SASRec/HSTU 约定：0 padding，真实 item 从 1 开始。
+        self.item_id_mapping = {}
+        user_sequences = defaultdict(list)
+        for row_index, row in enumerate(rows):
+            if row.item_key not in self.item_id_mapping:
+                self.item_id_mapping[row.item_key] = len(self.item_id_mapping) + 1
+            item_id = self.item_id_mapping[row.item_key]
+            # 如 timestamp 可能相同，应在 load 阶段加入稳定 tie-break。
+            user_sequences[row.user_key].append((row.timestamp, item_id))
+
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            train_test_split,
+            protocol=evaluation_protocol,
+            min_seq_len=min_seq_len,
+            temporal_train_ratio=temporal_train_ratio,
+            temporal_valid_ratio=temporal_valid_ratio,
         )
-        
-        # 创建基础数据集
-        base_dataset = MyCustomDataset(config)
-        
-        # 初始化物品数据集
-        super().__init__(
-            base_dataset=base_dataset,
-            split=train_test_split,
-            return_text=False
+        self.evaluation_protocol = evaluation_protocol
+        self.num_items = len(self.item_id_mapping)
+        self.sequences = [[item for _, item in seq] for _, seq in selected]
+        self.samples = build_samples_like_amazon_sasrec(
+            self.sequences, train_test_split, max_seq_len
         )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]  # {"history": [...], "target": int}
 ```
 
-### 序列数据集
+如果返回 schema 完全相同，可直接复用：
 
 ```python
-from genrec.data.base_dataset import SequenceDataset
-
-@gin.configurable
-class MySequenceDataset(SequenceDataset):
-    """自定义序列数据集"""
-    
-    def __init__(
-        self,
-        root: str,
-        split: str = "default",
-        train_test_split: str = "train",
-        api_key: str = "",
-        pretrained_rqvae_path: Optional[str] = None,
-        **kwargs
-    ):
-        # 创建配置
-        config = MyDatasetConfig(
-            root_dir=root,
-            split=split,
-            api_key=api_key,
-            **kwargs
-        )
-        
-        # 加载语义编码器
-        semantic_encoder = None
-        if pretrained_rqvae_path:
-            from genrec.models.rqvae import RqVae
-            semantic_encoder = RqVae.load_from_checkpoint(pretrained_rqvae_path)
-            semantic_encoder.eval()
-        
-        # 创建基础数据集
-        base_dataset = MyCustomDataset(config)
-        
-        # 初始化序列数据集
-        super().__init__(
-            base_dataset=base_dataset,
-            split=train_test_split,
-            semantic_encoder=semantic_encoder
-        )
-```
-
-## 注册数据集
-
-### 使用工厂模式
-
-```python
-from genrec.data.dataset_factory import DatasetFactory
-
-# 注册数据集
-DatasetFactory.register_dataset(
-    "my_dataset",
-    base_class=MyCustomDataset,
-    item_class=MyItemDataset,
-    sequence_class=MySequenceDataset
-)
-
-# 使用工厂创建数据集
-item_dataset = DatasetFactory.create_item_dataset(
-    "my_dataset",
-    root_dir="path/to/data",
-    api_key="your_api_key"
+from genrec.data.amazon_sasrec import (
+    sasrec_collate_fn,
+    sasrec_eval_collate_fn,
 )
 ```
 
-## 配置文件集成
+## 绑定到 trainer
 
-### Gin 配置文件
-
-创建配置文件 `config/my_dataset.gin`：
+有些 trainer（TIGER、OneRec、GRAM）把 dataset class 暴露成 Gin 参数，可直接绑定：
 
 ```gin
-import my_module.my_dataset
+import my_package.my_dataset
 
-# 数据集参数
-train.dataset_folder="dataset/my_dataset"
-train.dataset=@MyItemDataset
-
-# 自定义参数
-MyItemDataset.api_key="your_api_key"
-MyItemDataset.split="category_a"
-
-# 文本编码参数
-MyItemDataset.encoder_model_name="sentence-transformers/all-MiniLM-L6-v2"
+train.dataset = @MyTigerDataset
+MyTigerDataset.root = "dataset/my_data"
+MyTigerDataset.split = "category_a"
 ```
 
-## 测试和验证
+SASRec/HSTU trainer 当前在函数内部直接写死 `AmazonSASRecDataset` / `AmazonHSTUDataset`，若要接新数据集，需要把 `dataset` class 变成可配置参数，或新增同结构 trainer。修改时同时覆盖 train、valid、test 三处构造，不要只替换 train。
 
-### 单元测试
+## item tokenizer adapter
+
+RQ-VAE/RQ-KMeans 需要 `__getitem__` 返回一条固定维度 float vector。自定义实现至少暴露：
+
+```text
+embeddings: np.ndarray [N,D]
+dim: int
+__len__ -> N
+__getitem__(idx) -> List[float]
+```
+
+同时保存稳定的 `item_key ↔ row_index` mapping。只保存 `[N,D]` 数组而丢掉 mapping，会使 SID 无法安全回接用户序列。
+
+## 生成式 adapter 的额外约束
+
+SID 模型必须保留真实 item target。推荐沿用 `SeqData`：
 
 ```python
-import unittest
-from my_dataset import MyCustomDataset, MyDatasetConfig
+from genrec.data.schemas import SeqData
 
-class TestMyDataset(unittest.TestCase):
-    def setUp(self):
-        self.config = MyDatasetConfig(
-            root_dir="test_data",
-            api_key="test_key"
-        )
-        self.dataset = MyCustomDataset(self.config)
-    
-    def test_data_loading(self):
-        """测试数据加载"""
-        # 模拟数据
-        raw_data = self.dataset.load_raw_data()
-        self.assertIn("items", raw_data)
-        self.assertIn("interactions", raw_data)
-    
-    def test_preprocessing(self):
-        """测试预处理"""
-        raw_data = {"items": pd.DataFrame(), "interactions": pd.DataFrame()}
-        processed = self.dataset.preprocess_data(raw_data)
-        self.assertIn("items", processed)
-        self.assertIn("interactions", processed)
+return SeqData(
+    user_id=user_id,
+    item_ids=flat_history_codes,
+    target_ids=target_sid,
+    target_item=target_item_id,
+)
 ```
 
-### 数据质量验证
+评测时用 `SemanticIdItemMapper` 从**训练交互**构建 SID→item resolver。不要用 valid/test target popularity，也不要因为 adapter 已经返回 SID 就删除 `target_item`。
+
+## 协议测试
+
+至少添加以下测试：
 
 ```python
-def validate_dataset(dataset):
-    """验证数据集质量"""
-    # 检查数据完整性
-    assert len(dataset) > 0, "数据集为空"
-    
-    # 检查特征维度
-    sample = dataset[0]
-    assert len(sample) == 768, f"特征维度错误: {len(sample)}"
-    
-    # 检查数据类型
-    assert isinstance(sample, list), "数据类型错误"
-    
-    print("数据集验证通过")
+def test_item_mapping_is_identical_across_splits(): ...
+def test_zero_is_reserved_only_when_adapter_requires_padding(): ...
+def test_valid_and_test_targets_follow_protocol(): ...
+def test_global_temporal_has_no_future_history(): ...
+def test_every_target_exists_in_catalog(): ...
+def test_collate_shapes_and_padding_direction(): ...
+def test_sid_rows_align_with_item_ids(): ...
 ```
 
-## 最佳实践
+参考现有：
 
-### 1. 错误处理
+- `tests/test_evaluation_protocol.py`；
+- `tests/test_honest_metrics.py`；
+- `tests/test_notellm_full_catalog.py`。
 
-```python
-def load_raw_data(self):
-    try:
-        # 数据加载逻辑
-        return data
-    except FileNotFoundError:
-        raise FileNotFoundError(f"数据文件不存在: {self.data_path}")
-    except Exception as e:
-        raise RuntimeError(f"数据加载失败: {str(e)}")
+## 数据 provenance
+
+为每次数据准备写 manifest，至少包含：
+
+```json
+{
+  "source": "provider / URL / dataset revision",
+  "raw_sha256": {"interactions": "...", "items": "..."},
+  "filter": "iterative 5-core",
+  "mapping": "first-seen after deterministic input ordering",
+  "users": 0,
+  "items": 0,
+  "interactions": 0,
+  "timestamp_unit": "seconds",
+  "prepared_at": "ISO-8601"
+}
 ```
 
-### 2. 日志记录
+不要提交有许可证限制的原始数据；提交准备脚本、schema、checksum 和小型合成 fixture。
 
-```python
-import logging
+## 完成定义
 
-logger = logging.getLogger(__name__)
+- [ ] train/valid/test 都能构造且统计合理；
+- [ ] item mapping 与 embedding/SID catalog 同源；
+- [ ] LOO 与 global temporal 至少一个有测试；
+- [ ] collate 的 padding、mask、target shape 有测试；
+- [ ] full-catalog item-level 评测可运行；
+- [ ] Gin config、命令和输出目录已记录；
+- [ ] 数据来源、许可与 preprocessing manifest 已写；
+- [ ] 模型页的“支持数据集”状态已更新。
 
-def preprocess_data(self, raw_data):
-    logger.info("开始预处理数据")
-    
-    # 预处理逻辑
-    
-    logger.info(f"预处理完成，物品数量: {len(items_df)}, 交互数量: {len(interactions_df)}")
-```
-
-### 3. 配置验证
-
-```python
-def __post_init__(self):
-    super().__post_init__()
-    
-    if not self.api_key:
-        raise ValueError("API key 不能为空")
-    
-    if self.data_format not in ["json", "csv"]:
-        raise ValueError(f"不支持的数据格式: {self.data_format}")
-```
-
-## 示例：MovieLens 数据集
-
-完整的 MovieLens 数据集实现示例：
-
-```python
-@dataclass
-class MovieLensConfig(DatasetConfig):
-    """MovieLens 数据集配置"""
-    version: str = "1m"  # 1m, 10m, 20m
-    
-class MovieLensDataset(BaseRecommenderDataset):
-    """MovieLens 数据集实现"""
-    
-    URLS = {
-        "1m": "http://files.grouplens.org/datasets/movielens/ml-1m.zip",
-        "10m": "http://files.grouplens.org/datasets/movielens/ml-10m.zip",
-    }
-    
-    def download(self):
-        if self._data_exists():
-            return
-            
-        url = self.URLS[self.config.version]
-        # 下载和解压逻辑
-        
-    def load_raw_data(self):
-        # 加载 ratings.dat, movies.dat, users.dat
-        pass
-        
-    def preprocess_data(self, raw_data):
-        # MovieLens 特定的预处理
-        pass
-```
-
-通过以上步骤，您可以成功为 genrec 框架添加自定义数据集支持。
+完整代码接入顺序见[扩展指南](../architecture/extension-guide.md)。

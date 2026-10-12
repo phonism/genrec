@@ -1,796 +1,321 @@
-# Trainers API Reference
+# Trainer API
 
-Detailed documentation for training utilities and scripts.
+There is no `Trainer`, `BaseTrainer`, `RQVAETrainer`, or shared callback lifecycle. Each trainer module exposes an independent top-level `@gin.configurable` function and starts it after `parse_config()`. Training entry points return `None`; metrics are delivered through logs, W&B, and `results.json`.
 
-## Base Trainer
-
-### BaseTrainer
-
-Base class for all trainers.
+Import repeated names explicitly:
 
 ```python
-class BaseTrainer:
-    """Base trainer class"""
-    
-    def __init__(
-        self,
-        model: LightningModule,
-        config: TrainingConfig,
-        logger: Optional[Logger] = None
-    ):
-        self.model = model
-        self.config = config
-        self.logger = logger or self._create_default_logger()
-        self.trainer = None
-        
-    def _create_default_logger(self) -> Logger:
-        """Create default logger"""
-        from pytorch_lightning.loggers import TensorBoardLogger
-        
-        return TensorBoardLogger(
-            save_dir=self.config.log_dir,
-            name=self.config.experiment_name,
-            version=self.config.version
-        )
+from genrec.trainers.sasrec_trainer import train as train_sasrec
+from genrec.trainers.tiger_trainer import train as train_tiger
+from genrec.trainers.rqvae_trainer import train as train_rqvae
+from genrec.trainers.onerec_sft_trainer import train_sft
 ```
 
-**Methods:**
+`genrec.trainers.__init__` imports shared utilities only. Do not rely on its `__all__` to obtain trainer modules.
 
-#### setup_trainer()
+## Entry-point index
 
-Setup PyTorch Lightning trainer.
+| Pipeline | Function / source | Runtime |
+|---|---|---|
+| SASRec | `train` / [`sasrec_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/sasrec_trainer.py) | Accelerate |
+| HSTU | `train` / [`hstu_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/hstu_trainer.py) | Accelerate |
+| RQ-VAE | `train` / [`rqvae_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/rqvae_trainer.py) | Accelerate |
+| RQ-KMeans | `fit_rqkmeans` / [`rqkmeans_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/rqkmeans_trainer.py) | CPU / scikit-learn |
+| TIGER | `train` / [`tiger_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/tiger_trainer.py) | single-process PyTorch |
+| LCRec | `train` / [`lcrec_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/lcrec_trainer.py) | Accelerate |
+| COBRA | `train` / [`cobra_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/cobra_trainer.py) | Accelerate |
+| OneRec SFT | `train_sft` / [`onerec_sft_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/onerec_sft_trainer.py) | Accelerate, FSDP-aware save |
+| OneRec GRPO | `train_grpo` / [`onerec_grpo_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/onerec_grpo_trainer.py) | Accelerate |
+| OneRec CLM | `train_clm` / [`onerec_clm_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/onerec_clm_trainer.py) | Accelerate |
+| RPG | `train_rpg` / [`rpg_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/rpg_trainer.py) | Accelerate |
+| NoteLLM | `train` / [`notellm_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/notellm_trainer.py) | Accelerate |
+| GRAM | `train_gram` / [`gram_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/gram_trainer.py) | Accelerate |
 
-```python
-def setup_trainer(self) -> None:
-    """Setup trainer"""
-    from pytorch_lightning import Trainer
-    from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
-    
-    # Callbacks
-    callbacks = []
-    
-    # Checkpoint callback
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=self.config.checkpoint_dir,
-        filename='{epoch}-{val_loss:.2f}',
-        monitor='val_loss',
-        mode='min',
-        save_top_k=self.config.save_top_k,
-        save_last=True
-    )
-    callbacks.append(checkpoint_callback)
-    
-    # Early stopping callback
-    if self.config.early_stopping_patience > 0:
-        early_stop_callback = EarlyStopping(
-            monitor='val_loss',
-            patience=self.config.early_stopping_patience,
-            mode='min'
-        )
-        callbacks.append(early_stop_callback)
-    
-    # Create trainer
-    self.trainer = Trainer(
-        max_epochs=self.config.max_epochs,
-        gpus=self.config.gpus,
-        precision=self.config.precision,
-        gradient_clip_val=self.config.gradient_clip_val,
-        accumulate_grad_batches=self.config.accumulate_grad_batches,
-        val_check_interval=self.config.val_check_interval,
-        callbacks=callbacks,
-        logger=self.logger,
-        deterministic=self.config.deterministic,
-        enable_progress_bar=self.config.progress_bar
-    )
-```
-
-#### train(train_dataloader, val_dataloader)
-
-Execute training.
+## Baselines
 
 ```python
-def train(
-    self,
-    train_dataloader: DataLoader,
-    val_dataloader: Optional[DataLoader] = None
-) -> None:
-    """
-    Execute model training
-    
-    Args:
-        train_dataloader: Training data loader
-        val_dataloader: Validation data loader
-    """
-    if self.trainer is None:
-        self.setup_trainer()
-    
-    self.trainer.fit(self.model, train_dataloader, val_dataloader)
-```
-
-#### test(test_dataloader)
-
-Execute testing.
-
-```python
-def test(self, test_dataloader: DataLoader) -> Dict[str, float]:
-    """
-    Execute model testing
-    
-    Args:
-        test_dataloader: Test data loader
-        
-    Returns:
-        Test results dictionary
-    """
-    if self.trainer is None:
-        self.setup_trainer()
-    
-    results = self.trainer.test(self.model, test_dataloader)
-    return results[0] if results else {}
-```
-
-## RQVAE Trainer
-
-### RQVAETrainer
-
-Trainer specifically for training RQVAE models.
-
-```python
-class RQVAETrainer(BaseTrainer):
-    """RQVAE trainer"""
-    
-    def __init__(
-        self,
-        model: RqVae,
-        config: RQVAETrainingConfig,
-        dataset: ItemDataset,
-        logger: Optional[Logger] = None
-    ):
-        super().__init__(model, config, logger)
-        self.dataset = dataset
-        
-    def create_dataloaders(self) -> Tuple[DataLoader, DataLoader, DataLoader]:
-        """
-        Create data loaders
-        
-        Returns:
-            (train_loader, val_loader, test_loader): Data loader tuple
-        """
-        # Split dataset
-        train_size = int(0.8 * len(self.dataset))
-        val_size = int(0.1 * len(self.dataset))
-        test_size = len(self.dataset) - train_size - val_size
-        
-        train_dataset, val_dataset, test_dataset = random_split(
-            self.dataset, 
-            [train_size, val_size, test_size],
-            generator=torch.Generator().manual_seed(self.config.random_seed)
-        )
-        
-        # Create data loaders
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=True,
-            num_workers=self.config.num_workers,
-            pin_memory=True
-        )
-        
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=False,
-            num_workers=self.config.num_workers,
-            pin_memory=True
-        )
-        
-        test_loader = DataLoader(
-            test_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=False,
-            num_workers=self.config.num_workers,
-            pin_memory=True
-        )
-        
-        return train_loader, val_loader, test_loader
-```
-
-#### train_model()
-
-Train RQVAE model.
-
-```python
-def train_model(self) -> RqVae:
-    """
-    Train RQVAE model
-    
-    Returns:
-        Trained model
-    """
-    # Create data loaders
-    train_loader, val_loader, test_loader = self.create_dataloaders()
-    
-    # Execute training
-    self.train(train_loader, val_loader)
-    
-    # Test model
-    if self.config.run_test:
-        test_results = self.test(test_loader)
-        print(f"Test results: {test_results}")
-    
-    return self.model
-```
-
-#### evaluate_reconstruction(test_dataloader)
-
-Evaluate reconstruction quality.
-
-```python
-def evaluate_reconstruction(self, test_dataloader: DataLoader) -> Dict[str, float]:
-    """
-    Evaluate reconstruction quality
-    
-    Args:
-        test_dataloader: Test data loader
-        
-    Returns:
-        Evaluation metrics dictionary
-    """
-    self.model.eval()
-    device = next(self.model.parameters()).device
-    
-    total_mse = 0
-    total_cosine_sim = 0
-    total_samples = 0
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            if isinstance(batch, dict):
-                features = batch['features'].to(device)
-            else:
-                features = batch.to(device)
-            
-            # Forward pass
-            reconstructed, _, _, _ = self.model(features)
-            
-            # Compute metrics
-            mse = F.mse_loss(reconstructed, features, reduction='sum')
-            cosine_sim = F.cosine_similarity(reconstructed, features, dim=1).sum()
-            
-            total_mse += mse.item()
-            total_cosine_sim += cosine_sim.item()
-            total_samples += features.size(0)
-    
-    return {
-        'mse': total_mse / total_samples,
-        'rmse': (total_mse / total_samples) ** 0.5,
-        'cosine_similarity': total_cosine_sim / total_samples
-    }
-```
-
-#### generate_semantic_ids(dataloader)
-
-Generate semantic IDs for dataset.
-
-```python
-def generate_semantic_ids(self, dataloader: DataLoader) -> torch.Tensor:
-    """
-    Generate semantic IDs for dataset
-    
-    Args:
-        dataloader: Data loader
-        
-    Returns:
-        Semantic ID tensor (num_samples,)
-    """
-    self.model.eval()
-    device = next(self.model.parameters()).device
-    
-    all_semantic_ids = []
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            if isinstance(batch, dict):
-                features = batch['features'].to(device)
-            else:
-                features = batch.to(device)
-            
-            semantic_ids = self.model.generate_semantic_ids(features)
-            all_semantic_ids.append(semantic_ids.cpu())
-    
-    return torch.cat(all_semantic_ids, dim=0)
-```
-
-## TIGER Trainer
-
-### TIGERTrainer
-
-Trainer specifically for training TIGER models.
-
-```python
-class TIGERTrainer(BaseTrainer):
-    """TIGER trainer"""
-    
-    def __init__(
-        self,
-        model: Tiger,
-        config: TIGERTrainingConfig,
-        dataset: SequenceDataset,
-        logger: Optional[Logger] = None
-    ):
-        super().__init__(model, config, logger)
-        self.dataset = dataset
-        self.collate_fn = self._create_collate_fn()
-        
-    def _create_collate_fn(self) -> Callable:
-        """Create data collation function"""
-        def collate_fn(batch):
-            # Extract sequence data
-            input_ids = [item['input_ids'] for item in batch]
-            labels = [item['labels'] for item in batch]
-            
-            # Pad sequences
-            input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
-            labels = pad_sequence(labels, batch_first=True, padding_value=-100)
-            
-            # Create attention mask
-            attention_mask = (input_ids != 0).float()
-            
-            return {
-                'input_ids': input_ids,
-                'labels': labels,
-                'attention_mask': attention_mask
-            }
-        
-        return collate_fn
-```
-
-#### create_dataloaders()
-
-Create TIGER data loaders.
-
-```python
-def create_dataloaders(self) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """
-    Create data loaders
-    
-    Returns:
-        (train_loader, val_loader, test_loader): Data loader tuple
-    """
-    # Split dataset
-    train_size = int(0.8 * len(self.dataset))
-    val_size = int(0.1 * len(self.dataset))
-    test_size = len(self.dataset) - train_size - val_size
-    
-    train_dataset, val_dataset, test_dataset = random_split(
-        self.dataset,
-        [train_size, val_size, test_size],
-        generator=torch.Generator().manual_seed(self.config.random_seed)
-    )
-    
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=self.config.batch_size,
-        shuffle=True,
-        num_workers=self.config.num_workers,
-        collate_fn=self.collate_fn,
-        pin_memory=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=self.config.batch_size,
-        shuffle=False,
-        num_workers=self.config.num_workers,
-        collate_fn=self.collate_fn,
-        pin_memory=True
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=self.config.batch_size,
-        shuffle=False,
-        num_workers=self.config.num_workers,
-        collate_fn=self.collate_fn,
-        pin_memory=True
-    )
-    
-    return train_loader, val_loader, test_loader
-```
-
-#### evaluate_generation(test_dataloader, k_values)
-
-Evaluate generation quality.
-
-```python
-def evaluate_generation(
-    self,
-    test_dataloader: DataLoader,
-    k_values: List[int] = [5, 10, 20]
-) -> Dict[str, float]:
-    """
-    Evaluate generation quality
-    
-    Args:
-        test_dataloader: Test data loader
-        k_values: Top-K value list
-        
-    Returns:
-        Evaluation metrics dictionary
-    """
-    self.model.eval()
-    device = next(self.model.parameters()).device
-    
-    all_predictions = []
-    all_targets = []
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            
-            # Generate recommendations
-            generated = self.model.generate(
-                input_ids,
-                max_length=self.config.max_generation_length,
-                temperature=self.config.generation_temperature,
-                top_k=self.config.generation_top_k
-            )
-            
-            # Extract target sequences
-            targets = []
-            for label_seq in labels:
-                target = label_seq[label_seq != -100].cpu().tolist()
-                targets.append(target)
-            
-            all_predictions.extend(generated.cpu().tolist())
-            all_targets.extend(targets)
-    
-    # Compute metrics
-    metrics = {}
-    for k in k_values:
-        recall_k = self._compute_recall_at_k(all_predictions, all_targets, k)
-        ndcg_k = self._compute_ndcg_at_k(all_predictions, all_targets, k)
-        
-        metrics[f'recall@{k}'] = recall_k
-        metrics[f'ndcg@{k}'] = ndcg_k
-    
-    return metrics
-```
-
-#### _compute_recall_at_k(predictions, targets, k)
-
-Compute Recall@K.
-
-```python
-def _compute_recall_at_k(
-    self,
-    predictions: List[List[int]],
-    targets: List[List[int]],
-    k: int
-) -> float:
-    """Compute Recall@K"""
-    recall_scores = []
-    
-    for pred, target in zip(predictions, targets):
-        if len(target) == 0:
-            continue
-            
-        top_k_pred = set(pred[:k])
-        target_set = set(target)
-        
-        recall = len(top_k_pred & target_set) / len(target_set)
-        recall_scores.append(recall)
-    
-    return np.mean(recall_scores) if recall_scores else 0.0
-```
-
-#### _compute_ndcg_at_k(predictions, targets, k)
-
-Compute NDCG@K.
-
-```python
-def _compute_ndcg_at_k(
-    self,
-    predictions: List[List[int]],
-    targets: List[List[int]],
-    k: int
-) -> float:
-    """Compute NDCG@K"""
-    ndcg_scores = []
-    
-    for pred, target in zip(predictions, targets):
-        if len(target) == 0:
-            continue
-        
-        # Compute DCG
-        dcg = 0
-        for i, item in enumerate(pred[:k]):
-            if item in target:
-                dcg += 1 / np.log2(i + 2)
-        
-        # Compute IDCG
-        idcg = sum(1 / np.log2(i + 2) for i in range(min(len(target), k)))
-        
-        # Compute NDCG
-        ndcg = dcg / idcg if idcg > 0 else 0
-        ndcg_scores.append(ndcg)
-    
-    return np.mean(ndcg_scores) if ndcg_scores else 0.0
-```
-
-## Training Configurations
-
-### TrainingConfig
-
-Base training configuration.
-
-```python
-@dataclass
-class TrainingConfig:
-    # Basic settings
-    max_epochs: int = 100
-    batch_size: int = 32
-    learning_rate: float = 1e-3
-    
-    # Hardware settings
-    gpus: int = 1 if torch.cuda.is_available() else 0
-    precision: int = 32
-    num_workers: int = 4
-    
-    # Training strategy
-    gradient_clip_val: float = 1.0
-    accumulate_grad_batches: int = 1
-    val_check_interval: float = 1.0
-    
-    # Checkpoints and logging
-    checkpoint_dir: str = "checkpoints"
-    log_dir: str = "logs"
-    experiment_name: str = "experiment"
-    version: Optional[str] = None
-    save_top_k: int = 3
-    
-    # Early stopping
-    early_stopping_patience: int = 10
-    
-    # Others
-    deterministic: bool = True
-    random_seed: int = 42
-    progress_bar: bool = True
-    run_test: bool = True
-```
-
-### RQVAETrainingConfig
-
-RQVAE training configuration.
-
-```python
-@dataclass
-class RQVAETrainingConfig(TrainingConfig):
-    # Model parameters
-    input_dim: int = 768
-    hidden_dim: int = 512
-    latent_dim: int = 256
-    num_embeddings: int = 1024
-    commitment_cost: float = 0.25
-    
-    # Training parameters
-    learning_rate: float = 1e-3
-    batch_size: int = 64
-    max_epochs: int = 100
-    
-    # Dataset parameters
-    dataset_name: str = "p5_amazon"
-    dataset_split: str = "beauty"
-    
-    # Evaluation parameters
-    eval_reconstruction: bool = True
-    eval_quantization: bool = True
-```
-
-### TIGERTrainingConfig
-
-TIGER training configuration.
-
-```python
-@dataclass
-class TIGERTrainingConfig(TrainingConfig):
-    # Model parameters
-    vocab_size: int = 1024
-    embedding_dim: int = 512
-    num_heads: int = 8
-    num_layers: int = 6
-    attn_dim: int = 2048
-    dropout: float = 0.1
-    max_seq_length: int = 100
-    
-    # Training parameters
-    learning_rate: float = 1e-4
-    batch_size: int = 16
-    max_epochs: int = 50
-    
-    # Generation parameters
-    max_generation_length: int = 50
-    generation_temperature: float = 1.0
-    generation_top_k: int = 50
-    generation_top_p: float = 0.9
-    
-    # Dataset parameters
-    dataset_name: str = "p5_amazon"
-    dataset_split: str = "beauty"
-    pretrained_rqvae_path: str = "checkpoints/rqvae.ckpt"
-    
-    # Evaluation parameters
-    eval_generation: bool = True
-    eval_k_values: List[int] = field(default_factory=lambda: [5, 10, 20])
-```
-
-## Training Scripts
-
-### Train RQVAE
-
-```python
-#!/usr/bin/env python3
-"""Script for training RQVAE model"""
-
-import argparse
-from pathlib import Path
-
-from genrec.models.rqvae import RqVae
-from genrec.data.dataset_factory import DatasetFactory
-from genrec.trainers import RQVAETrainer, RQVAETrainingConfig
-
-def main():
-    parser = argparse.ArgumentParser(description="Train RQVAE model")
-    parser.add_argument("--dataset", default="p5_amazon", help="Dataset name")
-    parser.add_argument("--split", default="beauty", help="Dataset split")
-    parser.add_argument("--root", default="dataset", help="Dataset root directory")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size")
-    parser.add_argument("--max_epochs", type=int, default=100, help="Max epochs")
-    parser.add_argument("--learning_rate", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--checkpoint_dir", default="checkpoints", help="Checkpoint directory")
-    
-    args = parser.parse_args()
-    
-    # Create configuration
-    config = RQVAETrainingConfig(
-        batch_size=args.batch_size,
-        max_epochs=args.max_epochs,
-        learning_rate=args.learning_rate,
-        checkpoint_dir=args.checkpoint_dir,
-        dataset_name=args.dataset,
-        dataset_split=args.split
-    )
-    
-    # Create dataset
-    dataset = DatasetFactory.create_item_dataset(
-        args.dataset,
-        root=args.root,
-        split=args.split,
-        train_test_split="all"
-    )
-    
-    # Create model
-    model = RqVae(
-        input_dim=config.input_dim,
-        hidden_dim=config.hidden_dim,
-        latent_dim=config.latent_dim,
-        num_embeddings=config.num_embeddings,
-        commitment_cost=config.commitment_cost,
-        learning_rate=config.learning_rate
-    )
-    
-    # Create trainer
-    trainer = RQVAETrainer(model, config, dataset)
-    
-    # Train model
-    trained_model = trainer.train_model()
-    
-    print(f"Training completed. Model saved to {config.checkpoint_dir}")
-
-if __name__ == "__main__":
-    main()
-```
-
-### Train TIGER
-
-```python
-#!/usr/bin/env python3
-"""Script for training TIGER model"""
-
-import argparse
-from pathlib import Path
-
-from genrec.models.tiger import Tiger
-from genrec.data.dataset_factory import DatasetFactory
-from genrec.trainers import TIGERTrainer, TIGERTrainingConfig
-
-def main():
-    parser = argparse.ArgumentParser(description="Train TIGER model")
-    parser.add_argument("--dataset", default="p5_amazon", help="Dataset name")
-    parser.add_argument("--split", default="beauty", help="Dataset split")
-    parser.add_argument("--root", default="dataset", help="Dataset root directory")
-    parser.add_argument("--rqvae_path", required=True, help="Pretrained RQVAE checkpoint path")
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size")
-    parser.add_argument("--max_epochs", type=int, default=50, help="Max epochs")
-    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--checkpoint_dir", default="checkpoints", help="Checkpoint directory")
-    
-    args = parser.parse_args()
-    
-    # Create configuration
-    config = TIGERTrainingConfig(
-        batch_size=args.batch_size,
-        max_epochs=args.max_epochs,
-        learning_rate=args.learning_rate,
-        checkpoint_dir=args.checkpoint_dir,
-        dataset_name=args.dataset,
-        dataset_split=args.split,
-        pretrained_rqvae_path=args.rqvae_path
-    )
-    
-    # Create dataset
-    dataset = DatasetFactory.create_sequence_dataset(
-        args.dataset,
-        root=args.root,
-        split=args.split,
-        train_test_split="train",
-        pretrained_rqvae_path=args.rqvae_path
-    )
-    
-    # Create model
-    model = Tiger(
-        vocab_size=config.vocab_size,
-        embedding_dim=config.embedding_dim,
-        num_heads=config.num_heads,
-        num_layers=config.num_layers,
-        learning_rate=config.learning_rate
-    )
-    
-    # Create trainer
-    trainer = TIGERTrainer(model, config, dataset)
-    
-    # Train model
-    trained_model = trainer.train_model()
-    
-    print(f"Training completed. Model saved to {config.checkpoint_dir}")
-
-if __name__ == "__main__":
-    main()
-```
-
-## Usage Examples
-
-### Basic Training
-
-```python
-from genrec.trainers import RQVAETrainer, RQVAETrainingConfig
-from genrec.models.rqvae import RqVae
-from genrec.data.dataset_factory import DatasetFactory
-
-# Create configuration
-config = RQVAETrainingConfig(
-    batch_size=64,
-    max_epochs=100,
-    learning_rate=1e-3
+# sasrec_trainer.py
+train(
+    epochs=200, batch_size=128, learning_rate=1e-3, weight_decay=0.0,
+    max_seq_len=50, embed_dim=64, num_heads=2, num_blocks=2,
+    ffn_dim=256, dropout=0.2, loss_type="bce",
+    dataset_folder="dataset/amazon", split="beauty",
+    do_eval=True, eval_every_epoch=1, eval_batch_size=256,
+    patience=50, save_dir_root="out/sasrec/amazon/beauty",
+    save_every_epoch=50, wandb_logging=False,
+    wandb_project="sasrec_training", wandb_log_interval=100,
+    amp=True, mixed_precision_type="bf16", seed=42,
 )
-
-# Create dataset
-dataset = DatasetFactory.create_item_dataset(
-    "p5_amazon",
-    root="dataset/amazon",
-    split="beauty"
-)
-
-# Create model
-model = RqVae(
-    input_dim=768,
-    hidden_dim=512,
-    num_embeddings=1024
-)
-
-# Create trainer and train
-trainer = RQVAETrainer(model, config, dataset)
-trained_model = trainer.train_model()
 ```
+
+SASRec constructs `AmazonSASRecDataset` internally. `loss_type="bce"` uses one sampled negative per position; any other string selects full CE. Item-level Recall@10 controls early stopping.
+
+```python
+# hstu_trainer.py
+train(
+    epochs=200, batch_size=128, learning_rate=1e-3, weight_decay=0.0,
+    max_seq_len=50, embed_dim=64, num_heads=2, num_blocks=2,
+    dropout=0.2, dqk=None, dv=None, use_position_bias=True,
+    concat_ua=False, num_position_buckets=32, num_time_buckets=64,
+    use_temporal_bias=True, loss_type="ce", num_negatives=128,
+    ss_temperature=0.05, ss_l2_norm=True,
+    ss_sampling_strategy="local", dataset_folder="dataset/amazon",
+    split="beauty", dataset_type="amazon", do_eval=True,
+    eval_every_epoch=10, eval_batch_size=256, patience=50,
+    save_dir_root="out/hstu/amazon/beauty", save_every_epoch=50,
+    wandb_logging=False, amp=True, mixed_precision_type="bf16", seed=42,
+)
+```
+
+`dataset_type` must be `amazon` or `ml1m`, and `loss_type` must be `ce` or
+`sampled_softmax`. For sampled softmax, `local` is Meta's local-table sampler:
+each positive independently draws catalog IDs with replacement. `in_batch` is
+a separate sampler, while `global` preserves GenRec's legacy shared,
+deduplicated catalog-negative set. Unknown values fail fast.
+
+The Amazon 2023 baseline configs still use `AmazonSASRecDataset`/`AmazonHSTUDataset` over converted 2014-compatible gzip files. Run `prepare_amazon2023()` first; current filename mappings cover `books` and `arts_crafts_and_sewing`.
+
+## Quantizers
+
+RQ-VAE's complete signature and artifacts are in [RQ-VAE API](rqvae.md#trainer). Exactly one of `epochs` and `iterations` must be set.
+
+```python
+fit_rqkmeans(
+    dataset=AmazonItemDataset, dataset_folder="dataset/amazon",
+    encoder_model_name="./models_hub/Qwen3-Embedding-8B",
+    n_layers=3, codebook_size=8192,
+    save_dir_root="out/onerec/amazon/{split}/rqkmeans",
+    random_state=42, max_iter=100, batch_size=4096, seed=42,
+)
+```
+
+The dataset must expose float NumPy `embeddings[N,D]`. This function writes `rqkmeans.pt` and `results.json`. Current configs override the Python default K=8192 to K=256.
+
+## Semantic-ID recommenders
+
+TIGER's complete contract is in [TIGER API](tiger.md#trainer).
+
+```python
+# lcrec_trainer.py (principal arguments)
+train(
+    epochs=4, batch_size=8, learning_rate=5e-5, weight_decay=0.01,
+    warmup_ratio=0.01, gradient_accumulate_every=2, max_length=512,
+    pretrained_path="Qwen/Qwen2.5-1.5B", use_lora=True,
+    lora_r=16, lora_alpha=32, lora_dropout=0.05,
+    num_codebooks=5, codebook_size=256, dataset=None,
+    dataset_folder="dataset/amazon", max_seq_len=20, max_text_len=128,
+    pretrained_rqvae_path="./out/lcrec/amazon/beauty/rqvae/checkpoint.pt",
+    do_eval=True, eval_every_epoch=1, eval_batch_size=64,
+    eval_beam_width=10, save_dir_root="out/lcrec/amazon/beauty",
+    eval_only=False, checkpoint_path=None, seed=42, ...,
+)
+```
+
+LCRec requires a Gin-injected dataset. `checkpoint_path` is an LCRec `save_pretrained()` directory, not an optimizer checkpoint. `eval_only=True` evaluates validation only.
+
+```python
+# cobra_trainer.py (principal arguments)
+train(
+    epochs=100, batch_size=32, learning_rate=1e-4, weight_decay=0.01,
+    dataset_folder="dataset/amazon", dataset=None,
+    save_dir_root="out/cobra/amazon/beauty",
+    encoder_n_layers=1, encoder_hidden_dim=768, encoder_num_heads=8,
+    encoder_vocab_size=32128, id_vocab_size=256, n_codebooks=3,
+    d_model=384, max_len=1024, temperature=0.2, queue_size=1024,
+    decoder_n_layers=8, decoder_num_heads=6, decoder_dropout=0.1,
+    encoder_type="light", num_warmup_steps=500, max_seq_len=20,
+    pretrained_rqvae_path="./out/rqvae/amazon/beauty/checkpoint.pt",
+    encoder_model_name="sentence-transformers/sentence-t5-xl",
+    resume_from_checkpoint=None, sparse_loss_weight=1.0,
+    dense_loss_weight=1.0, use_dense=True, seed=42, ...,
+)
+```
+
+COBRA also requires dataset injection. Its resume file is a COBRA dict containing model, optimizer, scheduler, and epoch. Only `encoder_type="pretrained"` selects `SentenceT5Encoder`; every other string falls back to `LightT5Encoder`. `eval_test_every_epoch` is retained for config compatibility; benchmark evaluation now selects on validation and runs a one-shot test from `best_model.pt`.
+
+## OneRec
+
+```python
+train_sft(
+    epochs=4, batch_size=8, learning_rate=3e-4, weight_decay=0.01,
+    warmup_steps=20, warmup_ratio=0.0, adam_beta2=0.999,
+    gradient_accumulate_every=2, max_length=512,
+    pretrained_path="Qwen/Qwen2.5-1.5B", use_lora=True,
+    num_codebooks=3, codebook_size=8192, dataset=None,
+    dataset_folder="dataset/amazon2023", max_seq_len=20,
+    do_eval=True, eval_batch_size=64, eval_beam_width=10,
+    save_dir_root="out/onerec/amazon2023/{split}/sft",
+    eval_only=False, checkpoint_path=None, early_stopping_patience=3,
+    attention_dropout=0.0, label_smoothing=0.0,
+    enabled_tasks=None, seed=42, ...,
+)
+```
+
+Repository configs override the old Python K=8192/Amazon-2023 defaults to Amazon 2014, K=256, and RQ-KMeans. The function's `enabled_tasks` value is recorded but actual task selection is bound on the dataset.
+
+```python
+train_grpo(
+    epochs=2, batch_size=4, learning_rate=1e-5, weight_decay=0.01,
+    warmup_steps=10, gradient_accumulate_every=4,
+    max_length=512, max_grad_norm=0.3, num_generations=16,
+    temperature=1.0, beta=1e-3, clip_eps=0.2,
+    reward_type="exact", use_beam_search=False, add_gt=False,
+    num_codebooks=3, codebook_size=8192,
+    sft_checkpoint_path="./out/onerec/amazon2023/{split}/sft/checkpoint_final",
+    rl_dataset=None, eval_dataset=None,
+    dataset_folder="dataset/amazon2023", max_seq_len=20,
+    do_eval=True, eval_batch_size=4, eval_beam_width=10,
+    save_dir_root="out/onerec/amazon2023/{split}/grpo", seed=42, ...,
+)
+```
+
+`rl_dataset` is required. With no `eval_dataset`, `do_eval=True` still creates no evaluation loaders. Sampling uses OneRec's catalog `PrefixTrie`; valid reward types are `exact`, `hierarchical`, and `rank`.
+
+```python
+train_clm(
+    epochs=5, batch_size=32, learning_rate=5e-5, weight_decay=0.01,
+    warmup_steps=50, gradient_accumulate_every=2, max_length=256,
+    pretrained_path="Qwen/Qwen2.5-1.5B", use_lora=False,
+    num_codebooks=3, codebook_size=256, dataset=None,
+    dataset_folder="dataset/amazon", max_seq_len=50,
+    do_eval=True, eval_batch_size=64, eval_beam_width=10,
+    save_dir_root="out/onerec/amazon/{split}/clm",
+    eval_only=False, checkpoint_path=None,
+    early_stopping_patience=3, seed=42, ...,
+)
+```
+
+CLM falls back to `AmazonOneRecCLMDataset` when no class is injected. It adds code tokens and `<|item_sep|>` to the tokenizer, so checkpoints must preserve that tokenizer.
+
+## RPG, NoteLLM, and GRAM
+
+```python
+train_rpg(
+    n_embd=448, n_layer=2, n_head=4, n_inner=1024,
+    n_codebook=32, codebook_size=256, temperature=0.07,
+    embd_pdrop=0.5, attn_pdrop=0.5, resid_pdrop=0.0,
+    num_beams=50, n_edges=50, propagation_steps=3, chunk_size=1024,
+    epochs=150, batch_size=256, learning_rate=3e-4,
+    weight_decay=0.01, warmup_steps=10000, max_grad_norm=1.0,
+    max_seq_len=50, dataset_folder="dataset/amazon", split="beauty",
+    encoder_model_name="sentence-transformers/sentence-t5-xl",
+    sent_emb_pca=0, do_eval=True, eval_every_epoch=1,
+    eval_batch_size=256, eval_with_graph=False, patience=20,
+    save_dir_root="out/rpg/amazon/{split}", seed=42, ...,
+)
+```
+
+RPG fixes `AmazonRPGDataset`. Item-level NDCG@10 selects the checkpoint; direct decoding is the headline result and optional graph metrics live under `results.json.extra`.
+
+```python
+# notellm_trainer.py
+train(
+    epochs=5, batch_size=4, gradient_accumulate_every=8,
+    learning_rate=2e-5, weight_decay=0.01, warmup_ratio=0.05,
+    pretrained_path="Qwen/Qwen2.5-1.5B", freeze_lm=False,
+    use_lora=True, lora_r=16, lora_alpha=32, lora_dropout=0.05,
+    dataset_folder="dataset/amazon", split="beauty",
+    max_seq_len=50, max_text_length=256,
+    eval_batch_size=32, catalog_batch_size=64, patience=2,
+    enable_csft=True, csft_alpha=0.01,
+    save_dir_root="out/notellm/amazon/{split}",
+    amp=True, mixed_precision_type="bf16", seed=42, ...,
+)
+```
+
+NoteLLM fixes `AmazonNoteLLMDataset`, combines symmetric GCL with optional CSFT,
+and evaluates exact full-catalog embedding retrieval after excluding the query
+item. Repeated catalog items are masked as GCL false negatives. It raises
+`RuntimeError` if LoRA is requested without PEFT. The shipped config binds both
+the trainer and dataset split, so the standard `--split sports` route is
+consistent.
+
+```python
+train_gram(
+    backbone="t5-small", max_his=20, use_position_embedding=True,
+    epochs=30, batch_size=32, learning_rate=1e-3,
+    dataset=None, dataset_folder="dataset/gram", split="Beauty",
+    item_prompt_max_len=128, target_max_len=50,
+    item_id_file="item_generative_indexing_hierarchy_v1_c128_l7_len32768_split.txt",
+    item_prompt="all_text", top_k_similar_item=10, cf_model="sasrec",
+    num_beams=50, eval_batch_size=1, length_penalty=0.0,
+    metrics="hit@5,hit@10,ndcg@5,ndcg@10",
+    save_dir_root="out/gram/{split}", eval_only=False,
+    checkpoint_path=None, seed=42, ...,
+)
+```
+
+GRAM falls back to `AmazonGRAMDataset`. Every comma-separated metric must include `@K`; candidate-trie items come from `train_ds.all_items`. `checkpoint_path` is a raw state dict.
+
+## Collators, evaluation, and GRPO rewards
+
+There is no common helper protocol. Key functions are:
+
+- `sasrec_trainer.evaluate(...)`, `hstu_trainer.evaluate(...)`, `rpg_trainer.evaluate(...)`, and `notellm_trainer.evaluate_full_catalog(...)` return model-specific item metrics.
+- `cobra_collate_fn(...)`, `lcrec_collate_fn(...)`, `onerec_collate_fn(...)`, `rl_collate_fn(...)`, CLM collators, `GRAMCollator`, and `t5_collate(...)` each expose different dictionaries.
+- LCRec's `ConstrainedDecodingHelper` masks codebook position ranges but does not guarantee a catalog SID tuple.
+- OneRec GRPO's `PrefixTrie` performs catalog-tuple constraints. This does not apply to TIGER.
+
+```python
+compute_rule_reward(generated_sem_ids, target_sem_ids) -> list[float]
+compute_hierarchical_reward(generated_sem_ids, target_sem_ids,
+                            num_codebooks) -> list[float]
+compute_rank_reward(generated_sem_ids, target_sem_ids,
+                    num_codebooks) -> list[float]
+```
+
+Rule reward is exact 0/1. Hierarchical reward is `10**(m-1)` for a matching prefix of length `m`. Rank reward returns an all-zero group when no exact hit exists; otherwise it adds penalties to wrong candidates. Its `num_codebooks` parameter is currently unused.
+
+## Shared utilities
+
+[`trainer_utils.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/trainer_utils.py) provides:
+
+```python
+set_seed(seed: int, deterministic: bool = False) -> None
+get_git_sha() -> str
+setup_accelerator(split_batches=True, gradient_accumulate_every=1,
+                  amp=False, mixed_precision_type="fp16")
+setup_wandb(project, run_name=None, config=None, step_metrics=None) -> None
+get_parameter_count(model) -> int
+save_run_results(save_dir, model, split, seed, metrics,
+                 config=None, extra=None) -> str
+save_checkpoint(path, model, optimizer, scheduler=None,
+                epoch=None, step=None, extra=None, logger=None) -> None
+load_checkpoint(path, model, optimizer=None, scheduler=None,
+                device=torch.device("cpu"), logger=None) -> dict
+```
+
+`TrainerConfig` is only a convenience dataclass; no trainer inherits or automatically consumes it. `save_run_results` overwrites `results.json` and includes model, split, seed, Git/source metadata, UTC timestamp, metrics, config, and optional execution/extra objects.
+
+## Checkpoint formats are not interchangeable
+
+| Trainer | Artifact | Optimizer-resumable? |
+|---|---|---|
+| SASRec / HSTU / RPG / GRAM / TIGER | raw model `state_dict` | No |
+| COBRA | dict with epoch/model/optimizer/scheduler | Yes, via COBRA path |
+| RQ-VAE | dict with epoch-or-iter/model/model_config/optimizer/scheduler | Yes |
+| RQ-KMeans | `RqKmeans.save()` artifact | Not applicable |
+| LCRec / OneRec SFT/GRPO/CLM | Hugging Face model/tokenizer directory | No |
+| NoteLLM | trainable-state dict plus tokenizer and best metadata | No; reconstruct base model |
+
+LCRec/SFT/CLM can warn and silently fall back to full-parameter training when LoRA lacks PEFT; NoteLLM refuses. RPG OPQ needs FAISS, RQ-KMeans needs scikit-learn, and LLM routes need Transformers and weights.
+
+## CLI
+
+```bash
+python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
+python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
+python genrec/trainers/rqkmeans_trainer.py config/onerec/amazon/rqkmeans.gin --split beauty
+python genrec/trainers/onerec_sft_trainer.py config/onerec/amazon/sft.gin --split beauty
+python genrec/trainers/onerec_grpo_trainer.py config/onerec/amazon/grpo.gin --split beauty
+python genrec/trainers/onerec_clm_trainer.py config/onerec/amazon/clm.gin --split beauty
+python -m genrec.trainers.rpg_trainer config/rpg/amazon.gin --split beauty
+python genrec/trainers/notellm_trainer.py config/notellm/amazon.gin --split beauty
+python genrec/trainers/gram_trainer.py config/gram/amazon/gram.gin --split Beauty
+```
+
+See [Configuration and CLI](configs.md) before adding a new entry point. A new trainer must declare its own Gin arguments, dataset/collator schema, distributed collectives, checkpoint format, and item-level evaluation semantics.

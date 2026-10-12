@@ -1,383 +1,140 @@
-# Contributing Guide
+# Contributing
 
-We welcome contributions to genrec! This guide will help you get started.
+GenRec is an experimental repository for generative-recommendation reproduction and fair comparison, not a production service framework. A contribution must be more than runnable: another researcher must be able to identify the source, protocol, configuration, artifacts, and exact status of the claims it documents.
 
-## Development Setup
+## Before you start
 
-### Prerequisites
+Read the material closest to your change:
 
-- Python 3.8 or higher
-- PyTorch >= 1.11.0
-- Git
+- [Repository map](architecture/repository-map.md)
+- [Extension guide](architecture/extension-guide.md)
+- [Configuration system](architecture/configuration.md)
+- [Evaluation system](architecture/evaluation-system.md)
+- [Documentation policy](reference/documentation-policy.md)
+- [Model-page template](models/template.md)
+- [Verified command index](reference/command-index.md)
 
-### Installation
+The repository has no universal model, dataset, processor, factory, or trainer inheritance hierarchy. Paper pipelines differ in inputs, targets, and decoding. Extend a neighboring implementation's real interfaces and reuse `genrec/modules/`, `genrec/trainers/trainer_utils.py`, and `genrec/modules/utils.py` where appropriate.
 
-1. Fork the repository on GitHub
-2. Clone your fork:
-   ```bash
-   git clone https://github.com/YOUR_USERNAME/genrec.git
-   cd genrec
-   ```
-
-3. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
-
-4. Install in development mode:
-   ```bash
-   pip install -e .[dev]
-   ```
-
-## Development Workflow
-
-### Code Style
-
-We follow PEP 8 style guidelines. Please run the following before submitting:
+## Development environment
 
 ```bash
-# Format code
-black genrec/ tests/
-isort genrec/ tests/
-
-# Check style
-flake8 genrec/ tests/
-mypy genrec/
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,docs]"
 ```
 
-### Testing
+GPU experiments also require a PyTorch build compatible with the host CUDA driver. Never commit private absolute paths, credentials, downloaded model weights, or experiment outputs.
 
-Run tests before submitting your changes:
+## Workflow
+
+1. Classify the change: implementation fix, protocol fix, reproduction result, or new model.
+2. Locate the closest dataset, collator, model, trainer, and Gin config; write down input/output shapes and ID conventions.
+3. Build the smallest end-to-end path. Explain paper behavior and repository deviations separately.
+4. Add tests proportional to the risk, especially around protocol or tensor boundaries.
+5. Run relevant formatting, tests, and documentation checks.
+6. Preserve checkpoints, logs, `results.json`, and exact source provenance for new measurements.
+7. Update the model page, architecture page, or command index whenever behavior changes.
+
+Keep changes reviewable: do not mix unrelated formatting, generated data, and model behavior; do not commit `dataset/`, `models_hub/`, `out/`, W&B caches, or checkpoints; do not rewrite historical numbers into a new protocol; and document compatibility breaks in cache keys, checkpoint fields, or Gin selectors.
+
+## Implementation conventions
+
+### Data and IDs
+
+Model-specific datasets live under `genrec/data/`. Document:
+
+- raw-file and cache-directory contracts;
+- raw IDs, contiguous internal IDs, padding IDs, and SID-token transforms;
+- train/valid/test boundaries and split unit;
+- `__getitem__` and collator fields, dtypes, shapes, and padding;
+- every semantic parameter represented in cache keys;
+- whether any valid/test statistic could leak into training.
+
+Headline sequence-recommendation results must name `leave_one_out` or `global_temporal`. A changed candidate set, negative sampler, windowing rule, or SID→item resolver is a protocol change, not merely an optimization.
+
+### Models and trainers
+
+Put models in `genrec/models/`, reusable components in `genrec/modules/`, and CLI entry points in `genrec/trainers/`. Trainers are independent functions rather than subclasses of a common base, but contributions should still ensure:
+
+- model calls, losses, scoring/generation APIs, and tensor shapes are traceable;
+- datasets do not hardcode GPU movement;
+- only the main process writes shared logs, checkpoints, and results;
+- early stopping, best-checkpoint selection, and final test use consistent weights;
+- SID predictions are resolved with training-only statistics, then deduplicated before item-level metrics;
+- external encoders, tokenizers, and cached artifacts are declared prerequisites.
+
+CLI entry points use `genrec.modules.utils.parse_config` with one Gin file and repeatable `--gin` overrides. Use the real top-level selector: `train_sft`, `train_clm`, `train_grpo`, `train_rpg`, or `train_gram` where applicable—not an invented universal `train` API.
+
+### Configuration
+
+Store default experiments under `config/<model>/...` and make them resolvable from the repository root. Verify imports, upstream/downstream paths, model/tokenizer geometry, explicit dataset protocol, literal `{split}` use, and every example config path. Do not document private one-off experiment files as public commands.
+
+## Tests and static checks
+
+Run the narrowest relevant tests first, then the full suite. Tests are flat `tests/test_*.py` files; do not cite a fictional generic test module.
 
 ```bash
-# Run all tests
-pytest
+pytest -q \
+  tests/test_evaluation_protocol.py \
+  tests/test_honest_metrics.py \
+  tests/test_sid_collisions.py
 
-# Run with coverage
-pytest --cov=genrec
+pytest -q
 
-# Run specific test
-pytest tests/test_datasets.py::test_p5_amazon_dataset
+ruff check genrec scripts tests
+black --check genrec scripts tests
+mypy genrec
+git diff --check
 ```
 
-### Documentation
+Some tests require PyTorch, Transformers, FAISS, or local model assets. If a check cannot run, name the missing dependency and untested scope instead of claiming success.
 
-Update documentation when adding new features:
+For documentation changes:
 
 ```bash
-# Build documentation locally
-cd docs
-mkdocs serve
+mkdocs build --strict
+rg -n 'TODO|to be completed|coming soon' docs/en
 ```
 
-## Contributing Guidelines
+## Results and provenance
 
-### Issues
+A log line is not a benchmark artifact. Before a result enters an aggregate table, its `results.json` must identify model, split, seed, evaluation protocol, item-level evaluation, and exact source provenance. SID recommenders must record training-only resolution, and Recall/NDCG values must be finite numbers in `[0, 1]`.
 
-- Search existing issues before creating new ones
-- Use clear, descriptive titles
-- Provide steps to reproduce for bugs
-- Include system information (OS, Python version, etc.)
+Validate before aggregating:
 
-### Pull Requests
+```bash
+python scripts/validate_matrix_results.py out/matrix \
+  --models sasrec hstu \
+  --splits beauty sports toys \
+  --protocols leave_one_out \
+  --seeds 42 43 44
 
-1. Create a feature branch from `main`:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. Make your changes and commit:
-   ```bash
-   git commit -m "Add: brief description of changes"
-   ```
-
-3. Push to your fork:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-4. Create a Pull Request on GitHub
-
-### Commit Message Format
-
-Use clear, descriptive commit messages:
-
-- **Add**: New features or functionality
-- **Fix**: Bug fixes
-- **Update**: Changes to existing functionality
-- **Docs**: Documentation changes
-- **Test**: Adding or updating tests
-- **Refactor**: Code refactoring without functional changes
-
-Examples:
-```
-Add: TIGER model with transformer architecture
-Fix: P5Amazon dataset loading for large categories
-Update: configuration system to use dataclasses
-Docs: API reference for dataset factory
-Test: unit tests for text processors
+python scripts/aggregate_results.py out/matrix \
+  --metrics Recall@5 Recall@10 NDCG@10 \
+  --format md
 ```
 
-## Types of Contributions
+`scripts/stamp_results_provenance.py` may annotate an artifact whose exact origin is known; it must not legitimize an unknown result. Do not mix SID-level, sampled-negative, or legacy-protocol figures into `BENCHMARKS.md`.
 
-### Bug Fixes
+## Definition of done for a model page
 
-- Fix issues reported in GitHub Issues
-- Include test cases that reproduce the bug
-- Update documentation if needed
+A new model, important variant, or behavior that changes result semantics needs a corresponding model-page update. The page must:
 
-### New Features
+- separate implementation status from reproduction status;
+- distinguish paper, official-code, and GenRec facts;
+- define inputs, outputs, representation, shapes, and special tokens;
+- map the pipeline to real files, classes, functions, and configs;
+- provide commands whose prerequisites and outputs are explicit;
+- state checkpoint selection, candidate generation, constraints, deduplication, and metric level;
+- disclose paper deviations, limitations, and negative evidence;
+- use live relative links, configs, and script names.
 
-Before implementing major features:
-1. Create an issue to discuss the feature
-2. Get feedback from maintainers
-3. Follow the existing architecture patterns
+An unimplemented model may be documented, but it must be labeled unimplemented and must not present fictional GenRec commands. Follow the [model-page template](models/template.md).
 
-### Documentation
+## Pull-request handoff
 
-- Fix typos and improve clarity
-- Add examples and tutorials
-- Translate documentation (Chinese/English)
-- Improve API documentation
+State what changed and why it affects—or does not affect—prior results; list the exact checks run and those skipped; name dataset, model-weight, and upstream-checkpoint prerequisites; provide protocol, seed, artifact path, and source provenance for measurements; and include a migration note for public interfaces, caches, or checkpoints.
 
-### Performance Improvements
-
-- Profile code to identify bottlenecks
-- Include benchmarks showing improvements
-- Ensure changes don't break existing functionality
-
-## Code Architecture
-
-### Adding New Datasets
-
-To add a new dataset, follow these steps:
-
-1. **Create the base dataset class**:
-   ```python
-   from genrec.data.base_dataset import BaseRecommenderDataset
-   
-   class MyDataset(BaseRecommenderDataset):
-       def download(self):
-           # Implement download logic
-           pass
-           
-       def load_raw_data(self):
-           # Implement data loading
-           pass
-           
-       def preprocess_data(self, raw_data):
-           # Implement preprocessing
-           pass
-   ```
-
-2. **Create wrapper classes**:
-   ```python
-   from genrec.data.base_dataset import ItemDataset, SequenceDataset
-   
-   class MyItemDataset(ItemDataset):
-       def __init__(self, **kwargs):
-           # Initialize with your dataset
-           pass
-   
-   class MySequenceDataset(SequenceDataset):
-       def __init__(self, **kwargs):
-           # Initialize with your dataset
-           pass
-   ```
-
-3. **Add configuration**:
-   ```python
-   from genrec.data.configs import DatasetConfig
-   
-   @dataclass
-   class MyDatasetConfig(DatasetConfig):
-       # Add dataset-specific parameters
-       special_param: str = "default_value"
-   ```
-
-4. **Register the dataset**:
-   ```python
-   from genrec.data.dataset_factory import DatasetFactory
-   
-   DatasetFactory.register_dataset(
-       name="my_dataset",
-       base_class=MyDataset,
-       item_class=MyItemDataset,
-       sequence_class=MySequenceDataset
-   )
-   ```
-
-5. **Add tests and documentation**
-
-For more details, please refer to the [API Documentation](api/datasets.md).
-
-### Adding New Models
-
-1. **Inherit from base classes**:
-   ```python
-   import torch.nn as nn
-   
-   class MyModel(nn.Module):
-       def __init__(
-           self,
-           input_dim: int,
-           hidden_dim: int,
-           output_dim: int,
-           dropout: float = 0.1,
-       ) -> None:
-           super().__init__()
-           
-           self.input_dim = input_dim
-           self.hidden_dim = hidden_dim
-           self.output_dim = output_dim
-           
-           # Define layers
-           self.encoder = nn.Linear(input_dim, hidden_dim)
-           self.decoder = nn.Linear(hidden_dim, output_dim)
-           self.dropout = nn.Dropout(dropout)
-       
-       def forward(self, x):
-           # Implement forward pass
-           hidden = self.dropout(torch.relu(self.encoder(x)))
-           output = self.decoder(hidden)
-           return output
-   ```
-
-2. **Add to Gin configuration system**:
-   ```python
-   import gin
-   
-   @gin.configurable
-   class MyModel(nn.Module):
-       # Implementation
-   ```
-
-3. **Create training utilities**:
-   ```python
-   from genrec.trainers.base_trainer import BaseTrainer
-   
-   class MyModelTrainer(BaseTrainer):
-       def __init__(self, model, config):
-           super().__init__(model, config)
-       
-       def training_step(self, batch, batch_idx):
-           # Implement training logic
-           pass
-   ```
-
-4. **Add comprehensive tests**
-5. **Update documentation**
-
-## Testing Guidelines
-
-### Unit Tests
-
-- Test individual functions and classes
-- Use pytest fixtures for setup
-- Mock external dependencies
-- Aim for >90% code coverage
-
-```python
-import pytest
-from genrec.data import P5AmazonDataset
-
-def test_p5_amazon_dataset_creation():
-    config = P5AmazonConfig(
-        root_dir="test_data",
-        category="beauty"
-    )
-    dataset = P5AmazonDataset(config)
-    assert dataset.category == "beauty"
-```
-
-### Integration Tests
-
-- Test component interactions
-- Use sample datasets
-- Test end-to-end workflows
-
-```python
-def test_full_training_pipeline():
-    # Test complete training workflow
-    pass
-```
-
-### Performance Tests
-
-- Benchmark critical operations
-- Test with realistic data sizes
-- Monitor memory usage
-
-## Documentation Standards
-
-### Docstring Format
-
-Use Google-style docstrings:
-
-```python
-def process_data(data: pd.DataFrame, normalize: bool = True) -> pd.DataFrame:
-    """Process input data with optional normalization.
-    
-    Args:
-        data: Input DataFrame to process
-        normalize: Whether to normalize numerical features
-        
-    Returns:
-        Processed DataFrame
-        
-    Raises:
-        ValueError: If data is empty
-        
-    Example:
-        >>> df = pd.DataFrame({'col1': [1, 2, 3]})
-        >>> result = process_data(df, normalize=True)
-    """
-```
-
-### API Documentation
-
-- Document all public methods and classes
-- Include usage examples
-- Explain parameters and return values
-- Add type hints
-
-### Tutorials and Guides
-
-- Provide step-by-step instructions
-- Include complete working examples
-- Explain the reasoning behind design decisions
-- Keep examples up-to-date with API changes
-
-## Release Process
-
-### Version Numbering
-
-We follow Semantic Versioning (SemVer):
-- MAJOR: Breaking changes
-- MINOR: New features, backward compatible
-- PATCH: Bug fixes, backward compatible
-
-### Changelog
-
-Update CHANGELOG.md with:
-- New features
-- Bug fixes
-- Breaking changes
-- Deprecations
-
-## Getting Help
-
-- Join our discussions on GitHub
-- Ask questions in Issues
-- Check existing documentation
-- Review code examples
-
-## Code of Conduct
-
-- Be respectful and inclusive
-- Focus on constructive feedback
-- Help maintain a welcoming community
-- Follow GitHub's Community Guidelines
-
-Thank you for contributing to genrec!
+When code, configs, tests, and documentation disagree, do not silently choose the most convenient version. Record the conflict under the [documentation policy](reference/documentation-policy.md) and make code behavior, default configuration, and status claims independently verifiable.

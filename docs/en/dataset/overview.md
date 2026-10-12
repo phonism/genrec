@@ -1,143 +1,119 @@
-# Dataset Overview
+# Dataset overview
 
-genrec framework supports various recommendation system datasets and provides a flexible data processing pipeline.
+GenRec does not have a universal dataset base class. Each model adapter implements
+`torch.utils.data.Dataset` directly. The shared pieces are the raw Amazon files,
+evaluation-protocol helpers, and a small set of schemas. Start from the concrete
+dataset class constructed by a trainer.
 
-## Supported Datasets
+## Data sources
 
-### P5 Amazon Dataset
+| Source | Entry point | Main use | Status |
+|---|---|---|---|
+| Amazon Reviews 2014 5-core | `genrec/data/amazon.py`, `amazon_<model>.py` | Main Beauty/Sports/Toys/Home/Clothing benchmarks | Core |
+| Amazon Reviews 2023 | `genrec/data/amazon2023.py` | Download JSONL, iterative k-core, compatible gzip export | Preprocessing and selected configs |
+| MovieLens 1M | `genrec/data/ml1m_hstu.py` | Small HSTU parity and ablation runs | HSTU only |
+| GRAM-formatted Amazon | `genrec/data/amazon_gram.py` | Lexical IDs, item text, CF-neighbor passages | Separate pipeline |
+| Legacy P5/PyG pipeline | `genrec/data/p5_amazon.py` | Older graph-backed item/sequence experiments | Compatibility only |
 
-P5 Amazon is a large-scale product recommendation dataset containing user reviews and product metadata.
+## Model-to-adapter map
 
-**Features:**
-- Multiple product categories (Beauty, Electronics, etc.)
-- Rich textual information (title, brand, category, price)
-- User interaction sequence data
-- Automatic download and preprocessing
+| Model or stage | Dataset | ID convention | Important output |
+|---|---|---|---|
+| SASRec | `AmazonSASRecDataset` | Real items start at 1; 0 pads | History and target |
+| HSTU | `AmazonHSTUDataset` | Real items start at 1; 0 pads | History, timestamps, target |
+| RQ-VAE / RQ-KMeans | `AmazonItemDataset` | Parquet row aligned with sequence mapping | Continuous item embedding |
+| TIGER | `AmazonSeqDataset` | Item IDs are 0-based; SIDs are encoded separately | `SeqData` and raw `target_item` |
+| LCRec | `AmazonLCRecDataset` | 0-based | Multi-task prompts/responses and SID catalog |
+| OneRec SFT / GRPO | `AmazonOneRecSFTDataset`, `AmazonOneRecRLDataset` | 0-based | Four SFT tasks or RL prompts |
+| OneRec CLM | `AmazonOneRecCLMDataset` | 0-based | One flat token stream per user |
+| COBRA | `AmazonCobraDataset` | 0-based | Sparse codes plus dense text tokens |
+| RPG | `AmazonRPGDataset` | Real items start at 1; 0 pads | Item sequence and OPQ tokens |
+| NoteLLM | `AmazonNoteLLMDataset` | Inherits SASRec's 1-based IDs | Item-to-item query/target and text |
+| GRAM | `AmazonGRAMDataset` | Raw string ID plus lexical ID | User passage and per-item passages |
 
-**Usage:**
-```python
-from genrec.data.p5_amazon import P5AmazonItemDataset
+!!! danger "Do not reuse integer item IDs across adapters"
+    The same ASIN may be 0-based in one adapter and 1-based in another, and
+    mappings depend on source order. A checkpoint, SID array, and prediction
+    dump must use the mapping that created them.
 
-dataset = P5AmazonItemDataset(
-    root="dataset/amazon",
-    split="beauty",
-    train_test_split="train"
-)
+## Amazon 2014 layout
+
+```text
+dataset/amazon/
+├── raw/beauty/
+│   ├── reviews_Beauty_5.json.gz
+│   └── meta_Beauty.json.gz
+└── processed/beauty/
+    ├── item_emb_sentence-t5-xl.parquet
+    └── item_emb_Qwen3-Embedding-8B.parquet
 ```
 
-## Data Processing Architecture
+Prepare the explicitly supported Beauty, Sports, and Toys downloads with:
 
-### Modular Design
-
-```mermaid
-graph TD
-    A[Raw Data] --> B[Data Downloader]
-    B --> C[Preprocessor]
-    C --> D[Text Processor]
-    C --> E[Sequence Processor]
-    D --> F[Feature Embeddings]
-    E --> G[Sequence Data]
-    F --> H[Item Dataset]
-    G --> I[Sequence Dataset]
+```bash
+python scripts/prepare_amazon2014.py \
+  --splits beauty sports toys --kinds reviews meta
 ```
 
-### Configuration System
+Other entries in `DATASET_CONFIGS` can be prepared manually using the expected
+file names, or downloaded through `AmazonItemDataset`. Preserve a checksum
+manifest for reproducible runs.
 
-Use configuration classes to manage data processing parameters:
+## Amazon 2023 conversion
 
-```python
-from genrec.data.configs import P5AmazonConfig, TextEncodingConfig
-
-config = P5AmazonConfig(
-    root_dir="dataset/amazon",
-    split="beauty",
-    text_config=TextEncodingConfig(
-        encoder_model="sentence-transformers/sentence-t5-xl",
-        template="Title: {title}; Brand: {brand}"
-    )
-)
+```bash
+python -m genrec.data.amazon2023 --list_categories
+python -m genrec.data.amazon2023 \
+  --category Arts_Crafts_and_Sewing \
+  --k_core 5 \
+  --output_dir dataset/amazon2023
 ```
 
-## Data Processing Pipeline
+The converter downloads review and metadata JSONL, iteratively filters users and
+items until both satisfy k-core, then writes gzip files compatible with the main
+Amazon adapters. `--max_reviews` is for smoke tests only; never compare a
+truncated run with a full-data benchmark.
 
-### 1. Data Download
-- Automatic dataset download from cloud
-- Extract and organize files
-- Verify data integrity
+## Evaluation protocols
 
-### 2. Preprocessing
-- Data cleaning and normalization
-- Handle missing values
-- ID mapping and re-encoding
+`genrec.data.evaluation_protocol.select_protocol_sequences` implements:
 
-### 3. Feature Extraction
-- Text feature encoding
-- Categorical feature processing
-- Numerical feature normalization
+- `leave_one_out`: the last item is test and the penultimate item is validation;
+- `global_temporal`: global timestamp quantiles define train/validation cutoffs,
+  so later interactions cannot enter an earlier history.
 
-### 4. Sequence Generation
-- Build user interaction sequences
-- Temporal splitting (train/validation/test)
-- Sequence padding and truncation
+Adapters then turn selected sequences into sliding windows or one sample per
+user. Sharing a split protocol does not imply identical training augmentation.
+The global-temporal path is still transductive at the catalog level: metadata,
+k-core filtering, and SID construction may observe the complete item set.
 
-## Custom Datasets
+## Embedding caches
 
-To add new datasets, inherit from base class and implement necessary methods:
+`AmazonItemDataset` formats metadata text, encodes it with SentenceTransformer,
+and stores a parquet cache. Generation uses an exclusive `.lock`, a
+`.part.<pid>` temporary file, and atomic `os.replace`. RPG has its own
+embedding/OPQ caches, while OneRec uses Qwen3-Embedding-8B. Equal vector
+dimensions do not make caches interchangeable.
 
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
+## Minimum data checks
 
-class MyDataset(BaseRecommenderDataset):
-    def download(self):
-        # Implement data download logic
-        pass
-        
-    def load_raw_data(self):
-        # Load raw data
-        return {"items": items_df, "interactions": interactions_df}
-        
-    def preprocess_data(self, raw_data):
-        # Data preprocessing
-        return processed_data
-        
-    def extract_items(self, processed_data):
-        return processed_data["items"]
-        
-    def extract_interactions(self, processed_data):
-        return processed_data["interactions"]
+1. Record raw-file checksums and counts.
+2. Verify user/item counts and the k-core condition.
+3. Check target timestamp boundaries for every split.
+4. Match adapter item mappings to embedding/SID row counts.
+5. Record train/validation/test sample counts.
+6. Measure SID collisions and codebook health.
+7. Record encoder name, revision, dimension, and cache hash.
+
+Useful commands:
+
+```bash
+python scripts/verify_dataset.py --skip_rqvae
+python scripts/prepare_item_embeddings.py --help
 ```
 
-## Performance Optimization
+`scripts/diagnose_dataset.py` and `scripts/check_data_leakage.py` contain
+historical hard-coded paths and are not portable general entry points.
 
-### Caching Mechanism
-- Text encoding result caching
-- Preprocessed data caching  
-- Smart cache invalidation
-
-### Memory Management
-- Lazy loading of large datasets
-- Batch data processing
-- Memory usage monitoring
-
-### Parallel Processing
-- Multi-process data loading
-- Parallel text encoding
-- Distributed preprocessing
-
-## Best Practices
-
-1. **Data Validation**: Always validate data quality and integrity
-2. **Version Control**: Track dataset versions and changes
-3. **Documentation**: Detailed recording of data processing steps
-4. **Performance Monitoring**: Monitor data loading and processing performance
-
-## Common Issues
-
-**Q: How to handle large-scale datasets?**
-A: Use chunked loading, caching, and parallel processing
-
-**Q: How to add new text encoders?**
-A: Inherit from TextProcessor class and implement custom encoding logic
-
-**Q: How to handle different data formats?**
-A: Create custom data loaders and preprocessing pipelines
+See also [Amazon 2014 and the P5 compatibility layer](p5-amazon.md) and
+[adding a custom dataset](custom.md).

@@ -1,13 +1,12 @@
 site_name: GenRec
-site_description: A Model Zoo for Generative Recommendation
+site_description: 生成式推荐研究框架、模型实现与领域知识库
 site_author: Qi Lu
 site_url: https://phonism.github.io/genrec/
 
-# Repository information
 repo_name: phonism/genrec
 repo_url: https://github.com/phonism/genrec
+edit_uri: edit/main/docs/
 
-# Configuration
 theme:
   name: material
   language: zh
@@ -34,31 +33,80 @@ theme:
     - content.code.copy
     - toc.follow
 
-# Navigation
+# i18n 使用 folder 结构；导航路径必须不带 zh/ 或 en/ 前缀。
+# 中文是规范版本，英文缺页会回退到中文页。
 nav:
   - 首页: index.md
-  - 快速开始: zh/getting-started.md
-  - 安装指南: zh/installation.md
-  - 模型:
-    - SASRec: zh/models/sasrec.md
-    - HSTU: zh/models/hstu.md
-    - RQVAE: zh/models/rqvae.md
-    - TIGER: zh/models/tiger.md
-    - LCRec: zh/models/lcrec.md
-    - COBRA: zh/models/cobra.md
-  - 数据集:
-    - 概述: zh/dataset/overview.md
-    - P5 Amazon: zh/dataset/p5-amazon.md
-    - 自定义数据集: zh/dataset/custom.md
-  - 训练:
-    - RQVAE 训练: zh/training/rqvae.md
-    - TIGER 训练: zh/training/tiger.md
-  - API 参考: zh/api/index.md
-  - 示例: zh/examples.md
-  - 常见问题: zh/faq.md
-  - 贡献指南: zh/contributing.md
+  - 入门:
+      - 快速开始: getting-started.md
+      - 安装与环境: installation.md
+      - 示例: examples.md
+      - 常见问题: faq.md
+  - 模型与组件:
+      - 模型总览: models/overview.md
+      - 实现与复现状态: reference/model-status.md
+      - 判别式基线:
+          - SASRec: models/sasrec.md
+          - HSTU: models/hstu.md
+      - 语义 ID 组件:
+          - RQ-VAE: models/rqvae.md
+          - RQ-KMeans: models/rqkmeans.md
+      - 自回归与混合生成:
+          - TIGER: models/tiger.md
+          - LCRec: models/lcrec.md
+          - COBRA: models/cobra.md
+          - OneRec: models/onerec.md
+      - 其他生成与 LLM 路线:
+          - RPG: models/rpg.md
+          - NoteLLM: models/notellm.md
+          - GRAM: models/gram.md
+      - 模型文档模板: models/template.md
+  - 实现架构:
+      - 架构总览: architecture/index.md
+      - 仓库地图: architecture/repository-map.md
+      - 数据流水线: architecture/data-pipeline.md
+      - Gin 配置系统: architecture/configuration.md
+      - 训练系统与产物: architecture/training-system.md
+      - 评估系统: architecture/evaluation-system.md
+      - 可复现工作流: architecture/reproducibility.md
+      - 扩展指南: architecture/extension-guide.md
+  - 数据:
+      - 数据集总览: dataset/overview.md
+      - Amazon 2014 与 P5: dataset/p5-amazon.md
+      - 自定义数据集: dataset/custom.md
+  - 训练与实验:
+      - 命令索引: reference/command-index.md
+      - RQ-VAE 训练: training/rqvae.md
+      - TIGER 训练: training/tiger.md
+      - 179 并发安全运行手册: 179-reproduction-runbook.md
+  - GenRec 研究全景:
+      - 全景总览: landscape/index.md
+      - 分类框架: landscape/taxonomy.md
+      - 模型目录（含未实现）: landscape/model-catalog.md
+      - 生成式推荐评测: landscape/evaluation.md
+      - 数据集与划分: landscape/datasets.md
+      - 阅读路线: landscape/reading-list.md
+      - 实现与研究待办: landscape/implementation-backlog.md
+  - 研究记录:
+      - 研究进展入口: latest-advances.md
+      - 复现行动计划（历史记录）: reproduction-roadmap.md
+  - API 与代码契约:
+      - API 总览: api/index.md
+      - 通用序列数据层: api/base-dataset.md
+      - 数据集与适配器: api/datasets.md
+      - 数据处理与评估协议: api/processors.md
+      - 数据路由与模型专用契约: api/dataset-factory.md
+      - 配置与命令行: api/configs.md
+      - 公共模块: api/modules.md
+      - RQ 组件: api/rqvae.md
+      - TIGER: api/tiger.md
+      - 训练器: api/trainers.md
+  - 维护与边界:
+      - 术语与边界: reference/terminology.md
+      - 部署边界: deployment.md
+      - 贡献指南: contributing.md
+      - 文档维护规范: reference/documentation-policy.md
 
-# Extensions
 markdown_extensions:
   - abbr
   - admonition
@@ -101,13 +149,11 @@ markdown_extensions:
       custom_checkbox: true
   - pymdownx.tilde
 
-# Plugins
 plugins:
   - search:
       lang:
         - zh
         - en
-  - mkdocstrings
   - i18n:
       docs_structure: folder
       fallback_to_default: true
@@ -121,40 +167,76 @@ plugins:
           build: true
           nav_translations:
             首页: Home
+            入门: Start Here
             快速开始: Getting Started
-            安装指南: Installation
-            模型: Models
-            数据集: Dataset
-            概述: Overview
-            自定义数据集: Custom Datasets
-            训练: Training
-            RQVAE 训练: RQVAE Training
-            TIGER 训练: TIGER Training
-            API 参考: API Reference
+            安装与环境: Installation
             示例: Examples
             常见问题: FAQ
+            模型与组件: Models and Components
+            模型总览: Model Overview
+            实现与复现状态: Implementation and Reproduction Status
+            判别式基线: Discriminative Baselines
+            语义 ID 组件: Semantic ID Components
+            自回归与混合生成: Autoregressive and Hybrid Generation
+            其他生成与 LLM 路线: Other Generative and LLM Models
+            模型文档模板: Model Documentation Template
+            实现架构: Architecture
+            架构总览: Architecture Overview
+            仓库地图: Repository Map
+            数据流水线: Data Pipeline
+            Gin 配置系统: Gin Configuration
+            训练系统与产物: Training and Artifacts
+            评估系统: Evaluation System
+            可复现工作流: Reproducibility Workflow
+            扩展指南: Extension Guide
+            数据: Data
+            数据集总览: Dataset Overview
+            Amazon 2014 与 P5: Amazon 2014 and P5
+            自定义数据集: Custom Datasets
+            训练与实验: Training and Experiments
+            命令索引: Command Index
+            RQ-VAE 训练: RQ-VAE Training
+            TIGER 训练: TIGER Training
+            179 并发安全运行手册: Host 179 Runbook
+            GenRec 研究全景: GenRec Landscape
+            全景总览: Landscape Overview
+            分类框架: Taxonomy
+            模型目录（含未实现）: Model Catalog (Including Unimplemented)
+            生成式推荐评测: Generative Recommendation Evaluation
+            数据集与划分: Datasets and Splits
+            阅读路线: Reading List
+            实现与研究待办: Implementation and Research Backlog
+            研究记录: Research Records
+            研究进展入口: Research Updates
+            复现行动计划（历史记录）: Reproduction Plan (Historical)
+            API 与代码契约: API and Code Contracts
+            API 总览: API Overview
+            通用序列数据层: Common Sequence Data Layer
+            数据集与适配器: Datasets and Adapters
+            数据处理与评估协议: Processing and Evaluation Protocols
+            数据路由与模型专用契约: Data Routing and Model Contracts
+            配置与命令行: Configuration and CLI
+            公共模块: Shared Modules
+            RQ 组件: RQ Components
+            训练器: Trainers
+            维护与边界: Maintenance and Boundaries
+            术语与边界: Terminology and Boundaries
+            部署边界: Deployment Boundary
             贡献指南: Contributing
+            文档维护规范: Documentation Policy
 
-# Extra
 extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/phonism/genrec
-  alternate:
-    - name: 中文
-      link: /zh/
-      lang: zh
-    - name: English
-      link: /en/
-      lang: en
 
-# Extra JavaScript
+copyright: Copyright &copy; Qi Lu · MIT License
+
 extra_javascript:
   - javascripts/mathjax.js
   - https://polyfill.io/v3/polyfill.min.js?features=es6
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
-# Extra CSS
 extra_css:
   - stylesheets/extra.css

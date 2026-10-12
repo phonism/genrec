@@ -8,60 +8,72 @@ A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
+The actively reproduced three-seed matrix, including leakage-resistant temporal
+splits and exact source provenance, is tracked in [BENCHMARKS.md](BENCHMARKS.md).
+
 ### Evaluation Protocol
 
 Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/abs/2311.09049), and [OpenOneRec](https://arxiv.org/abs/2512.24762):
 
 - **Dataset**: Amazon 2014 with 5-core filtering (users and items with < 5 interactions removed)
-- **Split**: Leave-one-out (last item for test, second-to-last for validation, rest for training)
-- **Ranking**: Full-item-set ranking over all items (no negative sampling)
+- **Split**: Leave-one-out by default. All Amazon benchmark datasets also support leakage-resistant `global_temporal` splitting (80% train / 10% validation / 10% test by global interaction time) via their `evaluation_protocol` gin binding.
+- **Candidate universe**: Full catalog with no sampled negatives. Discriminative models score the catalog directly; autoregressive models approximate top-K with constrained beam search and then evaluate resolved item IDs.
 - **Max sequence length**: 50 for all models
 - **Metrics**: Recall@K and NDCG@K (K=5, 10)
-- **HSTU**: Tested with both full-vocabulary cross-entropy (CE) and sampled softmax (SS, 128 negatives, temp=0.05, L2 norm)
-- **Note**: OneRec-SFT numbers are temporarily withheld. Its RQ-KMeans Semantic IDs collide (distinct items sharing one SID), which inflates SID-matched Recall; corrected, collision-aware numbers will be added once finalized. See `docs/zh/reproduction-roadmap.md` (T0-3).
-- **Note (COBRA)**: implemented but **not yet reproduced**. Honest item-level Beauty test is R@10=0.0099 / N@10=0.0048 (with beam width widened to the codebook size, 32) — roughly 7x below the paper's 0.0725 and ~9x below SASRec here. Three issues were found and fixed: (1) eval matched semantic-ID tuples instead of item ids (collision rate 0.43 → ~1.3x inflation), now item-level; (2) a trainer bug fed the dataset's RQ-VAE the wrong encoder's embeddings (sentence-t5-base instead of the xl it was trained on), collapsing semantic IDs from 6901→529 unique — any fresh run with the old code was training on garbage codes; (3) decode beam widened 20→32 (+13% R@10). The *remaining* gap is the model ceiling, not the quantizer or decoding: the RQ-VAE codebooks are healthy (perplexity ≈28-32/32) and the sparse branch learns fine under teacher forcing, but a deeper/longer-trained model is needed to lift item-level recall toward the paper. COBRA trains/evaluates at max_seq_len=100. See `docs/en/models/cobra.md`.
+- **HSTU**: The verified matrix currently reports full-vocabulary CE. The
+  sampled-softmax recipe uses 128 negatives, temperature 0.05 and L2 scoring;
+  after correcting Meta's `local` sampler to draw negatives independently per
+  positive, the clean Beauty three-seed rerun reaches item-level R@10
+  `0.0754 ± 0.0021`. Runs made with the old shared/in-batch interpretation of
+  `local` remain historical and are excluded.
+- **Honest generative evaluation**: TIGER, LCRec, OneRec-SFT/GRPO/CLM, and COBRA now use item-level Recall/NDCG as the headline; early stopping, checkpoint selection, and `results.json` use it wherever applicable. A generated SID is resolved to one most-popular item using training interactions only, and ranked items are deduplicated. The legacy pre-resolution SID metric is collision-prone and logged only as a diagnostic; because item deduplication can pull deeper beams into the final top-K, its value is not numerically comparable to the item metric. Legacy TIGER/LCRec/OneRec SID-level numbers are withheld until checkpoints are re-evaluated with the new protocol. See `docs/zh/reproduction-roadmap.md` (T0-3).
+- **NoteLLM evaluation**: the trainer combines symmetric GCL with optional CSFT,
+  masks repeated catalog items as false negatives, and uses exact full-catalog
+  item-level Recall/NDCG. The old `diagnostic_in_batch_recall@K` callback is not
+  a benchmark result.
+- **Temporal-split boundary**: `global_temporal` prevents future interactions from entering train histories, but item metadata/SID construction and 5-core filtering remain transductive over the catalog. It is leakage-resistant, not a fully inductive cold-item protocol.
+- **Note (COBRA)**: implemented but **not yet reproduced**. After fixing right-padding generation, aligning the RQ-VAE encoder, widening beam search, switching dense negatives to all-batch, and selecting epoch/fusion weights on validation only, the frozen three-seed Beauty item-level test reaches R@10=0.0460 ± 0.0013 and N@10=0.0239 ± 0.0009. Validation R@10 is 0.0644 ± 0.0008, so the remaining issue is a validation-to-test generalization gap rather than SID-tuple inflation or one lucky seed. See `docs/zh/cobra-paper-alignment-20260903.md`.
 
 ### Amazon 2014 Beauty
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| SASRec (CE) | 0.0538 | 0.0851 | 0.0320 | 0.0421 |
-| SASRec (BCE) | 0.0258 | 0.0503 | 0.0137 | 0.0216 |
-| HSTU (CE) | 0.0568 | 0.0859 | 0.0347 | 0.0441 |
-| HSTU (SS) | 0.0414 | 0.0727 | 0.0235 | 0.0335 |
-| TIGER | 0.0419 | 0.0644 | 0.0282 | 0.0354 |
-| LCRec | 0.0481 | 0.0704 | 0.0331 | 0.0403 |
-| RPG (sentence-t5-xl) | 0.0525 | 0.0744 | 0.0363 | 0.0433 |
-| RPG (text-emb-3-large) | 0.0531 | 0.0780 | 0.0370 | 0.0450 |
+| SASRec (CE, 3 seeds) | 0.0542 | 0.0858 | - | 0.0420 |
+| SASRec (BCE, legacy) | 0.0258 | 0.0503 | 0.0137 | 0.0216 |
+| HSTU (CE, 3 seeds) | 0.0461 | 0.0727 | - | 0.0392 |
+| HSTU (SS, corrected local sampler, 3 seeds) | 0.0465 | 0.0754 | 0.0260 | 0.0353 |
+| TIGER (paper-aligned, 3 seeds) | 0.0413 | 0.0655 | 0.0276 | 0.0354 |
+| LCRec † | - | - | - | - |
+| RPG (sentence-t5-xl, 3 seeds) | 0.0506 | 0.0732 | 0.0354 | 0.0427 |
 | RPG (paper, text-emb-3-large) | 0.0569 | 0.0809 | - | 0.0464 |
-| COBRA (not reproduced) † | 0.0054 | 0.0099 | 0.0033 | 0.0048 |
+| COBRA (paper-aligned, 3 seeds; not reproduced) | 0.0285 | 0.0460 | 0.0183 | 0.0239 |
 | COBRA (paper) | 0.0537 | 0.0725 | 0.0395 | 0.0456 |
 
-† Honest item-level (not the collision-inflated SID metric). See the COBRA note above.
+† LCRec still requires an honest item-level re-evaluation. Legacy SID-level numbers are not comparable and are intentionally omitted.
 
 ### Amazon 2014 Sports
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| SASRec (CE) | 0.0321 | 0.0495 | 0.0191 | 0.0248 |
-| SASRec (BCE) | 0.0156 | 0.0291 | 0.0085 | 0.0128 |
-| HSTU (CE) | 0.0283 | 0.0439 | 0.0182 | 0.0232 |
-| HSTU (SS) | 0.0246 | 0.0393 | 0.0143 | 0.0191 |
-| TIGER | 0.0236 | 0.0377 | 0.0150 | 0.0195 |
-| LCRec | 0.0238 | 0.0360 | 0.0159 | 0.0198 |
+| SASRec (CE, 3 seeds) | 0.0313 | 0.0497 | - | 0.0241 |
+| SASRec (BCE, legacy) | 0.0156 | 0.0291 | 0.0085 | 0.0128 |
+| HSTU (CE, 3 seeds) | 0.0234 | 0.0384 | - | 0.0200 |
+| HSTU (SS, corrected local sampler) | pending rerun | pending rerun | pending rerun | pending rerun |
+| TIGER (3 seeds) | 0.0207 | 0.0342 | - | 0.0174 |
+| LCRec † | - | - | - | - |
 
 ### Amazon 2014 Toys
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
-| SASRec (CE) | 0.0613 | 0.0922 | 0.0348 | 0.0448 |
-| SASRec (BCE) | 0.0353 | 0.0594 | 0.0186 | 0.0264 |
-| HSTU (CE) | 0.0611 | 0.0914 | 0.0363 | 0.0461 |
-| HSTU (SS) | 0.0494 | 0.0795 | 0.0277 | 0.0375 |
-| TIGER | 0.0340 | 0.0521 | 0.0214 | 0.0272 |
-| LCRec | 0.0433 | 0.0614 | 0.0310 | 0.0368 |
+| SASRec (CE, 3 seeds) | 0.0610 | 0.0917 | - | 0.0441 |
+| SASRec (BCE, legacy) | 0.0353 | 0.0594 | 0.0186 | 0.0264 |
+| HSTU (CE, 3 seeds) | 0.0438 | 0.0686 | - | 0.0366 |
+| HSTU (SS, corrected local sampler) | pending rerun | pending rerun | pending rerun | pending rerun |
+| TIGER (3 seeds) | 0.0288 | 0.0477 | - | 0.0242 |
+| LCRec † | - | - | - | - |
 
-### Amazon 2014 Home
+### Amazon 2014 Home (legacy snapshot; pending current matrix)
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
@@ -69,8 +81,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | SASRec (BCE) | 0.0081 | 0.0143 | 0.0046 | 0.0066 |
 | HSTU (CE) | 0.0129 | 0.0208 | 0.0084 | 0.0109 |
 | HSTU (SS) | 0.0123 | 0.0193 | 0.0079 | 0.0102 |
-| TIGER | 0.0145 | 0.0231 | 0.0096 | 0.0123 |
-| LCRec | 0.0163 | 0.0234 | 0.0110 | 0.0133 |
+| TIGER † | - | - | - | - |
+| LCRec † | - | - | - | - |
 
 ## Features
 

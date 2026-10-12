@@ -1,492 +1,118 @@
-# TIGER API Reference
+# TIGER API
 
-Detailed API documentation for the Transformer-based generative retrieval model (TIGER).
+This page covers [`genrec/models/tiger.py`](https://github.com/phonism/genrec/blob/main/genrec/models/tiger.py) and [`tiger_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/tiger_trainer.py). See [the model page](../models/tiger.md) for architecture and paper differences.
 
-## Core Classes
+## Implementation and token contract
 
-### Tiger
+`Tiger` wraps the repository's pure-PyTorch [`T5ForConditionalGeneration`](https://github.com/phonism/genrec/blob/main/genrec/modules/t5.py), not a Hugging Face model.
 
-Main TIGER model class.
+For codebook position `c`, code `q_c` in `[0,K-1]` becomes:
 
-```python
-class Tiger(LightningModule):
-    def __init__(
-        self,
-        vocab_size: int,
-        embedding_dim: int = 512,
-        num_heads: int = 8,
-        num_layers: int = 6,
-        attn_dim: int = 2048,
-        dropout: float = 0.1,
-        max_seq_length: int = 1024,
-        learning_rate: float = 1e-4
-    )
+```text
+token = q_c + c * K + 1
 ```
 
-**Parameters:**
-- `vocab_size`: Vocabulary size
-- `embedding_dim`: Embedding dimension
-- `num_heads`: Number of attention heads
-- `num_layers`: Number of Transformer layers
-- `attn_dim`: Attention dimension
-- `dropout`: Dropout probability
-- `max_seq_length`: Maximum sequence length
-- `learning_rate`: Learning rate
+The vocabulary is `C*K+1`; token 0 is padding, decoder start, and EOS. History item codes are flattened, while a target contains exactly `C` offset tokens and no appended EOS.
 
-**Methods:**
+Offset ranges identify codebook positions but are **not** enforced during generation. Current TIGER has no logits mask, prefix trie, or constrained-decoding callback; invalid raw SIDs are skipped by the item mapper.
 
-#### forward(input_ids, attention_mask=None)
-
-Forward pass computation.
-
-```python
-def forward(
-    self, 
-    input_ids: torch.Tensor, 
-    attention_mask: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: Input sequence (batch_size, seq_len)
-        attention_mask: Attention mask (batch_size, seq_len)
-    
-    Returns:
-        logits: Output logits (batch_size, seq_len, vocab_size)
-    """
-```
-
-#### generate(input_ids, max_length=50, temperature=1.0, top_k=None, top_p=None)
-
-Generate recommendation sequences.
-
-```python
-def generate(
-    self,
-    input_ids: torch.Tensor,
-    max_length: int = 50,
-    temperature: float = 1.0,
-    top_k: Optional[int] = None,
-    top_p: Optional[float] = None
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: Input sequence
-        max_length: Maximum generation length
-        temperature: Temperature parameter
-        top_k: Top-k sampling
-        top_p: Top-p sampling
-    
-    Returns:
-        generated: Generated sequence
-    """
-```
-
-#### generate_with_trie(input_ids, trie, max_length=50)
-
-Generate with Trie constraints.
-
-```python
-def generate_with_trie(
-    self,
-    input_ids: torch.Tensor,
-    trie: TrieNode,
-    max_length: int = 50
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: Input sequence
-        trie: Trie constraint structure
-        max_length: Maximum generation length
-    
-    Returns:
-        generated: Constrained generated sequence
-    """
-```
-
-## Component Classes
-
-### TransformerBlock
-
-Transformer block implementation.
-
-```python
-class TransformerBlock(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        attn_dim: int,
-        dropout: float = 0.1
-    )
-```
-
-### MultiHeadAttention
-
-Multi-head attention mechanism.
-
-```python
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        dropout: float = 0.1
-    )
-```
-
-### PositionalEncoding
-
-Positional encoding.
-
-```python
-class PositionalEncoding(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        max_seq_length: int = 5000
-    )
-```
-
-## Data Structures
-
-### TrieNode
-
-Trie node for constrained generation.
-
-```python
-class TrieNode(defaultdict):
-    def __init__(self):
-        super().__init__(TrieNode)
-        self.is_end = False
-        
-    def add_sequence(self, sequence: List[int]):
-        """Add sequence to Trie"""
-        node = self
-        for token in sequence:
-            node = node[token]
-        node.is_end = True
-        
-    def get_valid_tokens(self) -> List[int]:
-        """Get valid tokens at current node"""
-        return list(self.keys())
-```
-
-### Build Trie
-
-```python
-def build_trie(valid_sequences: List[List[int]]) -> TrieNode:
-    """Build Trie of valid sequences"""
-    root = TrieNode()
-    for sequence in valid_sequences:
-        root.add_sequence(sequence)
-    return root
-```
-
-## Training Interface
-
-### Training Step
-
-```python
-def training_step(self, batch, batch_idx):
-    """Training step"""
-    input_ids = batch['input_ids']
-    labels = batch['labels']
-    attention_mask = batch.get('attention_mask', None)
-    
-    # Forward pass
-    logits = self(input_ids, attention_mask)
-    
-    # Compute loss
-    shift_logits = logits[..., :-1, :].contiguous()
-    shift_labels = labels[..., 1:].contiguous()
-    
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    loss = loss_fn(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1)
-    )
-    
-    # Log metrics
-    self.log('train_loss', loss)
-    
-    return loss
-```
-
-### Validation Step
-
-```python
-def validation_step(self, batch, batch_idx):
-    """Validation step"""
-    input_ids = batch['input_ids']
-    labels = batch['labels']
-    attention_mask = batch.get('attention_mask', None)
-    
-    # Forward pass
-    logits = self(input_ids, attention_mask)
-    
-    # Compute loss
-    shift_logits = logits[..., :-1, :].contiguous()
-    shift_labels = labels[..., 1:].contiguous()
-    
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    loss = loss_fn(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1)
-    )
-    
-    # Log metrics
-    self.log('val_loss', loss)
-    
-    return loss
-```
-
-## Inference Interface
-
-### Batch Generation
-
-```python
-def batch_generate(
-    model: Tiger,
-    input_sequences: List[torch.Tensor],
-    max_length: int = 50,
-    device: str = 'cuda'
-) -> List[torch.Tensor]:
-    """Batch generation for recommendations"""
-    model.eval()
-    model.to(device)
-    
-    results = []
-    
-    with torch.no_grad():
-        for input_seq in input_sequences:
-            input_seq = input_seq.to(device)
-            generated = model.generate(input_seq, max_length=max_length)
-            results.append(generated.cpu())
-    
-    return results
-```
-
-### Constrained Generation
-
-```python
-def constrained_generate(
-    model: Tiger,
-    input_ids: torch.Tensor,
-    valid_item_sequences: List[List[int]],
-    max_length: int = 50
-) -> torch.Tensor:
-    """Constrained generation for recommendations"""
-    # Build Trie
-    trie = build_trie(valid_item_sequences)
-    
-    # Constrained generation
-    return model.generate_with_trie(input_ids, trie, max_length)
-```
-
-## Evaluation Interface
-
-### Top-K Recommendation Evaluation
-
-```python
-def evaluate_recommendation(
-    model: Tiger,
-    test_dataloader: DataLoader,
-    k_values: List[int] = [5, 10, 20],
-    device: str = 'cuda'
-) -> Dict[str, float]:
-    """Evaluate recommendation performance"""
-    model.eval()
-    model.to(device)
-    
-    all_predictions = []
-    all_targets = []
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            targets = batch['targets']
-            
-            # Generate recommendations
-            generated = model.generate(input_ids, max_length=50)
-            
-            all_predictions.extend(generated.cpu().tolist())
-            all_targets.extend(targets.tolist())
-    
-    # Compute metrics
-    metrics = {}
-    for k in k_values:
-        recall_k = compute_recall_at_k(all_predictions, all_targets, k)
-        ndcg_k = compute_ndcg_at_k(all_predictions, all_targets, k)
-        
-        metrics[f'recall@{k}'] = recall_k
-        metrics[f'ndcg@{k}'] = ndcg_k
-    
-    return metrics
-```
-
-### Perplexity Evaluation
-
-```python
-def evaluate_perplexity(
-    model: Tiger,
-    test_dataloader: DataLoader,
-    device: str = 'cuda'
-) -> float:
-    """Evaluate perplexity"""
-    model.eval()
-    model.to(device)
-    
-    total_loss = 0
-    total_tokens = 0
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            attention_mask = batch.get('attention_mask', None)
-            
-            logits = model(input_ids, attention_mask)
-            
-            # Compute loss
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
-            loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction='sum')
-            loss = loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
-            
-            # Count valid tokens
-            valid_tokens = (shift_labels != -100).sum()
-            
-            total_loss += loss.item()
-            total_tokens += valid_tokens.item()
-    
-    avg_loss = total_loss / total_tokens
-    perplexity = math.exp(avg_loss)
-    
-    return perplexity
-```
-
-## Utility Functions
-
-### Sequence Processing
-
-```python
-def pad_sequences(
-    sequences: List[torch.Tensor],
-    pad_token_id: int = 0,
-    max_length: Optional[int] = None
-) -> torch.Tensor:
-    """Pad sequences to same length"""
-    if max_length is None:
-        max_length = max(len(seq) for seq in sequences)
-    
-    padded = []
-    for seq in sequences:
-        if len(seq) < max_length:
-            pad_length = max_length - len(seq)
-            padded_seq = torch.cat([
-                seq, 
-                torch.full((pad_length,), pad_token_id, dtype=seq.dtype)
-            ])
-        else:
-            padded_seq = seq[:max_length]
-        padded.append(padded_seq)
-    
-    return torch.stack(padded)
-```
-
-### Sampling Strategies
-
-```python
-def top_k_top_p_sampling(
-    logits: torch.Tensor,
-    top_k: Optional[int] = None,
-    top_p: Optional[float] = None,
-    temperature: float = 1.0
-) -> torch.Tensor:
-    """Top-k and top-p sampling"""
-    logits = logits / temperature
-    
-    # Top-k sampling
-    if top_k is not None:
-        top_k = min(top_k, logits.size(-1))
-        values, indices = torch.topk(logits, top_k)
-        logits[logits < values[..., [-1]]] = float('-inf')
-    
-    # Top-p sampling
-    if top_p is not None:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-        
-        # Find positions where cumulative probability exceeds top_p
-        sorted_indices_to_remove = cumulative_probs > top_p
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-        sorted_indices_to_remove[..., 0] = 0
-        
-        indices_to_remove = sorted_indices[sorted_indices_to_remove]
-        logits[indices_to_remove] = float('-inf')
-    
-    # Sampling
-    probs = F.softmax(logits, dim=-1)
-    next_token = torch.multinomial(probs, 1)
-    
-    return next_token
-```
-
-## Usage Examples
-
-### Basic Training
+## Model
 
 ```python
 from genrec.models.tiger import Tiger
-from genrec.data.p5_amazon import P5AmazonSequenceDataset
-import pytorch_lightning as pl
-
-# Create dataset
-dataset = P5AmazonSequenceDataset(
-    root="dataset/amazon",
-    split="beauty",
-    train_test_split="train",
-    pretrained_rqvae_path="checkpoints/rqvae.ckpt"
-)
-
-dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-
-# Create model
-model = Tiger(
-    vocab_size=1024,
-    embedding_dim=512,
-    num_heads=8,
-    num_layers=6,
-    learning_rate=1e-4
-)
-
-# Train model
-trainer = pl.Trainer(max_epochs=50, gpus=1)
-trainer.fit(model, dataloader)
+model = Tiger(config: dict[str, Any])
 ```
 
-### Recommendation Generation
+Recognized keys are `num_layers=4`, `num_decoder_layers=4`, `d_model=128`, `d_ff=1024`, `num_heads=6`, `d_kv=64`, `dropout_rate=0.1`, `vocab_size=769`, `pad_token_id=0`, `eos_token_id=0`, `feed_forward_proj="relu"`, and `sem_id_dim=3`. Unknown keys are ignored. The constructor cannot verify `vocab_size == sem_id_dim * codebook_size + 1` because codebook size is held by the trainer.
 
 ```python
-# Load trained model
-model = Tiger.load_from_checkpoint("checkpoints/tiger.ckpt")
-model.eval()
+model.num_parameters -> tuple[int, int]  # all trainable, input-embedding trainable
 
-# User history sequence
-user_sequence = torch.tensor([10, 25, 67, 89])  # Semantic ID sequence
-
-# Generate recommendations
-with torch.no_grad():
-    recommendations = model.generate(
-        user_sequence.unsqueeze(0),
-        max_length=20,
-        temperature=0.8,
-        top_k=50
-    )
-    
-print(f"Recommendations: {recommendations.squeeze().tolist()}")
+loss, logits = model(
+    input_ids: LongTensor[B,L],
+    attention_mask: Tensor[B,L] | None,
+    labels: LongTensor[B,C] | None,
+)
 ```
+
+With labels, loss is scalar cross entropy ignoring `-100` and logits are `[B,C,V]`. `Tiger.forward` does not expose decoder inputs, so a label-free call normally fails in the underlying decoder.
+
+```python
+predictions = model.generate(
+    input_ids: LongTensor[B,L],
+    attention_mask: Tensor[B,L] | None = None,
+    num_beams: int = 20,
+)
+```
+
+Generation sets `max_length=C+1` and `num_return_sequences=num_beams`. Beam output is `[B*num_beams,C+1]`; column 0 is decoder-start token 0 and must be removed. Greedy generation may stop early and return fewer than `C+1` columns. There is no sampling, length penalty, repetition penalty, EOS filtering, or prefix constraint.
+
+## Collation
+
+```python
+from genrec.trainers.tiger_trainer import t5_collate
+
+t5_collate(batch: list[SeqData], codebook_size=256,
+           sem_id_dim=3, max_history_tokens=60) -> dict[str, Tensor]
+```
+
+The result contains:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `input_ids` | `[B,max_history_tokens]` | offset history tokens, tail-truncated and left-padded |
+| `attention_mask` | `[B,max_history_tokens]` | 1 for history, 0 for padding |
+| `labels` | `[B,C]` | offset target tokens |
+| `raw_targets` | `[B,C]` | target SID before offsets |
+| `target_items` | `[B]` | catalog item ID |
+
+All targets must have equal length. Keep `max_history_tokens` divisible by `C` or truncation can begin in the middle of an item's SID. The collator does not validate raw code ranges.
+
+Legacy diagnostic helpers `calculate_pos_index(preds, labels, maxk=20)`, `recall_at_k`, and `ndcg_at_k` compare exact SID tuples. `maxk` is unused, and the current primary evaluator uses `TopKAccumulator` instead.
+
+## Trainer
+
+```python
+@gin.configurable
+def train(
+    epochs=200, batch_size=256, infer_batch_size=96,
+    learning_rate=1e-4, weight_decay=0.0,
+    dataset_folder="dataset/amazon", save_dir_root="out/tiger/",
+    dataset=None, wandb_logging=True, wandb_project="tiger_training",
+    wandb_log_interval=10,
+    num_layers=4, num_decoder_layers=4,
+    d_model=128, d_ff=1024, num_heads=6, d_kv=64,
+    dropout_rate=0.1, feed_forward_proj="relu",
+    codebook_size=256, sem_id_dim=3, max_seq_len=20,
+    pretrained_rqvae_path="./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt",
+    lr_schedule="none", num_warmup_steps=0, beam_size=30,
+    early_stop_patience=10, eval_test_every_epoch=2,
+    eval_valid_every_n_epochs=1, seed=42,
+) -> None
+```
+
+There is no `TIGERTrainer` class. This function runs single-process PyTorch, chooses CUDA/CPU itself, and does not use Accelerate.
+
+The injected class is constructed for train/valid/test with `root`, `train_test_split`, `max_seq_len`, and `pretrained_rqvae_path`. It must return `SeqData` and expose `sem_ids_list`, `sequences`, and `evaluation_protocol`. The standard `AmazonSeqDataset` RQ-VAE geometry is bound separately in Gin and must match its checkpoint.
+
+## Evaluation semantics
+
+Evaluation records two streams:
+
+1. exact SID tuple metrics before collision resolution, as diagnostics;
+2. item-level Recall/NDCG after `SemanticIdItemMapper` resolves collisions with training-prefix popularity and deduplicates items.
+
+Early stopping and the main result use item-level `Recall@10`. A negative `target_item` raises `ValueError`. Only K=5 and 10 are calculated; a beam smaller than 10 yields fewer available candidates.
+
+`lr_schedule="cosine"` enables step-wise cosine decay and optional linear warmup; other values use no scheduler. Validation runs at epoch 0 and then by its interval. A model is saved only on a strict Recall@10 improvement over the initial zero, so an all-zero run may never create `best_model.pt`.
+
+## Run and artifacts
+
+```bash
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
+```
+
+`best_model.pt` is only the raw model `state_dict`; reconstruct the identical `Tiger` config before loading. The directory also contains timestamped logs and `results.json`, whose main metrics are item-level and whose extra fields retain SID diagnostics and collision-resolution metadata.
+
+There is no `generate_with_trie()`, `TIGERTrainer`, or generic `Trainer.fit()`. Also keep `AmazonSeqDataset.add_disambiguation=False` with the standard three-code TIGER config; a fourth suffix code would misalign `sem_id_dim=3`.

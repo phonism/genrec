@@ -1,492 +1,257 @@
-# TIGER API 参考
+# TIGER API
 
-基于 Transformer 的生成式检索模型 (TIGER) 的详细 API 文档。
+本页描述当前 [`genrec/models/tiger.py`](https://github.com/phonism/genrec/blob/main/genrec/models/tiger.py) 与 [`tiger_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/tiger_trainer.py) 的精确调用接口。架构、论文和实现差异见 [TIGER 模型说明](../models/tiger.md)。
 
-## 核心类
+## 实现边界
 
-### Tiger
+`Tiger` 包装的是仓库内 [`genrec.modules.t5.T5ForConditionalGeneration`](https://github.com/phonism/genrec/blob/main/genrec/modules/t5.py)，不是 Hugging Face 类。源码顶部和旧配置注释仍写有 “HuggingFace T5”，但实际 import 是本地纯 PyTorch T5；它只提供当前训练所需的 forward、greedy/beam search 与 KV cache。
 
-主要的 TIGER 模型类。
+## Token 约定
 
-```python
-class Tiger(LightningModule):
-    def __init__(
-        self,
-        vocab_size: int,
-        embedding_dim: int = 512,
-        num_heads: int = 8,
-        num_layers: int = 6,
-        attn_dim: int = 2048,
-        dropout: float = 0.1,
-        max_seq_length: int = 1024,
-        learning_rate: float = 1e-4
-    )
+假设每个 item 有 `C=sem_id_dim` 个 code，每个 codebook 大小为 `K=codebook_size`。第 `c` 个 codebook 的原始 code `q_c ∈ [0,K-1]` 被编码为：
+
+```text
+token = q_c + c * K + 1
 ```
 
-**参数:**
-- `vocab_size`: 词汇表大小
-- `embedding_dim`: 嵌入维度
-- `num_heads`: 注意力头数
-- `num_layers`: Transformer 层数
-- `attn_dim`: 注意力维度
-- `dropout`: Dropout 概率
-- `max_seq_length`: 最大序列长度
-- `learning_rate`: 学习率
+因此词表大小是 `C*K+1`，token `0` 同时作为 padding、decoder start 和 EOS。history 是多个 item 的 code 依次展平后的 token 流；target label 是一个 item 的 `C` 个 offset token，不额外附加 EOS。
 
-**方法:**
+这个 offset 只提供 codebook 位置分区；当前 generation 没有 logits mask、trie 或 constrained decoding。模型可在任意位置生成词表内任意 token，解码后超出 `[0,K-1]` 的 raw code 会形成未知 SID，item mapper 会跳过它。
 
-#### forward(input_ids, attention_mask=None)
-
-前向传播计算。
-
-```python
-def forward(
-    self, 
-    input_ids: torch.Tensor, 
-    attention_mask: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: 输入序列 (batch_size, seq_len)
-        attention_mask: 注意力掩码 (batch_size, seq_len)
-    
-    Returns:
-        logits: 输出 logits (batch_size, seq_len, vocab_size)
-    """
-```
-
-#### generate(input_ids, max_length=50, temperature=1.0, top_k=None, top_p=None)
-
-生成推荐序列。
-
-```python
-def generate(
-    self,
-    input_ids: torch.Tensor,
-    max_length: int = 50,
-    temperature: float = 1.0,
-    top_k: Optional[int] = None,
-    top_p: Optional[float] = None
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: 输入序列
-        max_length: 最大生成长度
-        temperature: 温度参数
-        top_k: Top-k 采样
-        top_p: Top-p 采样
-    
-    Returns:
-        generated: 生成的序列
-    """
-```
-
-#### generate_with_trie(input_ids, trie, max_length=50)
-
-使用 Trie 约束生成。
-
-```python
-def generate_with_trie(
-    self,
-    input_ids: torch.Tensor,
-    trie: TrieNode,
-    max_length: int = 50
-) -> torch.Tensor:
-    """
-    Args:
-        input_ids: 输入序列
-        trie: Trie 约束结构
-        max_length: 最大生成长度
-    
-    Returns:
-        generated: 约束生成的序列
-    """
-```
-
-## 组件类
-
-### TransformerBlock
-
-Transformer 块实现。
-
-```python
-class TransformerBlock(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        attn_dim: int,
-        dropout: float = 0.1
-    )
-```
-
-### MultiHeadAttention
-
-多头注意力机制。
-
-```python
-class MultiHeadAttention(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        dropout: float = 0.1
-    )
-```
-
-### PositionalEncoding
-
-位置编码。
-
-```python
-class PositionalEncoding(nn.Module):
-    def __init__(
-        self,
-        embedding_dim: int,
-        max_seq_length: int = 5000
-    )
-```
-
-## 数据结构
-
-### TrieNode
-
-Trie 节点用于约束生成。
-
-```python
-class TrieNode(defaultdict):
-    def __init__(self):
-        super().__init__(TrieNode)
-        self.is_end = False
-        
-    def add_sequence(self, sequence: List[int]):
-        """添加序列到 Trie"""
-        node = self
-        for token in sequence:
-            node = node[token]
-        node.is_end = True
-        
-    def get_valid_tokens(self) -> List[int]:
-        """获取当前节点的有效 token"""
-        return list(self.keys())
-```
-
-### 构建 Trie
-
-```python
-def build_trie(valid_sequences: List[List[int]]) -> TrieNode:
-    """构建有效序列的 Trie"""
-    root = TrieNode()
-    for sequence in valid_sequences:
-        root.add_sequence(sequence)
-    return root
-```
-
-## 训练接口
-
-### 训练步骤
-
-```python
-def training_step(self, batch, batch_idx):
-    """训练步骤"""
-    input_ids = batch['input_ids']
-    labels = batch['labels']
-    attention_mask = batch.get('attention_mask', None)
-    
-    # 前向传播
-    logits = self(input_ids, attention_mask)
-    
-    # 计算损失
-    shift_logits = logits[..., :-1, :].contiguous()
-    shift_labels = labels[..., 1:].contiguous()
-    
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    loss = loss_fn(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1)
-    )
-    
-    # 记录指标
-    self.log('train_loss', loss)
-    
-    return loss
-```
-
-### 验证步骤
-
-```python
-def validation_step(self, batch, batch_idx):
-    """验证步骤"""
-    input_ids = batch['input_ids']
-    labels = batch['labels']
-    attention_mask = batch.get('attention_mask', None)
-    
-    # 前向传播
-    logits = self(input_ids, attention_mask)
-    
-    # 计算损失
-    shift_logits = logits[..., :-1, :].contiguous()
-    shift_labels = labels[..., 1:].contiguous()
-    
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-100)
-    loss = loss_fn(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1)
-    )
-    
-    # 记录指标
-    self.log('val_loss', loss)
-    
-    return loss
-```
-
-## 推理接口
-
-### 批量生成
-
-```python
-def batch_generate(
-    model: Tiger,
-    input_sequences: List[torch.Tensor],
-    max_length: int = 50,
-    device: str = 'cuda'
-) -> List[torch.Tensor]:
-    """批量生成推荐"""
-    model.eval()
-    model.to(device)
-    
-    results = []
-    
-    with torch.no_grad():
-        for input_seq in input_sequences:
-            input_seq = input_seq.to(device)
-            generated = model.generate(input_seq, max_length=max_length)
-            results.append(generated.cpu())
-    
-    return results
-```
-
-### 约束生成
-
-```python
-def constrained_generate(
-    model: Tiger,
-    input_ids: torch.Tensor,
-    valid_item_sequences: List[List[int]],
-    max_length: int = 50
-) -> torch.Tensor:
-    """约束生成推荐"""
-    # 构建 Trie
-    trie = build_trie(valid_item_sequences)
-    
-    # 约束生成
-    return model.generate_with_trie(input_ids, trie, max_length)
-```
-
-## 评估接口
-
-### Top-K 推荐评估
-
-```python
-def evaluate_recommendation(
-    model: Tiger,
-    test_dataloader: DataLoader,
-    k_values: List[int] = [5, 10, 20],
-    device: str = 'cuda'
-) -> Dict[str, float]:
-    """评估推荐性能"""
-    model.eval()
-    model.to(device)
-    
-    all_predictions = []
-    all_targets = []
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            targets = batch['targets']
-            
-            # 生成推荐
-            generated = model.generate(input_ids, max_length=50)
-            
-            all_predictions.extend(generated.cpu().tolist())
-            all_targets.extend(targets.tolist())
-    
-    # 计算指标
-    metrics = {}
-    for k in k_values:
-        recall_k = compute_recall_at_k(all_predictions, all_targets, k)
-        ndcg_k = compute_ndcg_at_k(all_predictions, all_targets, k)
-        
-        metrics[f'recall@{k}'] = recall_k
-        metrics[f'ndcg@{k}'] = ndcg_k
-    
-    return metrics
-```
-
-### 困惑度评估
-
-```python
-def evaluate_perplexity(
-    model: Tiger,
-    test_dataloader: DataLoader,
-    device: str = 'cuda'
-) -> float:
-    """评估困惑度"""
-    model.eval()
-    model.to(device)
-    
-    total_loss = 0
-    total_tokens = 0
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            input_ids = batch['input_ids'].to(device)
-            labels = batch['labels'].to(device)
-            attention_mask = batch.get('attention_mask', None)
-            
-            logits = model(input_ids, attention_mask)
-            
-            # 计算损失
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            
-            loss_fn = nn.CrossEntropyLoss(ignore_index=-100, reduction='sum')
-            loss = loss_fn(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1)
-            )
-            
-            # 统计有效 token 数量
-            valid_tokens = (shift_labels != -100).sum()
-            
-            total_loss += loss.item()
-            total_tokens += valid_tokens.item()
-    
-    avg_loss = total_loss / total_tokens
-    perplexity = math.exp(avg_loss)
-    
-    return perplexity
-```
-
-## 工具函数
-
-### 序列处理
-
-```python
-def pad_sequences(
-    sequences: List[torch.Tensor],
-    pad_token_id: int = 0,
-    max_length: Optional[int] = None
-) -> torch.Tensor:
-    """填充序列到相同长度"""
-    if max_length is None:
-        max_length = max(len(seq) for seq in sequences)
-    
-    padded = []
-    for seq in sequences:
-        if len(seq) < max_length:
-            pad_length = max_length - len(seq)
-            padded_seq = torch.cat([
-                seq, 
-                torch.full((pad_length,), pad_token_id, dtype=seq.dtype)
-            ])
-        else:
-            padded_seq = seq[:max_length]
-        padded.append(padded_seq)
-    
-    return torch.stack(padded)
-```
-
-### 采样策略
-
-```python
-def top_k_top_p_sampling(
-    logits: torch.Tensor,
-    top_k: Optional[int] = None,
-    top_p: Optional[float] = None,
-    temperature: float = 1.0
-) -> torch.Tensor:
-    """Top-k 和 Top-p 采样"""
-    logits = logits / temperature
-    
-    # Top-k 采样
-    if top_k is not None:
-        top_k = min(top_k, logits.size(-1))
-        values, indices = torch.topk(logits, top_k)
-        logits[logits < values[..., [-1]]] = float('-inf')
-    
-    # Top-p 采样
-    if top_p is not None:
-        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-        
-        # 找到累积概率超过 top_p 的位置
-        sorted_indices_to_remove = cumulative_probs > top_p
-        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-        sorted_indices_to_remove[..., 0] = 0
-        
-        indices_to_remove = sorted_indices[sorted_indices_to_remove]
-        logits[indices_to_remove] = float('-inf')
-    
-    # 采样
-    probs = F.softmax(logits, dim=-1)
-    next_token = torch.multinomial(probs, 1)
-    
-    return next_token
-```
-
-## 使用示例
-
-### 基本训练
+## `Tiger`
 
 ```python
 from genrec.models.tiger import Tiger
-from genrec.data.p5_amazon import P5AmazonSequenceDataset
-import pytorch_lightning as pl
 
-# 创建数据集
-dataset = P5AmazonSequenceDataset(
-    root="dataset/amazon",
-    split="beauty",
-    train_test_split="train",
-    pretrained_rqvae_path="checkpoints/rqvae.ckpt"
-)
-
-dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
-
-# 创建模型
-model = Tiger(
-    vocab_size=1024,
-    embedding_dim=512,
-    num_heads=8,
-    num_layers=6,
-    learning_rate=1e-4
-)
-
-# 训练模型
-trainer = pl.Trainer(max_epochs=50, gpus=1)
-trainer.fit(model, dataloader)
+Tiger(config: dict[str, Any])
 ```
 
-### 推荐生成
+识别的 config 键及默认值：
+
+| 键 | 默认值 | 用途 |
+|---|---:|---|
+| `num_layers` | `4` | encoder 层数 |
+| `num_decoder_layers` | `4` | decoder 层数 |
+| `d_model` | `128` | hidden size |
+| `d_ff` | `1024` | FFN size |
+| `num_heads` | `6` | attention head 数 |
+| `d_kv` | `64` | 每个 head 的 K/V 维度 |
+| `dropout_rate` | `0.1` | T5 dropout |
+| `vocab_size` | `769` | 默认对应 `3*256+1` |
+| `pad_token_id` | `0` | padding 和 decoder start |
+| `eos_token_id` | `0` | EOS |
+| `feed_forward_proj` | `"relu"` | `relu` 或本地 T5 支持的 gated/activation 名称 |
+| `sem_id_dim` | `3` | generation 的 code 数 |
+
+未知键被忽略。构造函数不校验 `vocab_size == sem_id_dim*codebook_size+1`，因为 `codebook_size` 根本不是模型参数；trainer 负责保持一致。
+
+### 参数统计
 
 ```python
-# 加载训练好的模型
-model = Tiger.load_from_checkpoint("checkpoints/tiger.ckpt")
-model.eval()
-
-# 用户历史序列
-user_sequence = torch.tensor([10, 25, 67, 89])  # 语义ID序列
-
-# 生成推荐
-with torch.no_grad():
-    recommendations = model.generate(
-        user_sequence.unsqueeze(0),
-        max_length=20,
-        temperature=0.8,
-        top_k=50
-    )
-    
-print(f"Recommendations: {recommendations.squeeze().tolist()}")
+model.num_parameters -> tuple[int, int]
 ```
+
+返回 `(全部可训练参数量, input embedding 可训练参数量)`。本地 T5 的 input embedding、decoder embedding 与 LM head 权重共享。
+
+### 训练前向
+
+```python
+loss, logits = model(
+    input_ids: LongTensor,             # [B, L]
+    attention_mask: Tensor | None,     # [B, L]，1=有效、0=padding
+    labels: LongTensor | None,         # [B, C]
+)
+```
+
+- 传入 labels：`loss` 是忽略 label `-100` 的 scalar cross entropy，`logits` 为 `[B,C,V]`。
+- `labels=None` 时还需要底层 decoder input；`Tiger.forward()` 没有暴露 `decoder_input_ids`，所以这个入口实际用于有 labels 的训练。直接无 labels 调用通常会在底层 decoder 失败。
+- `Tiger` 不检查 label 长度是否等于 `sem_id_dim`。
+
+### 生成
+
+```python
+predictions = model.generate(
+    input_ids: LongTensor,             # [B, L]
+    attention_mask: Tensor | None = None,
+    num_beams: int = 20,
+)
+```
+
+模型调用本地 T5：
+
+```python
+max_length = sem_id_dim + 1
+num_return_sequences = num_beams
+```
+
+当 `num_beams > 1` 时返回固定形状 `[B*num_beams, C+1]`；第 0 列是 decoder start token `0`，trainer 在评测前用 `preds[:,1:]` 删除它。当 `num_beams=1` 时走 greedy 分支；如果所有样本提前生成 EOS `0`，长度可能短于 `C+1`，不能假定固定 shape。
+
+beam search 当前不执行 length penalty、EOS filtering、sampling、repetition penalty 或 prefix constraint；`num_beams < 1` 没有显式校验，会由后续 Tensor 操作失败。
+
+## `t5_collate`
+
+```python
+from genrec.trainers.tiger_trainer import t5_collate
+
+t5_collate(
+    batch: list[SeqData],
+    codebook_size: int = 256,
+    sem_id_dim: int = 3,
+    max_history_tokens: int = 60,
+) -> dict[str, Tensor]
+```
+
+输入 [`SeqData`](base-dataset.md#shared-sample-types) 的 schema：
+
+```python
+SeqData(
+    user_id: int,
+    item_ids: list[int],    # history raw SID，已按 item 展平
+    target_ids: list[int],  # target raw SID，长度 C
+    target_item: int = -1,  # 原始 catalog item id
+)
+```
+
+返回：
+
+| key | dtype / shape | 说明 |
+|---|---|---|
+| `input_ids` | long `[B,max_history_tokens]` | offset token；超长时保留尾部，左侧补 0 |
+| `attention_mask` | long `[B,max_history_tokens]` | history 位置为 1，padding 为 0 |
+| `labels` | long `[B,C]` | offset target token |
+| `raw_targets` | long `[B,C]` | 未 offset 的 target SID |
+| `target_items` | long `[B]` | 原始 catalog item ID |
+
+所有样本的 `target_ids` 必须等长，否则 `torch.tensor(label_list)` 会报错。`max_history_tokens` 应是 item history 上限乘 `sem_id_dim`；若截断值不是 `C` 的倍数，可能从一个 item 的 SID 中间截断。collate 不验证原始 code 范围。
+
+## 评测 helper
+
+[`tiger_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/tiger_trainer.py) 还保留三项 SID 位置 helper：
+
+```python
+calculate_pos_index(preds, labels, maxk=20) -> BoolTensor  # [B,K,C]、[B,C] -> [B,K]
+recall_at_k(pos_index, k) -> float
+ndcg_at_k(pos_index, k) -> float
+```
+
+`calculate_pos_index()` 只保留每行第一个匹配；参数 `maxk` 当前未使用。当前 trainer 的主评测路径不调用这些 helper，而使用 `TopKAccumulator`。
+
+## Trainer
+
+```python
+@gin.configurable
+def train(
+    epochs=200,
+    batch_size=256,
+    infer_batch_size=96,
+    learning_rate=1e-4,
+    weight_decay=0.0,
+    dataset_folder="dataset/amazon",
+    save_dir_root="out/tiger/",
+    dataset=None,
+    wandb_logging=True,
+    wandb_project="tiger_training",
+    wandb_log_interval=10,
+    num_layers=4,
+    num_decoder_layers=4,
+    d_model=128,
+    d_ff=1024,
+    num_heads=6,
+    d_kv=64,
+    dropout_rate=0.1,
+    feed_forward_proj="relu",
+    codebook_size=256,
+    sem_id_dim=3,
+    max_seq_len=20,
+    pretrained_rqvae_path="./out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt",
+    lr_schedule="none",
+    num_warmup_steps=0,
+    beam_size=30,
+    early_stop_patience=10,
+    eval_test_every_epoch=2,
+    eval_valid_every_n_epochs=1,
+    seed=42,
+) -> None
+```
+
+trainer 是普通函数，不存在 `TIGERTrainer` 类。它自行选择 `cuda`/`cpu`，不使用 Accelerate，也不支持多进程同步。dataset 必须能按下列形式构造：
+
+```python
+dataset(
+    root=dataset_folder,
+    train_test_split="train" | "valid" | "test",
+    max_seq_len=max_seq_len,
+    pretrained_rqvae_path=pretrained_rqvae_path,
+)
+```
+
+并提供：
+
+- `__getitem__() -> SeqData`；
+- `sem_ids_list`：按 item ID 排列的 raw SID；
+- `sequences`：按 user 排列的 raw item ID 序列；
+- `evaluation_protocol` 字符串。
+
+仓库配置使用 [`AmazonSeqDataset`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon.py)。其 `rqvae_input_dim/embed_dim/hidden_dims/codebook_size/n_layers` 必须与 checkpoint 一致；这些参数通过 Gin 类绑定，而不是传给 `train()`。
+
+## 评测语义
+
+每次评测有两条指标流：
+
+1. offset token 去掉 start 后直接比较，得到 SID-level pre-dedup 诊断；
+2. 还原 raw SID，经 `SemanticIdItemMapper` 用训练 prefix 的流行度把每个 SID 确定性解析为一个 item，去重后计算 item-level Recall/NDCG。
+
+主验证/early stop 使用 item-level `Recall@10`。`target_item < 0` 会抛 `ValueError`，因此使用默认 `SeqData.target_item=-1` 的旧数据适配器不能静默参与评测。指标只计算 K=5、10；`beam_size` 小于 10 时 `TopKAccumulator` 会按现有候选数截断。
+
+## Scheduler 与停止条件
+
+- `lr_schedule="none"`：普通 Adam，无 scheduler。
+- `lr_schedule="cosine"`：按 batch step 的 cosine；`num_warmup_steps>0` 时先 `LinearLR(start_factor=0.01)`。
+- 其他字符串也走无 scheduler 分支，不抛错。
+- 每 `eval_valid_every_n_epochs` 做验证，epoch 0 无条件验证。
+- 仅严格大于历史最佳的 item Recall@10 才保存。默认初值为 0；若第一次及以后都恰为 0，不会产生 `best_model.pt`。
+- `early_stop_counter` 只在实际验证的 epoch 增加；达到 patience 后停止。
+- `wandb_log_interval` 当前未在循环中使用；W&B 按 epoch 写聚合日志，不按该 step 间隔写。
+
+## 运行与产物
+
+先训练匹配的 RQ-VAE，再训练 TIGER：
+
+```bash
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
+```
+
+覆盖示例：
+
+```bash
+python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin \
+  --split sports \
+  --gin 'train.wandb_logging=False' \
+  --gin 'train.beam_size=20'
+```
+
+`save_dir_root` 中的主要产物：
+
+| 文件 | 内容 |
+|---|---|
+| `best_model.pt` | 仅 `model.state_dict()`，没有 model config、optimizer、scheduler 或 epoch |
+| `tiger_<timestamp>.log` | train/valid/test 与碰撞解析日志 |
+| `results.json` | 最佳验证 epoch 对应的 item-level test metrics；`extra` 中含 best epoch、SID 参考指标和解析策略 |
+
+加载 `best_model.pt` 时必须用相同 config 重建 `Tiger` 后调用 `load_state_dict()`：
+
+```python
+state = torch.load("out/tiger/amazon/beauty/best_model.pt", map_location="cpu")
+model = Tiger(model_config)
+model.load_state_dict(state)
+```
+
+## 常见误用
+
+- 不存在旧文档中的 `generate_with_trie()`、`TIGERTrainer` 或通用 `Trainer.fit()`。
+- 当前 `Tiger.generate()` 没有 trie/constrained decoding；不要把 offset token 误称为合法性约束。
+- generation 输出含开头的 decoder start `0`；还原 SID 前必须删除第一列并减去每个 codebook 的 offset。
+- `best_model.pt` 不是完整恢复训练 checkpoint。
+- `AmazonSeqDataset.add_disambiguation=True` 会给 SID 增加第 4 个 suffix；若 trainer 仍配置 `sem_id_dim=3` 会错位。当前 TIGER Gin 显式设为 `False`。
+- trainer 的评测 autocast 上下文写死为 CUDA bfloat16；无 CUDA 环境虽可构造 CPU device，但这条路径主要按 CUDA 环境设计。

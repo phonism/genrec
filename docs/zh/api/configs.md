@@ -1,533 +1,183 @@
-# 配置管理 API 参考
+# Gin 配置与 CLI API
 
-配置管理类的详细文档，用于管理数据处理和模型训练参数。
+## 配置模型
 
-## 基础配置类
+当前项目使用 [Gin-config](https://github.com/google/gin-config)，没有 `DatasetConfig`、`TextEncodingConfig`、`TrainingConfig` 配置层级，也没有 YAML/JSON 配置 loader。可配置对象直接是带 `@gin.configurable` 的函数或类。
 
-### DatasetConfig
+标准执行链：
 
-数据集基础配置类。
-
-```python
-@dataclass
-class DatasetConfig:
-    root_dir: str
-    split: str = "default"
-    force_reload: bool = False
-    text_config: Optional[TextEncodingConfig] = None
-    sequence_config: Optional[SequenceConfig] = None
-    processing_config: Optional[DataProcessingConfig] = None
-    
-    def __post_init__(self):
-        """初始化后处理"""
-        if self.text_config is None:
-            self.text_config = TextEncodingConfig()
-        if self.sequence_config is None:
-            self.sequence_config = SequenceConfig()
-        if self.processing_config is None:
-            self.processing_config = DataProcessingConfig()
+```text
+python trainer.py CONFIG.gin --split SPLIT --gin BINDING ...
+  -> parse_config()
+  -> 文本替换 {split}
+  -> gin.parse_config(config_content)
+  -> gin.parse_config(cli_bindings)
+  -> 调用 @gin.configurable train 函数
 ```
 
-**参数:**
-- `root_dir`: 数据集根目录
-- `split`: 数据分割标识
-- `force_reload`: 是否强制重新加载
-- `text_config`: 文本编码配置
-- `sequence_config`: 序列处理配置
-- `processing_config`: 数据处理配置
+## `parse_config`
 
-## 文本编码配置
-
-### TextEncodingConfig
-
-文本编码相关配置。
+源文件：[`genrec/modules/utils.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/utils.py)
 
 ```python
-@dataclass
-class TextEncodingConfig:
-    encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    template: str = "Title: {title}; Brand: {brand}; Category: {category}; Price: {price}"
-    batch_size: int = 32
-    max_length: int = 512
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    cache_dir: str = "cache/text_embeddings"
-    normalize_embeddings: bool = True
-    
-    def __post_init__(self):
-        """验证配置参数"""
-        if self.batch_size <= 0:
-            raise ValueError("batch_size must be positive")
-        if self.max_length <= 0:
-            raise ValueError("max_length must be positive")
+parse_config() -> argparse.Namespace
 ```
 
-**参数:**
-- `encoder_model`: 文本编码器模型名称
-- `template`: 文本模板格式
-- `batch_size`: 批处理大小
-- `max_length`: 最大文本长度
-- `device`: 计算设备
-- `cache_dir`: 缓存目录
-- `normalize_embeddings`: 是否标准化嵌入
+位置与选项：
 
-**方法:**
+```text
+config_path             必填 Gin 文件路径
+--split SPLIT           默认 beauty
+--gin BINDING           可重复
+```
 
-#### get_cache_key(split, model_name)
+行为：
 
-生成缓存键。
+1. 读取整个 `config_path`；
+2. 对配置文本做全局字符串替换：`{split}` → `args.split`；
+3. 调用 `gin.parse_config`；
+4. 对每个 `--gin` binding 做同样的 `{split}` 替换，再解析；
+5. 把 `split`、`config_path` 放入进程级 `_RUN_CONTEXT`；
+6. 返回 `argparse.Namespace(config_path, split, gin)`。
 
 ```python
-def get_cache_key(self, split: str, model_name: str = None) -> str:
-    """
-    生成缓存键
-    
-    Args:
-        split: 数据分割
-        model_name: 模型名称
-        
-    Returns:
-        缓存键字符串
-    """
-    if model_name is None:
-        model_name = self.encoder_model
-    return f"{model_name}_{split}_{hash(self.template)}"
+get_run_split(default: str = "unknown") -> str
 ```
 
-#### format_text(item_data)
+返回最近一次 `parse_config()` 解析的 split；在未调用时返回 `default`。它是进程全局上下文，不适合同一进程并发运行两份不同配置。
 
-格式化物品文本。
+文件不存在会抛 `FileNotFoundError`；Gin 语法、未知 selector、重复/非法 binding 由 Gin 抛异常。函数不捕获这些异常，也不自动验证路径、维度或 checkpoint 兼容性。
 
-```python
-def format_text(self, item_data: Dict[str, Any]) -> str:
-    """
-    使用模板格式化物品文本
-    
-    Args:
-        item_data: 物品数据字典
-        
-    Returns:
-        格式化后的文本
-    """
-    try:
-        return self.template.format(**item_data)
-    except KeyError as e:
-        # 处理缺失字段
-        available_fields = set(item_data.keys())
-        template_fields = set(re.findall(r'\{(\w+)\}', self.template))
-        missing_fields = template_fields - available_fields
-        
-        # 用默认值填充缺失字段
-        filled_data = item_data.copy()
-        for field in missing_fields:
-            filled_data[field] = "Unknown"
-            
-        return self.template.format(**filled_data)
+## 命令示例
+
+```bash
+# 基本训练
+python genrec/trainers/sasrec_trainer.py \
+  config/sasrec/amazon.gin --split beauty
+
+# 多个 override 必须重复 --gin
+python genrec/trainers/hstu_trainer.py \
+  config/hstu/amazon.gin --split sports \
+  --gin 'train.epochs=100' \
+  --gin 'train.use_temporal_bias=False'
+
+# 带列表/字符串的 binding；外层用单引号保护 shell
+python genrec/trainers/onerec_sft_trainer.py \
+  config/onerec/amazon/sft.gin --split beauty \
+  --gin 'AmazonOneRecSFTDataset.enabled_tasks=["sidsft","title2sid"]'
 ```
 
-## 序列处理配置
+`{split}` 是纯文本替换，不是 Python format 安全解析。若普通 prompt/正则文本本来包含同名花括号，也会被替换。
 
-### SequenceConfig
+## 配置中的三类绑定
 
-序列处理相关配置。
+### 函数参数
 
-```python
-@dataclass
-class SequenceConfig:
-    max_seq_length: int = 50
-    min_seq_length: int = 3
-    padding_token: int = 0
-    truncate_strategy: str = "recent"  # "recent", "random", "oldest"
-    sequence_stride: int = 1
-    target_offset: int = 1
-    include_timestamps: bool = False
-    time_encoding_dim: int = 32
-    
-    def __post_init__(self):
-        """验证配置参数"""
-        if self.max_seq_length <= self.min_seq_length:
-            raise ValueError("max_seq_length must be greater than min_seq_length")
-        if self.truncate_strategy not in ["recent", "random", "oldest"]:
-            raise ValueError("Invalid truncate_strategy")
-        if self.target_offset <= 0:
-            raise ValueError("target_offset must be positive")
+```gin
+train.epochs = 200
+train.batch_size = 256
 ```
 
-**参数:**
-- `max_seq_length`: 最大序列长度
-- `min_seq_length`: 最小序列长度
-- `padding_token`: 填充标记
-- `truncate_strategy`: 截断策略
-- `sequence_stride`: 序列步长
-- `target_offset`: 目标偏移
-- `include_timestamps`: 是否包含时间戳
-- `time_encoding_dim`: 时间编码维度
+selector 必须匹配当前进程已注册的 configurable。很多 trainer 的入口都叫 `train`；配置只能与相应 trainer 脚本一起使用，不能把 `config/tiger/...` 交给 SASRec trainer。
 
-**方法:**
+OneRec/GRAM/RPG 使用明确函数名：
 
-#### truncate_sequence(sequence, strategy)
-
-截断序列。
-
-```python
-def truncate_sequence(
-    self, 
-    sequence: List[Any], 
-    strategy: str = None
-) -> List[Any]:
-    """
-    根据策略截断序列
-    
-    Args:
-        sequence: 输入序列
-        strategy: 截断策略，如为 None 则使用配置中的策略
-        
-    Returns:
-        截断后的序列
-    """
-    if len(sequence) <= self.max_seq_length:
-        return sequence
-        
-    strategy = strategy or self.truncate_strategy
-    
-    if strategy == "recent":
-        return sequence[-self.max_seq_length:]
-    elif strategy == "oldest":
-        return sequence[:self.max_seq_length]
-    elif strategy == "random":
-        start_idx = random.randint(0, len(sequence) - self.max_seq_length)
-        return sequence[start_idx:start_idx + self.max_seq_length]
-    else:
-        raise ValueError(f"Unknown truncate strategy: {strategy}")
+```gin
+train_sft.learning_rate = 8e-5
+train_grpo.num_generations = 8
+train_clm.max_length = 256
+train_rpg.n_codebook = 32
+train_gram.num_beams = 50
+fit_rqkmeans.codebook_size = 256
 ```
 
-#### pad_sequence(sequence)
+### 类参数
 
-填充序列。
-
-```python
-def pad_sequence(self, sequence: List[Any]) -> List[Any]:
-    """
-    填充序列到最大长度
-    
-    Args:
-        sequence: 输入序列
-        
-    Returns:
-        填充后的序列
-    """
-    if len(sequence) >= self.max_seq_length:
-        return sequence[:self.max_seq_length]
-    
-    pad_length = self.max_seq_length - len(sequence)
-    return sequence + [self.padding_token] * pad_length
+```gin
+AmazonSeqDataset.split = "{split}"
+AmazonSeqDataset.evaluation_protocol = "leave_one_out"
 ```
 
-## 数据处理配置
+只有 trainer 没有显式传同名参数时，类 binding 才决定值。
 
-### DataProcessingConfig
+### 对象引用与宏
 
-数据处理相关配置。
+```gin
+include "config/base.gin"
+import genrec.data.amazon
 
-```python
-@dataclass
-class DataProcessingConfig:
-    min_user_interactions: int = 5
-    min_item_interactions: int = 5
-    remove_duplicates: bool = True
-    normalize_ratings: bool = False
-    rating_scale: Tuple[float, float] = (1.0, 5.0)
-    train_ratio: float = 0.7
-    val_ratio: float = 0.15
-    test_ratio: float = 0.15
-    random_seed: int = 42
-    
-    def __post_init__(self):
-        """验证配置参数"""
-        if abs(self.train_ratio + self.val_ratio + self.test_ratio - 1.0) > 1e-6:
-            raise ValueError("train_ratio + val_ratio + test_ratio must equal 1.0")
-        if any(ratio <= 0 for ratio in [self.train_ratio, self.val_ratio, self.test_ratio]):
-            raise ValueError("All ratios must be positive")
-        if self.min_user_interactions <= 0 or self.min_item_interactions <= 0:
-            raise ValueError("Minimum interactions must be positive")
+train.dataset = @AmazonSeqDataset
+AmazonSeqDataset.encoder_model_name = %MODEL_HUB_SENTENCE_T5_XL
 ```
 
-**参数:**
-- `min_user_interactions`: 最少用户交互数
-- `min_item_interactions`: 最少物品交互数
-- `remove_duplicates`: 是否移除重复交互
-- `normalize_ratings`: 是否标准化评分
-- `rating_scale`: 评分范围
-- `train_ratio`: 训练集比例
-- `val_ratio`: 验证集比例
-- `test_ratio`: 测试集比例
-- `random_seed`: 随机种子
+- `@Name` 传 configurable/callable 引用；对应模块必须先 import。
+- `%NAME` 引用 Gin macro。
+- `include` 路径按启动工作目录解析，项目命令假设从仓库根目录运行。
 
-**方法:**
+## `config/base.gin`
 
-#### get_split_indices(total_size)
+源文件：[`config/base.gin`](https://github.com/phonism/genrec/blob/main/config/base.gin)
 
-获取数据分割索引。
+当前定义五个固定路径宏：
 
-```python
-def get_split_indices(self, total_size: int) -> Tuple[List[int], List[int], List[int]]:
-    """
-    根据配置比例获取数据分割索引
-    
-    Args:
-        total_size: 总数据量
-        
-    Returns:
-        (train_indices, val_indices, test_indices): 分割索引列表
-    """
-    indices = list(range(total_size))
-    random.Random(self.random_seed).shuffle(indices)
-    
-    train_size = int(total_size * self.train_ratio)
-    val_size = int(total_size * self.val_ratio)
-    
-    train_indices = indices[:train_size]
-    val_indices = indices[train_size:train_size + val_size]
-    test_indices = indices[train_size + val_size:]
-    
-    return train_indices, val_indices, test_indices
+```gin
+MODEL_HUB_SENTENCE_T5_BASE
+MODEL_HUB_SENTENCE_T5_XL
+MODEL_HUB_QWEN3_EMBEDDING_8B
+MODEL_HUB_QWEN3_1_7B
+MODEL_HUB_QWEN3_4B
 ```
 
-#### normalize_rating(rating)
+文件中的实际值是 `/root/workspace/models_hub/...` 字符串。`parse_config()` 没有读取 `MODEL_HUB` 环境变量或展开 `${MODEL_HUB}` 的逻辑；换机器时应通过 CLI 重绑 macro 或维护本地配置，而不能只设置环境变量后假定自动生效。
 
-标准化评分。
+示例：
 
-```python
-def normalize_rating(self, rating: float) -> float:
-    """
-    标准化评分到 [0, 1] 范围
-    
-    Args:
-        rating: 原始评分
-        
-    Returns:
-        标准化后的评分
-    """
-    if not self.normalize_ratings:
-        return rating
-        
-    min_rating, max_rating = self.rating_scale
-    return (rating - min_rating) / (max_rating - min_rating)
+```bash
+--gin 'MODEL_HUB_QWEN3_1_7B="/data/models/Qwen3-1.7B"'
 ```
 
-## 特定数据集配置
+## 配置文件索引
 
-### P5AmazonConfig
+| 路径 | 入口 selector | 用途 |
+|---|---|---|
+| [`config/sasrec/amazon.gin`](https://github.com/phonism/genrec/blob/main/config/sasrec/amazon.gin) | `train` | Amazon 2014 SASRec |
+| [`config/sasrec/amazon2023.gin`](https://github.com/phonism/genrec/blob/main/config/sasrec/amazon2023.gin) | `train` | Amazon 2023，经预处理后的 2014-compatible raw schema |
+| [`config/hstu/`](https://github.com/phonism/genrec/tree/main/config/hstu) | `train` | CE / sampled-softmax / Amazon 2023 compatible raw schema |
+| [`config/tiger/amazon/rqvae.gin`](https://github.com/phonism/genrec/blob/main/config/tiger/amazon/rqvae.gin) | `train` | TIGER 上游 RQVAE |
+| [`config/tiger/amazon/tiger.gin`](https://github.com/phonism/genrec/blob/main/config/tiger/amazon/tiger.gin) | `train` | TIGER 推荐器 |
+| [`config/lcrec/`](https://github.com/phonism/genrec/tree/main/config/lcrec) | `train` | RQVAE 与 LCRec |
+| [`config/cobra/`](https://github.com/phonism/genrec/tree/main/config/cobra) | `train` | RQVAE、sparse-only、mixed variants |
+| [`config/onerec/amazon/`](https://github.com/phonism/genrec/tree/main/config/onerec/amazon) | `fit_rqkmeans` / `train_sft` / `train_grpo` / `train_clm` | OneRec 三阶段与 CLM |
+| [`config/rpg/`](https://github.com/phonism/genrec/tree/main/config/rpg) | `train_rpg` | Beauty/Sports/Toys 数据集特定配置 |
+| [`config/notellm/amazon.gin`](https://github.com/phonism/genrec/blob/main/config/notellm/amazon.gin) | `train` | NoteLLM 对称 GCL + 可选 CSFT |
+| [`config/gram/amazon/gram.gin`](https://github.com/phonism/genrec/blob/main/config/gram/amazon/gram.gin) | `train_gram` | GRAM |
 
-P5 Amazon 数据集专用配置。
+!!! note "Amazon 2023 baseline 的实际路由"
+    [`sasrec_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/sasrec_trainer.py) 与 [`hstu_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/hstu_trainer.py) 没有构造 `genrec.data.amazon2023.Amazon2023SASRecDataset`，而是继续使用 `AmazonSASRecDataset` / `AmazonHSTUDataset`。[`prepare_amazon2023()`](processors.md#amazon-2023-download-k-core) 会写出 Amazon 2014-compatible gzip；`DATASET_CONFIGS` 当前登记 `books`、`arts_crafts_and_sewing`。配置运行前必须先生成这些 raw 文件，新增 category 还须增加文件名映射。
 
-```python
-@dataclass
-class P5AmazonConfig(DatasetConfig):
-    category: str = "beauty"
-    min_rating: float = 4.0
-    include_price: bool = True
-    include_brand: bool = True
-    download_url: str = "https://datarepo.eng.ucsd.edu/mcauley_group/data/amazon_v2/"
-    
-    def __post_init__(self):
-        super().__post_init__()
-        
-        # 设置特定的文本模板
-        if self.include_price and self.include_brand:
-            template = "Title: {title}; Brand: {brand}; Category: {category}; Price: {price}"
-        elif self.include_brand:
-            template = "Title: {title}; Brand: {brand}; Category: {category}"
-        else:
-            template = "Title: {title}; Category: {category}"
-            
-        self.text_config.template = template
-        
-    def get_category_url(self) -> str:
-        """获取特定类别的下载 URL"""
-        return f"{self.download_url}{self.category}.json.gz"
+## Enum binding
+
+[`QuantizeForwardMode`](https://github.com/phonism/genrec/blob/main/genrec/models/rqvae.py) 用 `@gin.constants_from_enum` 注册，可在 RQVAE 配置中写：
+
+```gin
+train.vae_codebook_mode = %genrec.models.rqvae.QuantizeForwardMode.GUMBEL_SOFTMAX
+train.vae_codebook_last_layer_mode = %genrec.models.rqvae.QuantizeForwardMode.SINKHORN
 ```
 
-**额外参数:**
-- `category`: 产品类别
-- `min_rating`: 最低评分阈值
-- `include_price`: 是否包含价格信息
-- `include_brand`: 是否包含品牌信息
-- `download_url`: 下载基础 URL
+合法值为 `GUMBEL_SOFTMAX`、`STE`、`ROTATION_TRICK`、`SINKHORN`。`QuantizeDistance` 没有同样的 Gin constants decorator。
 
-## 配置验证和工具
+## 常见错误
 
-### validate_config(config)
+1. **`No configurable matching ...`**：缺少 `import genrec.data...`，或把配置交给了错误 trainer。
+2. **override 没生效**：selector 写错，例如 `train` 与 `train_sft` 混用；查函数装饰器和配置原绑定。
+3. **路径仍指向旧 split**：某个字符串没有 `{split}` 或被硬编码；用 `rg` 检查 config。
+4. **列表被 shell 拆开**：外层用单引号包住整个 binding。
+5. **相同维度 checkpoint 能加载但语义错误**：Gin 只配置形状，不验证 encoder/codebook provenance。
+6. **尝试 `load_config_from_file()`**：不存在该 API；配置只在 CLI `parse_config()` 中解析。
+7. **split 与输出目录不一致**：检查解析后的配置与 `results.json`。NoteLLM 已同时绑定 `train.split` 和 `AmazonNoteLLMDataset.split`，标准 `--split sports` 会更新两处。
 
-验证配置完整性。
+## 相关文档
 
-```python
-def validate_config(config: DatasetConfig) -> List[str]:
-    """
-    验证配置的有效性
-    
-    Args:
-        config: 数据集配置
-        
-    Returns:
-        错误信息列表，空列表表示配置有效
-    """
-    errors = []
-    
-    # 检查根目录
-    if not config.root_dir:
-        errors.append("root_dir cannot be empty")
-    
-    # 检查文本配置
-    if config.text_config:
-        if not config.text_config.encoder_model:
-            errors.append("encoder_model cannot be empty")
-        if config.text_config.batch_size <= 0:
-            errors.append("batch_size must be positive")
-    
-    # 检查序列配置
-    if config.sequence_config:
-        if config.sequence_config.max_seq_length <= config.sequence_config.min_seq_length:
-            errors.append("max_seq_length must be greater than min_seq_length")
-    
-    # 检查处理配置
-    if config.processing_config:
-        ratios_sum = (
-            config.processing_config.train_ratio + 
-            config.processing_config.val_ratio + 
-            config.processing_config.test_ratio
-        )
-        if abs(ratios_sum - 1.0) > 1e-6:
-            errors.append("Split ratios must sum to 1.0")
-    
-    return errors
-```
-
-### load_config_from_file(config_path)
-
-从文件加载配置。
-
-```python
-def load_config_from_file(config_path: str) -> DatasetConfig:
-    """
-    从 YAML 或 JSON 文件加载配置
-    
-    Args:
-        config_path: 配置文件路径
-        
-    Returns:
-        数据集配置对象
-    """
-    config_path = Path(config_path)
-    
-    if config_path.suffix.lower() in ['.yaml', '.yml']:
-        import yaml
-        with open(config_path, 'r') as f:
-            config_dict = yaml.safe_load(f)
-    elif config_path.suffix.lower() == '.json':
-        with open(config_path, 'r') as f:
-            config_dict = json.load(f)
-    else:
-        raise ValueError(f"Unsupported config file format: {config_path.suffix}")
-    
-    # 根据配置类型创建相应对象
-    config_type = config_dict.pop('config_type', 'DatasetConfig')
-    
-    if config_type == 'P5AmazonConfig':
-        return P5AmazonConfig(**config_dict)
-    else:
-        return DatasetConfig(**config_dict)
-```
-
-### save_config_to_file(config, config_path)
-
-保存配置到文件。
-
-```python
-def save_config_to_file(config: DatasetConfig, config_path: str) -> None:
-    """
-    保存配置到 YAML 或 JSON 文件
-    
-    Args:
-        config: 数据集配置对象
-        config_path: 配置文件路径
-    """
-    config_path = Path(config_path)
-    config_dict = asdict(config)
-    
-    # 添加配置类型信息
-    config_dict['config_type'] = config.__class__.__name__
-    
-    if config_path.suffix.lower() in ['.yaml', '.yml']:
-        import yaml
-        with open(config_path, 'w') as f:
-            yaml.dump(config_dict, f, default_flow_style=False)
-    elif config_path.suffix.lower() == '.json':
-        with open(config_path, 'w') as f:
-            json.dump(config_dict, f, indent=2)
-    else:
-        raise ValueError(f"Unsupported config file format: {config_path.suffix}")
-```
-
-## 使用示例
-
-### 基本配置创建
-
-```python
-from genrec.data.configs import (
-    DatasetConfig, TextEncodingConfig, SequenceConfig, DataProcessingConfig
-)
-
-# 创建基本配置
-config = DatasetConfig(
-    root_dir="dataset/amazon",
-    split="beauty",
-    text_config=TextEncodingConfig(
-        encoder_model="sentence-transformers/all-MiniLM-L6-v2",
-        batch_size=64
-    ),
-    sequence_config=SequenceConfig(
-        max_seq_length=100,
-        min_seq_length=5
-    ),
-    processing_config=DataProcessingConfig(
-        min_user_interactions=10,
-        train_ratio=0.8,
-        val_ratio=0.1,
-        test_ratio=0.1
-    )
-)
-```
-
-### P5 Amazon 配置
-
-```python
-from genrec.data.configs import P5AmazonConfig
-
-# 创建 P5 Amazon 配置
-config = P5AmazonConfig(
-    root_dir="dataset/amazon",
-    category="beauty",
-    min_rating=4.0,
-    include_price=True,
-    include_brand=True
-)
-```
-
-### 配置文件操作
-
-```python
-# 保存配置到文件
-save_config_to_file(config, "config/dataset_config.yaml")
-
-# 从文件加载配置
-loaded_config = load_config_from_file("config/dataset_config.yaml")
-
-# 验证配置
-errors = validate_config(loaded_config)
-if errors:
-    print("Configuration errors:")
-    for error in errors:
-        print(f"  - {error}")
-else:
-    print("Configuration is valid")
-```
+- [训练入口](trainers.md)
+- [数据类注入](dataset-factory.md)
+- [架构：配置](../architecture/configuration.md)

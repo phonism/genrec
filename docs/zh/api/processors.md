@@ -1,715 +1,178 @@
-# 处理器 API 参考
+# 数据预处理入口
 
-文本和序列处理工具的详细文档。
+## 先澄清：没有 `genrec.data.processors`
 
-## 文本处理器
+当前源码不存在 `TextProcessor`、`SequenceProcessor`、`DataAugmentor` 或 `PreprocessingPipeline`。预处理逻辑分布在具体 dataset 构造函数、同文件 helper 和 `scripts/` 中；缓存身份也由各 adapter 自己定义。
 
-### TextProcessor
+本页保留旧导航文件名，只提供真实入口索引。若需要跨数据集统一 preprocessing，应新增经过测试的模块，而不是调用旧文档中的虚构类。
 
-文本编码和处理的核心类。
+## Amazon 2014
 
-```python
-class TextProcessor:
-    def __init__(self, config: TextEncodingConfig):
-        self.config = config
-        self.model = None
-        self.device = config.device
-        self.cache_manager = CacheManager(config.cache_dir)
-```
-
-**参数:**
-- `config`: 文本编码配置对象
-
-**方法:**
-
-#### load_model()
-
-加载文本编码模型。
+源文件：[`genrec/data/amazon.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon.py)
 
 ```python
-def load_model(self) -> None:
-    """
-    加载 Sentence Transformer 模型
-    """
-    if self.model is None:
-        from sentence_transformers import SentenceTransformer
-        self.model = SentenceTransformer(self.config.encoder_model)
-        self.model.to(self.device)
-        print(f"Loaded text encoder: {self.config.encoder_model}")
+download_file(url: str, dest_path: str) -> None
+parse_gzip_json(path: str) -> Iterator[dict]
 ```
 
-#### encode_texts(texts, cache_key, force_reload)
+- `download_file` 若目标已存在会直接返回；否则流式下载到目标路径。网络/HTTP/写盘异常向上传播。
+- `parse_gzip_json` 按行解析 gzip JSON；JSON 失败时会退回 Python `eval()`，两者都失败才跳过该行。因此只能用于可信 raw 文件，不要让不受信任内容进入这条兼容路径。
+- raw 下载、item mapping、metadata text 和 embedding cache 主要在 `AmazonItemDataset` / `AmazonSeqDataset.__init__()` 的私有方法中完成，不是独立公共 processor。
 
-编码文本列表。
+SASRec/HSTU/RPG/NoteLLM 的数据模块各自再次实现 protocol-aware sequence sample builder。共享的只有 [`select_protocol_sequences`](base-dataset.md#shared-protocol-functions)。
+
+## Amazon 2023 下载与 k-core { #amazon-2023-download-k-core }
+
+源文件：[`genrec/data/amazon2023.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon2023.py)
 
 ```python
-def encode_texts(
-    self,
-    texts: List[str],
-    cache_key: Optional[str] = None,
-    force_reload: bool = False
-) -> np.ndarray:
-    """
-    编码文本列表为嵌入向量
-    
-    Args:
-        texts: 文本列表
-        cache_key: 缓存键，如果提供将尝试使用缓存
-        force_reload: 是否强制重新计算
-        
-    Returns:
-        嵌入矩阵 (num_texts, embedding_dim)
-    """
-    # 检查缓存
-    if cache_key and not force_reload and self.cache_manager.exists(cache_key):
-        print(f"Loading embeddings from cache: {cache_key}")
-        return self.cache_manager.load(cache_key)
-    
-    # 加载模型
-    self.load_model()
-    
-    # 批量编码
-    print(f"Encoding {len(texts)} texts with {self.config.encoder_model}")
-    embeddings = []
-    
-    for i in range(0, len(texts), self.config.batch_size):
-        batch_texts = texts[i:i + self.config.batch_size]
-        batch_embeddings = self.model.encode(
-            batch_texts,
-            convert_to_numpy=True,
-            normalize_embeddings=self.config.normalize_embeddings,
-            show_progress_bar=True
-        )
-        embeddings.append(batch_embeddings)
-    
-    # 合并结果
-    embeddings = np.vstack(embeddings)
-    
-    # 保存缓存
-    if cache_key:
-        self.cache_manager.save(cache_key, embeddings)
-        print(f"Saved embeddings to cache: {cache_key}")
-    
-    return embeddings
+download_with_progress(
+    url: str, dest_path: str, desc: str = "Downloading"
+) -> None
+
+download_amazon2023(
+    category: str,
+    output_dir: str,
+    download_meta: bool = True,
+    source: str = "huggingface",
+) -> tuple[str, str | None]
+
+parse_jsonl(
+    path: str, max_lines: int | None = None
+) -> Iterator[dict]
+
+apply_k_core_filter(
+    reviews_path: str,
+    k: int = 5,
+    max_reviews: int | None = None,
+) -> tuple[dict[str, list[dict]], dict[str, int], dict[str, int]]
+
+process_metadata(
+    meta_path: str,
+    item_id_map: dict[str, int],
+) -> dict[int, dict]
+
+save_processed_data(
+    user_reviews, user_id_map, item_id_map,
+    item_meta, output_dir, category, k_core,
+) -> str
+
+prepare_amazon2023(
+    category: str = "Books",
+    k_core: int = 5,
+    output_dir: str = "dataset/amazon2023",
+    max_reviews: int | None = None,
+    source: str = "huggingface",
+) -> str
 ```
 
-#### encode_item_features(items_df, cache_key, force_reload)
+`apply_k_core_filter` 迭代删除 user/item interaction 少于 `k` 的记录，直到数量稳定。未知 category 在 `download_amazon2023` 抛 `ValueError`。`parse_jsonl` 跳过 JSON decode 失败的行，不会为每个坏行抛错。
 
-编码物品特征。
+CLI：
+
+```bash
+python -m genrec.data.amazon2023 --category Books --k_core 5
+python -m genrec.data.amazon2023 --list_categories
+```
+
+`prepare_amazon2023()` 实际把转换结果写到 `output_dir/raw/<category>/` 并返回该目录，用于 `AmazonSASRecDataset` / `AmazonHSTUDataset` 的 2014-compatible 路径；名称中的 “processed” 指已转换数据，不是 `output_dir/processed/...` 目录。另一方面，`Amazon2023ItemDataset` / `Amazon2023SASRecDataset` 构造函数查找 `root/processed/<split>/`，当前函数不会填充那套目录，两条路径不可混用。它也不会自动训练 semantic tokenizer。
+
+## 文本格式化与 embedding
+
+### NoteLLM
+
+源文件：[`genrec/data/amazon_notellm.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_notellm.py)
 
 ```python
-def encode_item_features(
-    self,
-    items_df: pd.DataFrame,
-    cache_key: Optional[str] = None,
-    force_reload: bool = False
-) -> np.ndarray:
-    """
-    编码物品特征为嵌入向量
-    
-    Args:
-        items_df: 物品数据框
-        cache_key: 缓存键
-        force_reload: 是否强制重新计算
-        
-    Returns:
-        物品嵌入矩阵 (num_items, embedding_dim)
-    """
-    # 格式化文本
-    texts = []
-    for _, row in items_df.iterrows():
-        text = self.config.format_text(row.to_dict())
-        texts.append(text)
-    
-    return self.encode_texts(texts, cache_key, force_reload)
+build_item_text(meta: dict, fallback: str) -> str
+format_item_prompt(item_text: str, item_token: str = "[EMB]") -> str
 ```
 
-#### encode_single_text(text)
+`build_item_text` 按 title、brand、categories、description 固定顺序展平，字符串最多 4000 字符；缺字段时返回 `item: <fallback>`。`format_item_prompt` 会先从内容中移除已有 marker，再保证末尾恰有一个 `[EMB]`。
 
-编码单个文本。
+### GRAM 文本文件
+
+源文件：[`genrec/data/amazon_gram.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_gram.py)
 
 ```python
-def encode_single_text(self, text: str) -> np.ndarray:
-    """
-    编码单个文本
-    
-    Args:
-        text: 输入文本
-        
-    Returns:
-        文本嵌入向量 (embedding_dim,)
-    """
-    self.load_model()
-    
-    embedding = self.model.encode(
-        [text],
-        convert_to_numpy=True,
-        normalize_embeddings=self.config.normalize_embeddings
-    )[0]
-    
-    return embedding
+read_lines(path: str) -> list[str]
+parse_dict_from_lines(lines: list[str]) -> dict[str, str]
+load_similar_items(path: str, top_k: int = 10) -> dict[str, list[str]]
 ```
 
-#### compute_similarity(text1, text2)
+`read_lines` 对缺文件抛 `FileNotFoundError`。`parse_dict_from_lines` 只按第一个空格拆 key/value，不验证重复 key 或 lexical-ID 唯一性。GRAM 的 semantic-to-lexical 生成器不在仓库；这些函数只读取外部预处理结果。
 
-计算文本相似度。
+### RPG OPQ
+
+源文件：[`genrec/data/amazon_rpg.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_rpg.py)
+
+以下是实现 helper，名称以下划线开头，不承诺公共 API：
 
 ```python
-def compute_similarity(self, text1: str, text2: str) -> float:
-    """
-    计算两个文本的余弦相似度
-    
-    Args:
-        text1: 第一个文本
-        text2: 第二个文本
-        
-    Returns:
-        余弦相似度值 [-1, 1]
-    """
-    embedding1 = self.encode_single_text(text1)
-    embedding2 = self.encode_single_text(text2)
-    
-    return np.dot(embedding1, embedding2) / (
-        np.linalg.norm(embedding1) * np.linalg.norm(embedding2)
-    )
+_build_meta_sentence(meta: dict) -> str
+_encode_sentence_embeddings(
+    sentences: list[str], model_name: str, batch_size: int = 256
+) -> np.ndarray          # [N,D], float32
+_generate_opq_semantic_ids(
+    sent_embs: np.ndarray, train_mask: np.ndarray,
+    n_codebook: int, codebook_size: int,
+    pca_dim: int = 0, use_gpu: bool = False,
+    gpu_id: int = 0, num_threads: int = 32,
+) -> np.ndarray          # [N,C]
 ```
 
-#### find_similar_texts(query_text, candidate_texts, top_k)
+`codebook_size` 必须是 2 的幂；否则 assert。FAISS 只在函数调用时 import，未安装会抛 `ImportError`。正常用法是构造 `AmazonRPGDataset`，不应单独依赖私有 helper 名称。
 
-查找相似文本。
+### RQVAE / RQ-KMeans item tokenization
 
-```python
-def find_similar_texts(
-    self,
-    query_text: str,
-    candidate_texts: List[str],
-    top_k: int = 5
-) -> List[Tuple[int, str, float]]:
-    """
-    查找与查询文本最相似的候选文本
-    
-    Args:
-        query_text: 查询文本
-        candidate_texts: 候选文本列表
-        top_k: 返回前 k 个最相似的
-        
-    Returns:
-        (索引, 文本, 相似度) 的列表，按相似度降序排列
-    """
-    query_embedding = self.encode_single_text(query_text)
-    candidate_embeddings = self.encode_texts(candidate_texts)
-    
-    # 计算相似度
-    similarities = np.dot(candidate_embeddings, query_embedding)
-    
-    # 获取 top-k
-    top_indices = np.argsort(similarities)[-top_k:][::-1]
-    
-    results = []
-    for idx in top_indices:
-        results.append((idx, candidate_texts[idx], similarities[idx]))
-    
-    return results
-```
+两类 tokenizer 不是“processor 类”：
 
-## 序列处理器
+- [`RqVae.get_semantic_ids`](rqvae.md)：`Tensor[N,D] -> sem_ids Tensor[N,C]`。
+- [`RqKmeans.assign`](../models/rqkmeans.md)：`np.ndarray[N,D] -> RqKmeansOutput.sem_ids[N,C]`。
 
-### SequenceProcessor
+下游 dataset 在构造时加载 checkpoint 并把 item embedding 转 SID。encoder、checkpoint 几何和 catalog 必须作为同一 artifact 组管理。
 
-序列数据处理的核心类。
+## 旧 P5 preprocessing
 
-```python
-class SequenceProcessor:
-    def __init__(self, config: SequenceConfig):
-        self.config = config
-        
-    def build_user_sequences(
-        self, 
-        interactions_df: pd.DataFrame
-    ) -> List[Dict[str, Any]]:
-        """
-        构建用户交互序列
-        
-        Args:
-            interactions_df: 交互数据框，包含 user_id, item_id, timestamp
-            
-        Returns:
-            用户序列列表，每个序列包含用户ID和物品序列
-        """
-        sequences = []
-        
-        # 按用户分组并按时间排序
-        for user_id, group in interactions_df.groupby('user_id'):
-            user_interactions = group.sort_values('timestamp')
-            item_sequence = user_interactions['item_id'].tolist()
-            
-            # 过滤过短的序列
-            if len(item_sequence) >= self.config.min_seq_length:
-                sequences.append({
-                    'user_id': user_id,
-                    'item_sequence': item_sequence,
-                    'timestamps': user_interactions['timestamp'].tolist() if self.config.include_timestamps else None
-                })
-        
-        return sequences
-```
+源文件：[`genrec/data/p5_amazon.py`](https://github.com/phonism/genrec/blob/main/genrec/data/p5_amazon.py)
 
-#### create_training_samples(sequences)
+`PreprocessingMixin` 包含 `_process_genres`、`_remove_low_occurrence`、`_encode_text_feature`、`_rolling_window`、`_ordered_train_test_split`、`_df_to_tensor_dict` 和 `_generate_user_history`。它们全是以下划线开头的内部 static method，服务 `AmazonReviews(InMemoryDataset)` 的 PyG/Polars 管线，不是通用 processor API。
 
-创建训练样本。
+## Cache 与并发行为
 
-```python
-def create_training_samples(
-    self,
-    sequences: List[Dict[str, Any]]
-) -> List[Dict[str, Any]]:
-    """
-    从用户序列创建训练样本
-    
-    Args:
-        sequences: 用户序列列表
-        
-    Returns:
-        训练样本列表，每个样本包含输入序列和目标序列
-    """
-    training_samples = []
-    
-    for seq_data in sequences:
-        item_sequence = seq_data['item_sequence']
-        
-        # 创建多个子序列
-        for i in range(0, len(item_sequence) - self.config.min_seq_length + 1, self.config.sequence_stride):
-            # 确定子序列长度
-            end_idx = min(i + self.config.max_seq_length, len(item_sequence))
-            
-            if end_idx - i >= self.config.min_seq_length:
-                input_seq = item_sequence[i:end_idx-self.config.target_offset]
-                target_seq = item_sequence[i+self.config.target_offset:end_idx]
-                
-                if len(input_seq) > 0 and len(target_seq) > 0:
-                    sample = {
-                        'user_id': seq_data['user_id'],
-                        'input_sequence': input_seq,
-                        'target_sequence': target_seq
-                    }
-                    
-                    # 添加时间戳信息
-                    if self.config.include_timestamps and seq_data['timestamps']:
-                        sample['input_timestamps'] = seq_data['timestamps'][i:end_idx-self.config.target_offset]
-                        sample['target_timestamps'] = seq_data['timestamps'][i+self.config.target_offset:end_idx]
-                    
-                    training_samples.append(sample)
-    
-    return training_samples
-```
+没有共享 `CacheManager`。当前实现采用以下局部策略：
 
-#### pad_and_truncate_sequence(sequence)
+- Amazon/RPG/NoteLLM 的部分 cache 使用 `fcntl.flock` 防止同机重复生成；Windows 不保证可用。
+- 多个 writer 常用 `.part.<pid>` + `os.replace` 原子提交。
+- cache key 通常包含 split 和 encoder basename，但未必包含 metadata hash、model revision 或所有超参。
+- RQVAE/RQ-KMeans checkpoint 的 provenance 不能仅靠 cache 文件名恢复。
 
-填充和截断序列。
+修改文本模板、metadata 或 encoder 后，应先确认目标 adapter 的具体 cache identity，再定点重建；不要假定统一 `force_reload` 参数在所有类上存在。
 
-```python
-def pad_and_truncate_sequence(self, sequence: List[int]) -> List[int]:
-    """
-    填充和截断序列到指定长度
-    
-    Args:
-        sequence: 输入序列
-        
-    Returns:
-        处理后的序列
-    """
-    # 截断
-    if len(sequence) > self.config.max_seq_length:
-        sequence = self.config.truncate_sequence(sequence)
-    
-    # 填充
-    if len(sequence) < self.config.max_seq_length:
-        sequence = self.config.pad_sequence(sequence)
-    
-    return sequence
-```
+## 诊断脚本
 
-#### create_attention_mask(sequence)
+| 脚本 | 输入 / 输出 |
+|---|---|
+| [`verify_codebook_health.py`](https://github.com/phonism/genrec/blob/main/scripts/verify_codebook_health.py) | RQVAE/RQ-KMeans checkpoint → usage/collision 报告 |
+| [`report_sid_collisions.py`](https://github.com/phonism/genrec/blob/main/scripts/report_sid_collisions.py) | `.npy/.json/text` SID → prefix collision/Markdown/JSON |
+| [`dump_sem_ids.py`](https://github.com/phonism/genrec/blob/main/scripts/dump_sem_ids.py) | tokenizer checkpoint → SID artifact |
+| [`validate_dedup.py`](https://github.com/phonism/genrec/blob/main/scripts/validate_dedup.py) | RQVAE collision dedup 诊断 |
 
-创建注意力掩码。
+脚本是 CLI，不由 `genrec.data` 重导出。
 
-```python
-def create_attention_mask(self, sequence: List[int]) -> List[int]:
-    """
-    为序列创建注意力掩码
-    
-    Args:
-        sequence: 输入序列
-        
-    Returns:
-        注意力掩码，1 表示有效位置，0 表示填充位置
-    """
-    mask = []
-    for token in sequence:
-        if token == self.config.padding_token:
-            mask.append(0)
-        else:
-            mask.append(1)
-    
-    return mask
-```
+## 历史 API 迁移
 
-#### encode_time_features(timestamps)
+| 旧文档调用 | 当前实现 |
+|---|---|
+| `TextProcessor.encode_texts(...)` | 具体 item dataset 的 embedding cache，或直接调用选定 encoder |
+| `SequenceProcessor.create_training_samples(...)` | 每个模型 dataset 的 `_generate_samples()` 私有实现 |
+| `DataAugmentor` | 无通用实现；训练 dataset 内可能做滑窗/随机 subsample |
+| `PreprocessingPipeline.process(...)` | 构造具体 dataset 或运行 Amazon 2023 CLI |
+| `visualize_embeddings(...)` | 无此库函数；使用 `scripts/` 中现有诊断或外部绘图库 |
 
-编码时间特征。
+## 相关文档
 
-```python
-def encode_time_features(self, timestamps: List[float]) -> np.ndarray:
-    """
-    将时间戳编码为特征向量
-    
-    Args:
-        timestamps: 时间戳列表
-        
-    Returns:
-        时间特征矩阵 (seq_len, time_encoding_dim)
-    """
-    if not timestamps:
-        return np.zeros((0, self.config.time_encoding_dim))
-    
-    # 标准化时间戳
-    timestamps = np.array(timestamps)
-    min_time, max_time = timestamps.min(), timestamps.max()
-    
-    if max_time > min_time:
-        normalized_times = (timestamps - min_time) / (max_time - min_time)
-    else:
-        normalized_times = np.zeros_like(timestamps)
-    
-    # 创建正弦和余弦编码
-    time_features = []
-    for i in range(self.config.time_encoding_dim // 2):
-        freq = 1.0 / (10000 ** (2 * i / self.config.time_encoding_dim))
-        sin_features = np.sin(normalized_times * freq)
-        cos_features = np.cos(normalized_times * freq)
-        time_features.extend([sin_features, cos_features])
-    
-    # 转置并截断到指定维度
-    time_features = np.array(time_features[:self.config.time_encoding_dim]).T
-    
-    return time_features
-```
-
-## 数据增强处理器
-
-### DataAugmentor
-
-数据增强处理器。
-
-```python
-class DataAugmentor:
-    def __init__(self, augmentation_config: Dict[str, Any]):
-        self.config = augmentation_config
-        
-    def augment_sequence(self, sequence: List[int]) -> List[int]:
-        """
-        对序列进行数据增强
-        
-        Args:
-            sequence: 原始序列
-            
-        Returns:
-            增强后的序列
-        """
-        augmented = sequence.copy()
-        
-        # 随机删除
-        if self.config.get('random_drop', False):
-            drop_prob = self.config.get('drop_prob', 0.1)
-            augmented = [item for item in augmented if random.random() > drop_prob]
-        
-        # 随机打乱
-        if self.config.get('random_shuffle', False):
-            shuffle_prob = self.config.get('shuffle_prob', 0.1)
-            if random.random() < shuffle_prob:
-                # 只打乱部分子序列
-                start = random.randint(0, max(0, len(augmented) - 3))
-                end = min(start + random.randint(2, 4), len(augmented))
-                subseq = augmented[start:end]
-                random.shuffle(subseq)
-                augmented[start:end] = subseq
-        
-        # 随机替换
-        if self.config.get('random_replace', False):
-            replace_prob = self.config.get('replace_prob', 0.05)
-            vocab_size = self.config.get('vocab_size', 1000)
-            
-            for i in range(len(augmented)):
-                if random.random() < replace_prob:
-                    augmented[i] = random.randint(1, vocab_size)
-        
-        return augmented
-```
-
-## 预处理管道
-
-### PreprocessingPipeline
-
-数据预处理管道。
-
-```python
-class PreprocessingPipeline:
-    def __init__(
-        self,
-        text_processor: TextProcessor,
-        sequence_processor: SequenceProcessor,
-        augmentor: Optional[DataAugmentor] = None
-    ):
-        self.text_processor = text_processor
-        self.sequence_processor = sequence_processor
-        self.augmentor = augmentor
-        
-    def process_items(
-        self,
-        items_df: pd.DataFrame,
-        cache_key: str = None
-    ) -> pd.DataFrame:
-        """
-        处理物品数据
-        
-        Args:
-            items_df: 物品数据框
-            cache_key: 缓存键
-            
-        Returns:
-            处理后的物品数据框，包含特征向量
-        """
-        print("Processing item features...")
-        
-        # 编码文本特征
-        embeddings = self.text_processor.encode_item_features(
-            items_df, cache_key=cache_key
-        )
-        
-        # 添加特征到数据框
-        processed_df = items_df.copy()
-        processed_df['features'] = embeddings.tolist()
-        
-        return processed_df
-        
-    def process_interactions(
-        self,
-        interactions_df: pd.DataFrame,
-        items_df: pd.DataFrame
-    ) -> List[Dict[str, Any]]:
-        """
-        处理交互数据生成序列
-        
-        Args:
-            interactions_df: 交互数据框
-            items_df: 物品数据框
-            
-        Returns:
-            处理后的序列数据
-        """
-        print("Building user sequences...")
-        
-        # 构建用户序列
-        sequences = self.sequence_processor.build_user_sequences(interactions_df)
-        
-        # 创建训练样本
-        training_samples = self.sequence_processor.create_training_samples(sequences)
-        
-        # 数据增强
-        if self.augmentor:
-            augmented_samples = []
-            for sample in training_samples:
-                # 原始样本
-                augmented_samples.append(sample)
-                
-                # 增强样本
-                aug_input = self.augmentor.augment_sequence(sample['input_sequence'])
-                aug_target = self.augmentor.augment_sequence(sample['target_sequence'])
-                
-                augmented_sample = sample.copy()
-                augmented_sample['input_sequence'] = aug_input
-                augmented_sample['target_sequence'] = aug_target
-                augmented_samples.append(augmented_sample)
-            
-            training_samples = augmented_samples
-        
-        return training_samples
-```
-
-## 工具函数
-
-### compute_sequence_statistics(sequences)
-
-计算序列统计信息。
-
-```python
-def compute_sequence_statistics(sequences: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    计算序列数据的统计信息
-    
-    Args:
-        sequences: 序列列表
-        
-    Returns:
-        统计信息字典
-    """
-    if not sequences:
-        return {}
-    
-    lengths = [len(seq['item_sequence']) for seq in sequences]
-    unique_users = len(set(seq['user_id'] for seq in sequences))
-    
-    # 计算物品频率
-    item_counts = {}
-    for seq in sequences:
-        for item_id in seq['item_sequence']:
-            item_counts[item_id] = item_counts.get(item_id, 0) + 1
-    
-    stats = {
-        'num_sequences': len(sequences),
-        'num_unique_users': unique_users,
-        'num_unique_items': len(item_counts),
-        'avg_sequence_length': np.mean(lengths),
-        'min_sequence_length': np.min(lengths),
-        'max_sequence_length': np.max(lengths),
-        'median_sequence_length': np.median(lengths),
-        'total_interactions': sum(lengths),
-        'most_popular_items': sorted(item_counts.items(), key=lambda x: x[1], reverse=True)[:10]
-    }
-    
-    return stats
-```
-
-### visualize_embeddings(embeddings, labels, method)
-
-可视化嵌入向量。
-
-```python
-def visualize_embeddings(
-    embeddings: np.ndarray,
-    labels: List[str] = None,
-    method: str = 'tsne',
-    save_path: str = None
-) -> None:
-    """
-    可视化高维嵌入向量
-    
-    Args:
-        embeddings: 嵌入矩阵 (n_samples, embedding_dim)
-        labels: 样本标签
-        method: 降维方法 ('tsne', 'pca', 'umap')
-        save_path: 保存路径
-    """
-    import matplotlib.pyplot as plt
-    
-    # 降维
-    if method == 'tsne':
-        from sklearn.manifold import TSNE
-        reducer = TSNE(n_components=2, random_state=42)
-    elif method == 'pca':
-        from sklearn.decomposition import PCA
-        reducer = PCA(n_components=2)
-    elif method == 'umap':
-        import umap
-        reducer = umap.UMAP(n_components=2, random_state=42)
-    else:
-        raise ValueError(f"Unknown method: {method}")
-    
-    reduced_embeddings = reducer.fit_transform(embeddings)
-    
-    # 绘图
-    plt.figure(figsize=(10, 8))
-    if labels:
-        unique_labels = list(set(labels))
-        colors = plt.cm.tab10(np.linspace(0, 1, len(unique_labels)))
-        
-        for i, label in enumerate(unique_labels):
-            mask = np.array(labels) == label
-            plt.scatter(
-                reduced_embeddings[mask, 0],
-                reduced_embeddings[mask, 1],
-                c=[colors[i]],
-                label=label,
-                alpha=0.7
-            )
-        plt.legend()
-    else:
-        plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], alpha=0.7)
-    
-    plt.title(f'Embedding Visualization ({method.upper()})')
-    plt.xlabel('Component 1')
-    plt.ylabel('Component 2')
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
-    plt.show()
-```
-
-## 使用示例
-
-### 文本处理
-
-```python
-from genrec.data.processors import TextProcessor
-from genrec.data.configs import TextEncodingConfig
-
-# 创建配置
-config = TextEncodingConfig(
-    encoder_model="sentence-transformers/all-MiniLM-L6-v2",
-    template="Title: {title}; Category: {category}",
-    batch_size=32
-)
-
-# 创建处理器
-processor = TextProcessor(config)
-
-# 编码文本
-texts = ["Apple iPhone 13", "Samsung Galaxy S21", "Sony WH-1000XM4"]
-embeddings = processor.encode_texts(texts, cache_key="sample_texts")
-
-print(f"Embeddings shape: {embeddings.shape}")
-```
-
-### 序列处理
-
-```python
-from genrec.data.processors import SequenceProcessor
-from genrec.data.configs import SequenceConfig
-
-# 创建配置
-config = SequenceConfig(
-    max_seq_length=50,
-    min_seq_length=3,
-    target_offset=1
-)
-
-# 创建处理器
-processor = SequenceProcessor(config)
-
-# 处理交互数据
-sequences = processor.build_user_sequences(interactions_df)
-training_samples = processor.create_training_samples(sequences)
-
-print(f"Generated {len(training_samples)} training samples")
-```
-
-### 完整预处理管道
-
-```python
-from genrec.data.processors import PreprocessingPipeline
-
-# 创建管道
-pipeline = PreprocessingPipeline(
-    text_processor=text_processor,
-    sequence_processor=sequence_processor
-)
-
-# 处理数据
-processed_items = pipeline.process_items(items_df, cache_key="items_beauty")
-processed_sequences = pipeline.process_interactions(interactions_df, processed_items)
-
-# 查看统计信息
-stats = compute_sequence_statistics(processed_sequences)
-print(f"Dataset statistics: {stats}")
-```
+- [数据集 API](datasets.md)
+- [配置与 CLI](configs.md)
+- [RQ-VAE API](rqvae.md)
+- [RQ-KMeans 说明](../models/rqkmeans.md)

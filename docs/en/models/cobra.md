@@ -1,142 +1,107 @@
-# COBRA
+# COBRA: cascaded sparse and dense generation
 
-Sparse Meets Dense: Unified Generative Recommendations with Cascaded Sparse-Dense Representations.
+| Field | Current repository |
+|---|---|
+| Paper | [Sparse Meets Dense: Unified Generative Recommendations](https://arxiv.org/abs/2503.02453), NeurIPS 2025 |
+| Task | coarse-to-fine next-item generative retrieval |
+| Representation | three RQ-VAE codes plus one text-encoder dense vector |
+| Backbone | causal `nn.TransformerDecoder` with empty cross-attention memory |
+| Training | per-codebook CE plus in-batch dense InfoNCE |
+| Decoding | sparse beam, exact SID bucket, dense cosine, BeamFusion |
+| Headline | item Recall/NDCG on `BeamFusionOutput.item_ids` |
+| Status | complete code path; no verified publishable benchmark row yet |
 
-## Overview
+GenRec implements the paper's central sparse-then-dense cascade, but vendors no official COBRA code and has no layer-by-layer parity suite. Treat it as a research reproduction, not an official mirror.
 
-COBRA is a hybrid generative recommendation model that combines sparse semantic IDs with dense vector representations. It uses an interleaved sparse-dense architecture to capture both discrete and continuous item features.
+## Two encoder spaces
 
-## Architecture
+Do not conflate:
 
+1. the Sentence-T5-XL catalog embeddings consumed by the dedicated 3×32 RQ-VAE;
+2. the trainable COBRA dense encoder, Sentence-T5-base in the baseline or random `LightT5Encoder` in v2.
+
+The trainer intentionally does not pass the model's base encoder name to the dataset. Changing the dataset from XL to base quantizes in the wrong RQ-VAE space.
+
+## Interleaved representation and loss
+
+Each item becomes
+
+\[
+z_t=[e(s_{t,0}),e(s_{t,1}),e(s_{t,2}),v_t].
+\]
+
+Default dimensions are `C=3`, `K=32`, and `d=768`. Sparse IDs use a `C*K+1` table with `C*K` reserved for padding; absolute position and sparse/dense type embeddings are added. Dense vectors enter directly with no extra input projection.
+
+`CobraDecoder` receives empty `[B,0,d]` memory, so its useful behavior is decoder-only causal self-attention even though cross-attention sublayers still exist.
+
+Independent heads predict codes in a cascade. The final sparse hidden state, normalized directly, predicts the dense vector. The trainer minimizes
+
+\[
+\mathcal L=\lambda_s\mathcal L_{sparse}+\lambda_d\mathcal L_{dense},
+\]
+
+where sparse loss averages codebook CE and dense loss is in-batch InfoNCE over valid transitions. The legacy scope masks same-sequence transitions; the paper-aligned scope uses all batch targets while masking repeated copies of the exact catalog item. Target vectors are detached. The memory queue is an optional research extension and is disabled for the paper-aligned control.
+
+With `use_dense=False`, dense history positions are zeroed and InfoNCE is zero. The encoder remains untrained but current evaluation still invokes it for BeamFusion, so sparse-only `results.json.metrics` is not a clean sparse-only headline.
+
+## Data and generation
+
+`AmazonCobraDataset` caches each item's raw SID, configured text tokens, and XL embedding. The paper-aligned path uses title, price, category, and description for both its dedicated RQ-VAE and dense encoder. Under leave-one-out, each user contributes one training row; the collator appends its target and model forward supervises all adjacent transitions in the resulting sequence.
+
+```text
+CobraGenerationOutput
+  sem_ids    [B,M,C]
+  dense_vecs [B,M,d]
+  scores     [B,M]
 ```
-Item Representation = [sparse_id_0, sparse_id_1, ..., sparse_id_C, dense_vector]
 
-Input Sequence:
-[s0_1, s1_1, s2_1, d_1, s0_2, s1_2, s2_2, d_2, ..., s0_n, s1_n, s2_n, d_n]
-     └── item 1 ──┘        └── item 2 ──┘              └── item n ──┘
+`Cobra.generate()` produces each code by rerunning the full decoder; there is no KV cache or catalog trie. BeamFusion finds items with an exactly matching full SID, then combines normalized beam probability and within-bucket dense cosine:
 
-       ↓
-Transformer Decoder
-       ↓
-Sparse Head (codebook prediction) + Dense Head (vector reconstruction)
-```
+\[
+w(m,a)=\operatorname{softmax}_m(\tau\phi_m)
+\operatorname{softmax}_{a\in\mathcal C(s_m)}
+(\psi\cos(\hat v_m,v_a)).
+\]
 
-### Key Components
+Beam width, `tau`, `psi`, and catalog-prefix constraints are Gin-configurable;
+top 10 is the benchmark output width.
 
-- **Sparse Representation**: C codebook tokens from RQ-VAE
-- **Dense Representation**: Continuous embedding vector
-- **Interleaved Input**: Alternating sparse and dense tokens
-- **Dual Prediction Heads**: Separate heads for sparse and dense outputs
+Evaluation recalculates the catalog's dense vectors and records BeamFusion item
+metrics as headline plus two SID-level diagnostic streams. Validation alone
+selects `best_model.pt`; every rank reloads that snapshot and test runs once.
 
-## Training Pipeline
+Missing candidates use item ID/SID `-1`, so valid catalog item 0 cannot receive a
+padding-induced hit. Dense InfoNCE also masks off-diagonal copies of the same
+catalog item instead of treating them as contradictory negatives.
 
-### Step 1: Train RQ-VAE
+## Code and run
+
+| Layer | Source | Role |
+|---|---|---|
+| model/outputs | [`cobra.py`](https://github.com/phonism/genrec/blob/main/genrec/models/cobra.py) | encoder, interleave, decoder, losses, generation, fusion |
+| dense encoders | [`encoder.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/encoder.py) | pretrained Sentence-T5 or random LightT5 |
+| data | [`amazon_cobra.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_cobra.py) | RQ-VAE catalog and text tokens |
+| collator/trainer | [`cobra_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/cobra_trainer.py) | Accelerate, cosine schedule, evaluation, resume |
+| configs | [`config/cobra/amazon/`](https://github.com/phonism/genrec/tree/main/config/cobra/amazon) | baseline, v2, and sparse-only |
 
 ```bash
-python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin
+python -m genrec.trainers.rqvae_trainer \
+  config/cobra/amazon/rqvae.gin --split beauty
+python -m genrec.trainers.cobra_trainer \
+  config/cobra/amazon/cobra.gin --split beauty
+
+python -m genrec.trainers.rqvae_trainer \
+  config/cobra/amazon/rqvae_paper_attributes.gin --split beauty
+python -m genrec.trainers.cobra_trainer \
+  config/cobra/amazon/cobra_paper_aligned.gin --split beauty
 ```
 
-### Step 2: Train COBRA
+Stage 2 reads `out/cobra/amazon/<split>/rqvae/checkpoint_epoch_4999.pt`. TIGER/LCRec RQ-VAE checkpoints are geometrically incompatible. Optional variants are `cobra_v2.gin` and `cobra_sparse_only.gin`; no Amazon 2023 COBRA config currently exists.
 
-```bash
-python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin
-```
+The baseline uses 20 epochs, batch 32 with accumulation 4, `1e-4`, 500 warmup steps, 3×32 SID, 768 width, two decoder layers, Sentence-T5-base dense encoder, 100-item histories, and fp32 (`amp=False`). Checkpoints are dicts containing epoch, model, optimizer, and scheduler, but not constructor config, catalog fingerprint, or RNG/DataLoader state. There is no `eval_only` route.
 
-## Configuration
+## Limits before formal reproduction
 
-```gin
-# config/cobra/amazon/cobra.gin
+The implementation is only safe for `C=3` in several hard-coded paths. Catalog-prefix constrained beam is optional, while KV cache, clean sparse-only item resolution, and full C-generic/distributed/resume coverage remain missing. Validation now selects `best_model.pt`, all ranks reload it, and test runs exactly once. Several scripts under `scripts/` are hard-coded legacy probes rather than portable evaluators. Publish only item-level artifacts that pass matrix validation; keep SID values labeled pre-resolution diagnostics.
 
-# Training
-train.epochs = 20
-train.batch_size = 32
-train.learning_rate = 1e-4
-
-# Model architecture
-train.n_codebooks = 3
-train.id_vocab_size = 32      # 32x32x32 codebook, per the paper
-train.d_model = 768
-train.decoder_n_layers = 2
-train.decoder_num_heads = 6
-
-# Loss weights
-train.sparse_loss_weight = 1.0
-train.dense_loss_weight = 1.0
-
-# Encoder
-train.encoder_type = "pretrained"
-train.encoder_model_name = %MODEL_HUB_SENTENCE_T5_BASE
-```
-
-## Loss Function
-
-COBRA uses a combined loss:
-
-```
-L = λ_sparse * L_sparse + λ_dense * L_dense
-```
-
-- **L_sparse**: Cross-entropy loss for codebook prediction
-- **L_dense**: Cosine similarity loss for vector reconstruction
-
-## Model API
-
-```python
-from genrec.models import Cobra
-
-model = Cobra(
-    n_codebooks=3,
-    id_vocab_size=256,
-    d_model=768,
-    decoder_n_layers=2,
-    decoder_num_heads=6,
-    encoder_type="pretrained",
-)
-
-# Training forward
-output = model(input_ids, encoder_input_ids)
-loss = output.loss_sparse + output.loss_dense
-
-# Generation
-generated = model.generate(
-    input_ids=history_ids,
-    encoder_input_ids=history_texts,
-    n_candidates=10,
-)
-```
-
-## Comparison with TIGER
-
-| Aspect | TIGER | COBRA |
-|--------|-------|-------|
-| Representation | Sparse only | Sparse + Dense |
-| Item encoding | Semantic IDs | Semantic IDs + Embeddings |
-| Input format | Flat sequence | Interleaved sequence |
-| Prediction | Codebook tokens | Codebook tokens + Vector |
-
-## Reproduction Status
-
-**Implemented but not yet reproduced.** On Amazon 2014 Beauty (leave-one-out, full eval set, `checkpoint_final.pt` = epoch 19, n_beam=32):
-
-| Metric | R@5 | R@10 | N@5 | N@10 |
-|--------|-----|------|-----|------|
-| Honest item-level (test) | 0.0054 | **0.0099** | 0.0033 | 0.0048 |
-| Honest item-level (valid) | 0.0060 | 0.0101 | 0.0036 | 0.0049 |
-| Sem-ID level (test, inflated) | 0.0071 | 0.0127 | 0.0045 | 0.0063 |
-| **Paper** | 0.0537 | **0.0725** | 0.0395 | 0.0456 |
-
-About 7x below the paper. Three bugs/issues were found and fixed, then the *remaining* gap was diagnosed:
-
-1. **Eval was collision-inflated (fixed).** `cobra_trainer.py` compared the target's *semantic-ID tuple* against retrieved items' sem-ids. With a 32×32×32 codebook and no uniquifying code, collision rate is 0.43 → any item in the target's bucket counted as a hit (~1.3x inflation; also hid BeamFusion's dense disambiguation). Eval now compares **item ids**; sem-id is kept as a logged reference. `beam_fusion` was vectorized (the per-(batch,beam) `.cpu()` sync loop dominated eval time) and `generate()`'s encoder call was chunked (OOM fix).
-
-2. **Encoder/RQ-VAE mismatch (fixed — this one silently breaks any fresh run).** The trainer passed the *model's* encoder name (`sentence-t5-base`) to the dataset, overriding the gin binding that says the dataset should embed items with `sentence-t5-xl` — the encoder the RQ-VAE was trained on. Result: items embedded in the wrong space → semantic IDs collapse from **6901 → 529** unique. Fix: don't override the dataset encoder (base/xl share the T5 tokenizer, so the model still sees the same text).
-
-3. **Decode beam too narrow (fixed).** `n_beam` 20 → 32 (the codebook size): +13% item R@10.
-
-**Remaining gap = model ceiling, not the quantizer or decoding.** The RQ-VAE codebooks are healthy (perplexity ≈28-32/32) and the sparse branch *does* learn under teacher forcing (per-codebook 0.26/0.21/0.43; the eval per-codebook numbers measure *retrieved-item* codes, not the model's). The bottleneck is that the model's intrinsic ability on the held-out item is low and a deeper/longer-trained decoder is needed to lift it — a pilot with a 4-layer decoder raised the teacher-forced ceiling steadily (epoch-9 train recall already > the 2-layer baseline's epoch-19) but item-level recall only moves once that ceiling is high enough. Closing to the paper is open-ended training work (the paper does not publish its hyperparameters). `generate()` also still lacks a KV-cache, so eval is slow.
-
-Tools: `scripts/eval_cobra_itemlevel.py` (item-level + sem-id), `scripts/diag_cobra_{loss,gen,final}.py` (teacher-forced vs generation diagnostics).
-
-## Reference
-
-- COBRA: Sparse Meets Dense - Unified Generative Recommendations with Cascaded Sparse-Dense Representations
+See [RQ-VAE](rqvae.md), [trainer API](../api/trainers.md#semantic-id-recommenders), and [model status](../reference/model-status.md).

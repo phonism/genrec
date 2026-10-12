@@ -1,169 +1,177 @@
-# Getting Started
+# Getting started
 
-This guide will help you quickly get started with GenRec.
+This path produces one auditable SASRec run before introducing the dependencies of generative pipelines. Run commands from the repository root.
 
-## Prerequisites
-
-- Python 3.9 or higher
-- CUDA 11.0+ (for GPU training)
-- 8GB+ GPU memory (recommended)
-
-## Installation
-
-### 1. Clone the Repository
+## 1. Install
 
 ```bash
-git clone https://github.com/phonism/genrec.git
-cd genrec
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
-### 2. Install
+For CUDA, optional dependencies, and local model mirrors, see [Installation](installation.md).
+
+## 2. Prepare Amazon 2014 Beauty
+
+SASRec and HSTU read the raw gzip files directly, so prepare them explicitly:
 
 ```bash
-pip install -e .
+python scripts/prepare_amazon2014.py \
+  --splits beauty --kinds reviews meta
 ```
 
-Or install dependencies only:
+Expected files:
+
+```text
+dataset/amazon/raw/beauty/
+├── reviews_Beauty_5.json.gz
+└── meta_Beauty.json.gz
+```
+
+The preparation script verifies gzip CRC and SHA-256 and writes atomically. Existing files are revalidated.
+
+## 3. Run a baseline
 
 ```bash
-pip install -r requirements.txt
+python genrec/trainers/sasrec_trainer.py \
+  config/sasrec/amazon.gin --split beauty \
+  --gin 'train.wandb_logging=False'
 ```
 
-### 3. Prepare Data
-
-Datasets are automatically downloaded during training. For Amazon 2014:
+The default may train for up to 300 epochs with early stopping on validation Recall@10. For a code-path smoke test, isolate the output and shorten the run:
 
 ```bash
-mkdir -p dataset/amazon
+python genrec/trainers/sasrec_trainer.py \
+  config/sasrec/amazon.gin --split beauty \
+  --gin 'train.epochs=1' \
+  --gin 'train.patience=1' \
+  --gin 'train.wandb_logging=False' \
+  --gin 'train.save_dir_root="out/_smoke/sasrec/beauty"'
 ```
 
-For Amazon 2023:
+Do not publish smoke-test metrics. A normal output directory contains `best_model.pt`, a timestamped log, and `results.json`; the JSON artifact, not a copied console number, is the aggregation input.
 
-```bash
-mkdir -p dataset/amazon2023
-```
+## 4. Choose a pipeline
 
-## Train Baseline Models
-
-### SASRec
+### SASRec / HSTU
 
 ```bash
 python genrec/trainers/sasrec_trainer.py config/sasrec/amazon.gin --split beauty
-```
-
-### HSTU
-
-```bash
 python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin --split beauty
+python genrec/trainers/hstu_trainer.py config/hstu/amazon_ss.gin --split beauty
 ```
 
-Available splits for Amazon 2014: `beauty`, `sports`, `toys`, `clothing`
+HSTU cross-entropy and sampled-softmax runs are different experiments; keep their outputs and labels separate.
 
-For Amazon 2023 datasets, use dedicated config files:
+### RQ-VAE → TIGER / LCRec / COBRA
 
-```bash
-python genrec/trainers/sasrec_trainer.py config/sasrec/amazon2023.gin
-python genrec/trainers/hstu_trainer.py config/hstu/amazon2023.gin
-```
-
-## Train Generative Models
-
-Generative models (TIGER, LCRec, COBRA) require a pretrained RQVAE checkpoint to generate semantic IDs.
-
-### Step 1: Train RQVAE
-
-```bash
-# For TIGER
-python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
-
-# For LCRec
-python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
-
-# For COBRA
-python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
-```
-
-### Step 2: Train the Model
+Each downstream model has its own RQ-VAE geometry. Train and load the matching checkpoint:
 
 ```bash
 # TIGER
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
 python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split beauty
 
 # LCRec
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
 python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
 
 # COBRA
+python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
 python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
 ```
 
-### Amazon 2023 Datasets
+Check the Sentence-T5 path in `config/base.gin`. Do not, for example, pass TIGER's 3×256 tokenizer checkpoint to a COBRA 3×32 pipeline.
+
+TIGER currently uses ordinary beam search. It does **not** use Trie-constrained decoding; catalog-invalid SIDs are removed during item mapping.
+
+### RQ-KMeans → OneRec
 
 ```bash
-# TIGER on Amazon 2023
-python genrec/trainers/rqvae_trainer.py config/tiger/amazon2023/rqvae.gin
-python genrec/trainers/tiger_trainer.py config/tiger/amazon2023/tiger.gin
+# Stage 1: item embeddings + 3×256 residual K-Means
+python genrec/trainers/rqkmeans_trainer.py \
+  config/onerec/amazon/rqkmeans.gin --split beauty
 
-# LCRec on Amazon 2023
-python genrec/trainers/rqvae_trainer.py config/lcrec/amazon2023/rqvae.gin
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
+# Stage 2a: multi-task SFT
+accelerate launch --config_file config/accelerate_4gpu.yaml \
+  -m genrec.trainers.onerec_sft_trainer \
+  config/onerec/amazon/sft.gin --split beauty
+
+# Stage 2b: alternative CLM training, not a required post-SFT stage
+python -m genrec.trainers.onerec_clm_trainer \
+  config/onerec/amazon/clm.gin --split beauty
+
+# Stage 3: GRPO, which depends on an SFT checkpoint
+accelerate launch --config_file config/accelerate_4gpu.yaml \
+  -m genrec.trainers.onerec_grpo_trainer \
+  config/onerec/amazon/grpo.gin --split beauty
 ```
 
-## Monitor Training
+The default pipeline expects local `Qwen3-Embedding-8B` and `Qwen3-1.7B` assets. Read the [OneRec page](models/onerec.md) before changing rewards, codebook size, collision policy, or checkpoint paths.
 
-Enable Weights & Biases logging in your config:
-
-```gin
-train.wandb_logging=True
-train.wandb_project="your_project_name"
-```
-
-Visit [wandb.ai](https://wandb.ai) to view training progress.
-
-## Configuration
-
-### Override Parameters
-
-Use `--gin` to override any parameter:
+### RPG / NoteLLM / GRAM
 
 ```bash
-python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin \
-    --split beauty \
-    --gin "train.epochs=200" \
-    --gin "train.batch_size=128"
+python -m genrec.trainers.rpg_trainer \
+  config/rpg/amazon.gin --split beauty
+
+python -m genrec.trainers.notellm_trainer \
+  config/notellm/amazon.gin --split beauty
+
+python -m genrec.trainers.gram_trainer \
+  config/gram/amazon/gram.gin --split Beauty
 ```
 
-### Custom Model Path (LCRec)
+RPG requires FAISS. NoteLLM's default LoRA path requires PEFT; its config binds
+`{split}` to both the trainer and dataset, so the standard `--split` flag is
+sufficient. GRAM consumes paper-style preprocessed assets under `dataset/gram`;
+the regular Amazon adapter does not build every lexical-index and similar-item
+artifact.
+
+## 5. Gin overrides
+
+The first positional argument is a Gin config. `--split` first replaces literal `{split}` placeholders in its text; repeated `--gin` arguments are then parsed as overrides:
 
 ```bash
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin \
-    --split beauty \
-    --gin "MODEL_HUB_QWEN3_1_7B='/path/to/model'"
+python genrec/trainers/hstu_trainer.py config/hstu/amazon.gin \
+  --split sports \
+  --gin 'train.seed=7' \
+  --gin 'train.batch_size=64' \
+  --gin 'train.wandb_logging=False'
 ```
 
-## Training Pipeline
+The configurable is not always named `train`: OneRec uses `train_sft`, `train_clm`, and `train_grpo`; RPG uses `train_rpg`; GRAM uses `train_gram`. Copy the selector from the actual config.
 
-```mermaid
-graph TD
-    A[Config File] --> B[Dataset Loading]
-    B --> C[Model Initialization]
-    C --> D[Training Loop]
-    D --> E[Evaluation - Recall@K, NDCG@K]
-    E --> F[Checkpoint Saving]
-    F --> D
+## 6. Evaluation contract
+
+The default protocol is `leave_one_out`; compatible Amazon adapters also support `global_temporal`. Separate results by protocol, seed, and metric level.
+
+For semantic-ID generators, only item-level metrics are suitable as headlines:
+
+```text
+beam SIDs
+  → training-only most-popular SID→item resolution
+  → item deduplication
+  → Recall@K / NDCG@K
 ```
 
-For generative models:
+SID-tuple exact match, NoteLLM in-batch recall, and sampled-negative metrics are diagnostics, not cross-model headline results. See [Evaluation system](architecture/evaluation-system.md).
 
-```mermaid
-graph TD
-    A[Train RQVAE] --> B[Generate Semantic IDs]
-    B --> C[Train TIGER/LCRec/COBRA]
-    C --> D[Evaluation]
+## 7. Before a matrix run
+
+```bash
+python scripts/run_matrix.py --help
+python scripts/validate_matrix_results.py --help
+python scripts/aggregate_results.py --help
 ```
 
-## Next Steps
+Dry-run the matrix before using a remote experiment cell. Runs on the primary 179 host must follow the [concurrency-safe reproduction runbook](179-reproduction-runbook.md).
 
-- Learn about [Model Architectures](models/sasrec.md)
-- Understand [Dataset Processing](dataset/overview.md)
-- Check [API Documentation](api/index.md)
-- Explore [Advanced Examples](examples.md)
+## Next steps
+
+- [Model overview](models/overview.md)
+- [Architecture](architecture/index.md)
+- [GenRec research landscape](landscape/index.md)
+- [Extension guide](architecture/extension-guide.md)
+- [Implementation and reproduction status](reference/model-status.md)

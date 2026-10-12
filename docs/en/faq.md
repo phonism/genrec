@@ -1,366 +1,134 @@
-# Frequently Asked Questions (FAQ)
+# Frequently asked questions
 
-This page contains common questions and answers when using the genrec framework.
+## Installation and environment
 
-## Installation and Environment
+### Which Python and PyTorch versions are supported?
 
-### Q: How do I install genrec?
+`pyproject.toml` requires Python `>=3.9` and PyTorch `>=2.0`. Choose a CUDA wheel compatible with the machine's driver; the primary experiment environment is Linux with NVIDIA GPUs.
 
-A: Currently supports installation from source:
+### Why does `config/base.gin` point into `/root/workspace/models_hub`?
 
-```bash
-git clone https://github.com/phonism/genrec.git
-cd genrec
-pip install -e .
-```
+Those are local mirror paths on the primary 179 host. Override the `MODEL_HUB_*` Gin constants elsewhere. The config parser does not automatically expand a generic model-hub environment variable.
 
-### Q: Which Python versions are supported?
+### Why is PEFT missing for NoteLLM?
 
-A: We recommend Python 3.8 or higher. The framework has been tested on Python 3.8, 3.9, and 3.10.
+The default config enables LoRA, while PEFT is in the `full` optional dependency group. Install `pip install -e ".[full]"` or explicitly disable LoRA; those are different experiment configurations.
 
-### Q: What are the main dependencies?
+### Why is FAISS missing for RPG?
 
-A: Main dependencies include:
-- PyTorch >= 1.11.0
-- PyTorch Lightning >= 1.6.0
-- sentence-transformers >= 2.2.0
-- pandas >= 1.3.0
-- numpy >= 1.21.0
+Install `pip install -e ".[rpg]"`. The group currently pins `faiss-cpu==1.10.0` to match the reproduction environment.
 
-### Q: Does it support GPU training?
+## Data
 
-A: Yes, the framework fully supports GPU training. Make sure you have the correct PyTorch CUDA version installed.
+### Is data downloaded automatically?
 
-## Data and Datasets
+Not uniformly. `AmazonItemDataset` can download raw review/metadata on demand, while SASRec and HSTU adapters read local files directly. On shared hosts, use `scripts/prepare_amazon2014.py` for locking, CRC checks, and SHA-256 manifests.
 
-### Q: What dataset formats are supported?
+### Why can Amazon 2023 still read `reviews_*_5.json.gz`?
 
-A: The framework supports:
-- JSON format recommendation datasets
-- CSV format user-item interaction data
-- Parquet format large-scale datasets
-- Custom formats (by inheriting base classes)
+`genrec.data.amazon2023` downloads 2023 JSONL, applies iterative k-core filtering, and emits gzip files compatible with the older adapters. Run the preparation step first; changing only `dataset_folder` does not perform the conversion. The current Amazon 2023 SASRec/HSTU configs deliberately reuse the compatible 2014-style adapters.
 
-### Q: How do I add a custom dataset?
+### Can integer item IDs be shared across models?
 
-A: Inherit from the `BaseRecommenderDataset` class and implement necessary methods:
+Do not assume so. SASRec, HSTU, and RPG use 1-based IDs with padding 0; TIGER, LCRec, OneRec, and COBRA generally use 0-based IDs; GRAM uses string IDs. Mapping can also depend on source record order.
 
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
+### Is `leave_one_out` better than `global_temporal`?
 
-class MyDataset(BaseRecommenderDataset):
-    def download(self):
-        # Implement data download logic
-        pass
-        
-    def load_raw_data(self):
-        # Implement data loading logic
-        return {"items": items_df, "interactions": interactions_df}
-        
-    def preprocess_data(self, raw_data):
-        # Implement data preprocessing logic
-        return processed_data
-```
+They answer different questions. Leave-one-out supports traditional reproduction; global temporal more strongly prevents future interactions from entering training histories. Report them separately and never average across protocols.
 
-### Q: How large is the P5 Amazon dataset?
+## Configuration
 
-A: Different categories have different sizes:
-- Beauty: ~500MB
-- Electronics: ~2GB
-- Sports: ~1GB
-- Full dataset may require 10GB+ storage
+### What does `--split` do?
 
-### Q: How are missing item features handled?
+`parse_config` replaces literal `{split}` text in the Gin file, parses repeated `--gin` overrides, and stores the split in process context for result metadata.
 
-A: The framework automatically handles missing features:
-- Text fields are filled with "Unknown"
-- Numerical fields are filled with mean or 0
-- Filling strategies can be customized in configuration
+### Why does `--gin 'train.xxx=...'` have no effect?
 
-## Model Training
+Check the real configurable name. OneRec uses `train_sft`, `train_clm`, and `train_grpo`; RPG uses `train_rpg`; GRAM uses `train_gram`. Use the selector shown on the left side of the config binding.
 
-### Q: How long does RQVAE training take?
+### Which wins: Python defaults or Gin values?
 
-A: Depends on dataset size and hardware:
-- Small datasets (<100k items): 30 minutes - 2 hours
-- Medium datasets (100k-1M items): 2-8 hours
-- Large datasets (>1M items): 8-24 hours
+Gin overrides Python defaults at execution time. Reproduction is defined by the resolved config, CLI overrides, and `results.json`, not by an example value in prose.
 
-### Q: What are TIGER training memory requirements?
+### Does NoteLLM need an extra split override?
 
-A: Typical memory usage:
-- Minimum: 8GB GPU memory (small batch size)
-- Recommended: 16GB GPU memory (medium batch size)
-- Large-scale: 32GB+ GPU memory (large batch size)
+No. Its config binds `{split}` to both the trainer and dataset class, so
+`--split sports` updates the data, output path, and result provenance together.
 
-### Q: How do I choose appropriate embedding dimensions?
+## Models and tokenizers
 
-A: Rule of thumb:
-- Small datasets: 256-512 dimensions
-- Medium datasets: 512-768 dimensions
-- Large datasets: 768-1024 dimensions
-- Specific choice should be based on validation set performance
-
-### Q: What to do when encountering CUDA out of memory during training?
-
-A: Solutions:
-1. Reduce batch size
-2. Use gradient accumulation
-3. Enable mixed precision training
-4. Reduce model size
-
-```python
-# Reduce batch size
-config.batch_size = 16
-
-# Gradient accumulation
-config.accumulate_grad_batches = 4
-
-# Mixed precision
-config.precision = 16
-```
-
-## Model Usage
-
-### Q: How do I generate recommendations?
-
-A: Basic recommendation generation:
-
-```python
-# Load models
-rqvae = RqVae.load_from_checkpoint("rqvae.ckpt")
-tiger = Tiger.load_from_checkpoint("tiger.ckpt")
+### Are RQ-VAE and RQ-KMeans recommenders?
 
-# User history (item IDs)
-user_history = [1, 5, 23, 67]
+No. They tokenize item embeddings into semantic IDs. Evaluate their reconstruction, codebook health, and collisions; do not report standalone recommendation Recall for them.
 
-# Convert to semantic IDs
-semantic_ids = rqvae.encode_items(user_history)
-
-# Generate recommendations
-recommendations = tiger.generate(semantic_ids, max_length=10)
-```
-
-### Q: How do I handle cold start users?
-
-A: For new users:
-1. Use popular item recommendations
-2. Content-based recommendations using user profile
-3. Similarity-based recommendations using item features
-
-```python
-def recommend_for_new_user(user_profile, k=10):
-    # Find similar items based on user profile
-    similar_items = find_similar_items_by_profile(user_profile)
-    return similar_items[:k]
-```
-
-### Q: How do I ensure recommendation diversity?
-
-A: Methods to improve diversity:
-1. Use top-p sampling instead of greedy sampling
-2. Post-processing for deduplication and diversification
-3. Add diversity loss during training
-
-```python
-# Use sampling for generation
-recommendations = tiger.generate(
-    input_seq, 
-    temperature=0.8,
-    top_p=0.9,
-    do_sample=True
-)
-```
-
-## Performance and Optimization
-
-### Q: How do I improve inference speed?
-
-A: Optimization methods:
-1. Model quantization
-2. ONNX export
-3. TensorRT optimization
-4. Batch inference
-
-```python
-# Model quantization
-quantized_model = torch.quantization.quantize_dynamic(
-    model, {torch.nn.Linear}, dtype=torch.qint8
-)
-
-# Batch inference
-def batch_recommend(user_histories, batch_size=32):
-    results = []
-    for i in range(0, len(user_histories), batch_size):
-        batch = user_histories[i:i+batch_size]
-        batch_results = model.batch_generate(batch)
-        results.extend(batch_results)
-    return results
-```
-
-### Q: Can model size be compressed?
-
-A: Compression techniques:
-- Quantization: 50-75% size reduction
-- Pruning: Remove unimportant parameters
-- Knowledge distillation: Train small model to mimic large model
-
-### Q: How do I monitor model performance?
-
-A: Monitor metrics:
-- Inference latency
-- Memory usage
-- GPU utilization
-- Recommendation quality metrics (Recall, NDCG)
-
-## Errors and Debugging
-
-### Q: Getting "RuntimeError: CUDA out of memory" during training?
-
-A: Solution steps:
-1. Reduce batch_size
-2. Enable gradient checkpointing
-3. Clear GPU cache
-
-```python
-import torch
-torch.cuda.empty_cache()
-
-# Or in training configuration
-config.gradient_checkpointing = True
-```
-
-### Q: What to do when model loading fails?
-
-A: Check items:
-1. Check if checkpoint file is complete
-2. PyTorch version compatibility
-3. Model architecture match
-
-```python
-try:
-    model = Model.load_from_checkpoint(checkpoint_path)
-except Exception as e:
-    print(f"Loading failed: {e}")
-    # Try loading state dict
-    checkpoint = torch.load(checkpoint_path)
-    model.load_state_dict(checkpoint['state_dict'])
-```
-
-### Q: What to do when training loss doesn't converge?
-
-A: Debugging methods:
-1. Check learning rate (may be too large or too small)
-2. Check data preprocessing
-3. Increase training data amount
-4. Adjust model architecture
-
-```python
-# Learning rate scheduling
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, 'min', patience=5, factor=0.5
-)
-```
-
-## Deployment and Production
-
-### Q: How do I deploy to production?
-
-A: Deployment options:
-1. REST API service (FastAPI/Flask)
-2. Docker containerization
-3. Kubernetes cluster
-4. Cloud service platforms
-
-### Q: Does it support real-time recommendations?
-
-A: Yes, the framework supports:
-- Online inference API
-- Batch pre-computation
-- Streaming processing integration
-
-### Q: How do I conduct A/B testing?
-
-A: A/B testing framework:
-
-```python
-class ABTestFramework:
-    def get_variant(self, user_id, experiment_name):
-        # Consistent hash-based user grouping
-        hash_value = hash(f"{user_id}_{experiment_name}")
-        return "A" if hash_value % 2 == 0 else "B"
-    
-    def recommend_with_test(self, user_id, user_history):
-        variant = self.get_variant(user_id, "model_test")
-        if variant == "A":
-            return model_a.recommend(user_history)
-        else:
-            return model_b.recommend(user_history)
-```
-
-## Advanced Usage
-
-### Q: How do I implement multi-task learning?
-
-A: Extend model to support multiple objectives:
-
-```python
-class MultiTaskTiger(Tiger):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.rating_head = nn.Linear(self.embedding_dim, 1)
-        self.category_head = nn.Linear(self.embedding_dim, num_categories)
-    
-    def forward(self, x):
-        hidden = super().forward(x)
-        
-        # Multiple output heads
-        recommendations = self.recommendation_head(hidden)
-        ratings = self.rating_head(hidden)
-        categories = self.category_head(hidden)
-        
-        return recommendations, ratings, categories
-```
-
-### Q: How do I integrate external features?
-
-A: Feature fusion methods:
-
-```python
-class FeatureEnhancedModel(Tiger):
-    def __init__(self, user_feature_dim, item_feature_dim, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.user_feature_proj = nn.Linear(user_feature_dim, self.embedding_dim)
-        self.item_feature_proj = nn.Linear(item_feature_dim, self.embedding_dim)
-    
-    def forward(self, item_seq, user_features=None, item_features=None):
-        seq_emb = super().forward(item_seq)
-        
-        if user_features is not None:
-            user_emb = self.user_feature_proj(user_features)
-            seq_emb = seq_emb + user_emb.unsqueeze(1)
-        
-        return seq_emb
-```
-
-### Q: How do I handle temporal information in sequences?
-
-A: Time-aware recommendations:
-
-```python
-class TimeAwareTiger(Tiger):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.time_emb = nn.Embedding(24 * 7, self.embedding_dim)  # hours*days
-    
-    def forward(self, item_seq, time_seq=None):
-        seq_emb = self.item_embedding(item_seq)
-        
-        if time_seq is not None:
-            time_emb = self.time_emb(time_seq)
-            seq_emb = seq_emb + time_emb
-        
-        return self.transformer(seq_emb)
-```
-
-If you have other questions, please check the [API documentation](api/index.md) or submit an issue on GitHub.
+### Why can K=8192 collapse?
+
+In a catalog with only tens of thousands of items, later residual layers are shallow and an oversized MiniBatchKMeans codebook can develop dead clusters and a super-cluster. Current small-catalog OneRec configs use K=256 and include dead-cluster reinitialization. Per-layer usage is not the same as full-SID uniqueness.
+
+### Does TIGER use a Trie?
+
+No. The current `Tiger.generate()` performs ordinary beam search. The item mapper drops illegal or out-of-catalog SIDs. Any older claim of Trie-constrained TIGER decoding described an API that does not exist here.
+
+### How do OneRec SFT, CLM, and GRPO relate?
+
+RQ-KMeans is the shared prerequisite. SFT and CLM are alternative training-data organizations; CLM is not a mandatory stage after SFT. GRPO depends on an SFT checkpoint.
+
+### Why do many GRPO steps have no gradient?
+
+With low SFT top-1 accuracy and a finite group size, a group often contains no positive sample. Returning zero rewards in that case is a hard-sample skip, not a reward bug. Compare `add_gt`, larger groups, or denser rewards as isolated experiments rather than silently changing semantics.
+
+### Why can COBRA be implemented yet underperform the paper?
+
+Source code presence and paper-result reproduction are separate claims. Current item-level results remain below the paper; the [COBRA page](models/cobra.md) records the diagnosis and open gaps.
+
+### Is NoteLLM a semantic-ID generator?
+
+Not in this repository. It extracts the LLM hidden state immediately before
+`[EMB]` and performs dense item retrieval. In-batch recall is diagnostic;
+formal evaluation uses exact full-catalog retrieval.
+
+## Metrics
+
+### Why can SID Recall exceed item Recall?
+
+Multiple items may share a complete SID. Tuple-level matching then treats any item in the bucket as the target. Headline metrics must resolve with training-only SID→item statistics and deduplicate item candidates.
+
+### Why can deduplication change Recall nonlinearly?
+
+Several beams may resolve to one item. Removing duplicates pulls deeper beams into the top K, so item@K is not a fixed scaling of SID@K.
+
+### Can NoteLLM in-batch Recall be compared with SASRec?
+
+No. Its candidate set is only the batch. Only the full-catalog `compute_full_catalog_metrics` path belongs in a common headline table.
+
+### Are Recall@K and HR@K the same here?
+
+They are numerically equal under the current one-target next-item protocol. Documentation uses “Recall” so the name remains meaningful if multi-target evaluation is added.
+
+## Training and results
+
+### How is the best checkpoint chosen?
+
+Most recommenders use validation Recall@10, but inspect the trainer. For SID models, verify that selection uses item-level metrics rather than a legacy tuple-level metric.
+
+### Why does a README number not match `best_model.pt`?
+
+A smoke run may have overwritten a checkpoint, or the number may use a different seed, protocol, source snapshot, or metric level. Check exact provenance in `results.json` and logs rather than inferring from a filename.
+
+### How should I run a three-seed matrix?
+
+Dry-run `scripts/run_matrix.py`, submit through the 179 locked workflow, then validate and aggregate. Do not manually launch competing commands against the same GPU or experiment cell.
+
+### May I kill an unfamiliar GPU process?
+
+No. Inspect both the remote task list and GPU processes. `run-locked-179.sh` reacquires locks and refuses unsafe sharing; an unknown process may belong to another session.
+
+## Documentation
+
+### Why are some English pages missing?
+
+Chinese is the canonical implementation and landscape documentation. The i18n site falls back to Chinese for pages without an English translation; this does not imply complete bilingual parity.
+
+### How should I report a documentation error?
+
+Give the page, exact statement, corresponding source or paper evidence, and verification date. Follow the [documentation policy](reference/documentation-policy.md).

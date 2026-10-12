@@ -1,143 +1,119 @@
-# 数据集概述
+# 数据集总览
 
-genrec 框架支持多种推荐系统数据集，并提供了灵活的数据处理管道。
+GenRec 没有一个所有模型继承的“万能 Dataset 基类”。每个模型 adapter 直接实现 `torch.utils.data.Dataset`，共享的是原始 Amazon 文件、协议函数和若干 schema。阅读代码时应从 trainer 传入的具体 dataset class 开始。
 
-## 支持的数据集
+## 数据源
 
-### P5 Amazon 数据集
+| 数据源 | 入口 | 主要用途 | 状态 |
+|---|---|---|---|
+| Amazon Reviews 2014 5-core | `genrec/data/amazon.py` 及各 `amazon_<model>.py` | 主要 benchmark；Beauty/Sports/Toys/Home/Clothing | 核心路径 |
+| Amazon Reviews 2023 | `genrec/data/amazon2023.py` | 下载 JSONL、迭代 5-core、转换为兼容 gzip | 预处理 + 部分模型 config |
+| MovieLens 1M | `genrec/data/ml1m_hstu.py` | HSTU 小规模对齐/消融 | 仅 HSTU adapter |
+| GRAM 论文式预处理数据 | `genrec/data/amazon_gram.py` | lexical IDs、item text、CF similar items | 独立目录，不能由普通 Amazon adapter 直接替代 |
+| 旧 P5 / PyG 管线 | `genrec/data/p5_amazon.py` | 早期通用 item/sequence 数据实验 | 保留兼容，不是当前 benchmark 主路径 |
 
-P5 Amazon 是一个大规模的产品推荐数据集，包含用户评论和产品元数据。
+## 模型—adapter 矩阵
 
-**特点:**
-- 多个产品类别（美容、电子产品等）
-- 丰富的文本信息（标题、品牌、类别、价格）
-- 用户交互序列数据
-- 自动下载和预处理
+| 模型 | Dataset | item ID 约定 | 关键输出 |
+|---|---|---|---|
+| SASRec | `AmazonSASRecDataset` | 1-based，0 padding | history、target |
+| HSTU | `AmazonHSTUDataset` | 1-based，0 padding | history、timestamp、target |
+| RQ-VAE / RQ-KMeans | `AmazonItemDataset` | parquet 行与序列 mapping 对齐 | continuous item embedding |
+| TIGER | `AmazonSeqDataset` | 0-based item；SID 单独编码 | `SeqData` + raw `target_item` |
+| LCRec | `AmazonLCRecDataset` | 0-based | 多任务 prompt/response、SID catalog |
+| OneRec SFT/GRPO | `AmazonOneRecSFTDataset`, `AmazonOneRecRLDataset` | 0-based | 四类 SFT task 或 RL prompt |
+| OneRec CLM | `AmazonOneRecCLMDataset` | 0-based | 每用户 flat token stream |
+| COBRA | `AmazonCobraDataset` | 0-based | sparse codes + dense text tokens |
+| RPG | `AmazonRPGDataset` | 1-based，0 padding | item sequence + OPQ tokens |
+| NoteLLM | `AmazonNoteLLMDataset` | 继承 SASRec 的 1-based ID | item-to-item query/target + item text |
+| GRAM | `AmazonGRAMDataset` | 原始字符串 ID + lexical ID | user passage + per-item passages |
 
-**使用方法:**
-```python
-from genrec.data.p5_amazon import P5AmazonItemDataset
+!!! danger "不要跨 adapter 复用整数 item ID"
+    同一个 ASIN 在不同 adapter 中可能是 0-based 或 1-based，映射又由原始文件首次出现顺序构造。checkpoint、SID 数组和预测 dump 必须与生成它们的 mapping 同源；“数字相同”不代表同一 item。
 
-dataset = P5AmazonItemDataset(
-    root="dataset/amazon",
-    split="beauty",
-    train_test_split="train"
-)
+## Amazon 2014 文件
+
+核心目录：
+
+```text
+dataset/amazon/
+├── raw/
+│   └── beauty/
+│       ├── reviews_Beauty_5.json.gz
+│       └── meta_Beauty.json.gz
+└── processed/
+    └── beauty/
+        ├── item_emb_sentence-t5-xl.parquet
+        └── item_emb_Qwen3-Embedding-8B.parquet
 ```
 
-## 数据处理架构
+安全准备：
 
-### 模块化设计
-
-```mermaid
-graph TD
-    A[原始数据] --> B[数据下载器]
-    B --> C[预处理器]
-    C --> D[文本处理器]
-    C --> E[序列处理器]
-    D --> F[特征嵌入]
-    E --> G[序列数据]
-    F --> H[物品数据集]
-    G --> I[序列数据集]
+```bash
+python scripts/prepare_amazon2014.py \
+  --splits beauty sports toys --kinds reviews meta
 ```
 
-### 配置系统
+该脚本目前显式覆盖 Beauty、Sports、Toys。其他 `DATASET_CONFIGS` 类别可由 `AmazonItemDataset` 的下载逻辑处理，或按相同文件名手工准备；正式 run 应保存 checksum manifest。
 
-使用配置类管理数据处理参数：
+## Amazon 2023 转换
 
-```python
-from genrec.data.configs import P5AmazonConfig, TextEncodingConfig
-
-config = P5AmazonConfig(
-    root_dir="dataset/amazon",
-    split="beauty",
-    text_config=TextEncodingConfig(
-        encoder_model="sentence-transformers/sentence-t5-xl",
-        template="Title: {title}; Brand: {brand}"
-    )
-)
+```bash
+python -m genrec.data.amazon2023 --list_categories
+python -m genrec.data.amazon2023 \
+  --category Arts_Crafts_and_Sewing \
+  --k_core 5 \
+  --output_dir dataset/amazon2023
 ```
 
-## 数据处理流水线
+预处理会下载 review/meta JSONL，反复过滤直到 user 和 item 都满足 k-core，再写成现有 Amazon adapters 可读取的兼容文件。`--max_reviews` 只用于测试，不得把截断数据与完整数据 benchmark 混用。
 
-### 1. 数据下载
-- 自动从云端下载数据集
-- 解压和文件组织
-- 验证数据完整性
+## 两种序列协议
 
-### 2. 预处理
-- 数据清洗和标准化
-- 缺失值处理
-- ID 映射和重编码
+共享函数 `select_protocol_sequences` 位于 `genrec/data/evaluation_protocol.py`：
 
-### 3. 特征提取
-- 文本特征编码
-- 类别特征处理
-- 数值特征标准化
+- `leave_one_out`：每位用户最后一项 test、倒数第二项 valid；
+- `global_temporal`：用全局 timestamp quantile 建立 train/valid cutoffs，避免晚于 cutoff 的交互进入相应历史。
 
-### 4. 序列生成
-- 用户交互序列构建
-- 时序分割（训练/验证/测试）
-- 序列填充和截断
+具体 adapter 再把协议输出变成 sliding windows 或一用户一样本。协议相同不意味着训练 sample augmentation 相同。
 
-## 自定义数据集
+`global_temporal` 仍是 transductive catalog 设置：metadata、5-core 和 SID 构建可以看到完整 item 集，它不是严格 cold-item inductive protocol。
 
-要添加新的数据集，需要继承基类并实现必要方法：
+## 文本 embedding 缓存
 
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
+`AmazonItemDataset` 把 metadata 格式化为 title、price、salesRank、brand、categories 文本，经 SentenceTransformer 编码并保存 parquet。生成过程使用：
 
-class MyDataset(BaseRecommenderDataset):
-    def download(self):
-        # 实现数据下载逻辑
-        pass
-        
-    def load_raw_data(self):
-        # 加载原始数据
-        return {"items": items_df, "interactions": interactions_df}
-        
-    def preprocess_data(self, raw_data):
-        # 数据预处理
-        return processed_data
-        
-    def extract_items(self, processed_data):
-        return processed_data["items"]
-        
-    def extract_interactions(self, processed_data):
-        return processed_data["interactions"]
+- `<parquet>.lock` 排他文件锁；
+- `<parquet>.part.<pid>` 临时文件；
+- 完成后 `os.replace` 原子发布。
+
+RPG 有自己的 embedding/OPQ 缓存和 training-item-only 拟合约束；OneRec 使用 Qwen3-Embedding-8B。不要仅凭 embedding 维度判断两个缓存可交换。
+
+## 数据质量检查
+
+```bash
+python scripts/verify_dataset.py --skip_rqvae
+python scripts/verify_dataset.py \
+  --rqvae_path out/tiger/amazon/beauty/rqvae/checkpoint_epoch_4999.pt
+python scripts/prepare_item_embeddings.py --help
 ```
 
-## 性能优化
+`scripts/diagnose_dataset.py` 仍硬编码旧 checkpoint，`scripts/check_data_leakage.py` 仍依赖仓库外的绝对路径；两者属于历史现场诊断脚本，不是可移植的通用入口。正式泄漏检查应以统一 protocol、target 时间边界和矩阵验证器为准。
 
-### 缓存机制
-- 文本编码结果缓存
-- 预处理数据缓存  
-- 智能缓存失效
+最低检查项：
 
-### 内存管理
-- 懒加载大型数据集
-- 批量数据处理
-- 内存使用监控
+1. raw 文件 checksum 与 record count；
+2. user/item 数与 5-core 条件；
+3. 每个 split 的 target 时间边界；
+4. adapter 的 item mapping 与 embedding/SID 行数一致；
+5. train/valid/test sample 数；
+6. SID collision、codebook health；
+7. embedding cache 的 encoder 名称、revision、维度和 hash。
 
-### 并行处理
-- 多进程数据加载
-- 并行文本编码
-- 分布式预处理
+## 深入阅读
 
-## 最佳实践
-
-1. **数据验证**: 始终验证数据质量和完整性
-2. **版本控制**: 跟踪数据集版本和变更
-3. **文档记录**: 详细记录数据处理步骤
-4. **性能监控**: 监控数据加载和处理性能
-
-## 常见问题
-
-**Q: 如何处理大规模数据集？**
-A: 使用分块加载、缓存和并行处理
-
-**Q: 如何添加新的文本编码器？**
-A: 继承 TextProcessor 类并实现自定义编码逻辑
-
-**Q: 如何处理不同格式的数据？**
-A: 创建自定义数据加载器和预处理管道
+- [Amazon / P5 文件说明](p5-amazon.md)
+- [自定义数据集](custom.md)
+- [代码级数据流水线](../architecture/data-pipeline.md)
+- [评测系统](../architecture/evaluation-system.md)
+- [领域常用数据集](../landscape/datasets.md)

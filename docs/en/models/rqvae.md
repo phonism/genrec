@@ -1,397 +1,118 @@
-# RQVAE Model
+# RQ-VAE
 
-Residual Quantized Variational Autoencoder (RQVAE) is a deep learning model for learning semantic representations of items in recommender systems.
+RQ-VAE is an **item tokenizer** in GenRec. It compresses continuous metadata embeddings into multi-level semantic IDs (SIDs) for TIGER, LCRec, and COBRA. It does not consume user histories and must not be reported as a recommender with Recall@K.
 
-## Architecture
+| Field | Current repository |
+|---|---|
+| Input | item semantic embedding `[B,input_dim]` |
+| Output | reconstruction, per-layer code/vector/residual, quantization loss |
+| Downstream | TIGER, LCRec, COBRA with incompatible geometries |
+| Diagnostics | reconstruction, quantization, usage/perplexity, full-SID collision |
+| Status | training and checkpoint recovery implemented |
 
-### Core Concept
+## Residual quantization
 
-RQVAE learns to encode item features into discrete semantic IDs through:
-- **Encoder**: Maps item features to continuous latent space
-- **Quantizer**: Discretizes continuous representations into semantic IDs
-- **Decoder**: Reconstructs original features from semantic IDs
+An MLP first maps an item vector to a latent `z`. Each codebook approximates the current residual:
 
-```mermaid
-graph TD
-    A[Item Features] --> B[Encoder]
-    B --> C[Quantization]
-    C --> D[Semantic IDs]
-    C --> E[Decoder]
-    E --> F[Reconstructed Features]
-```
+\[
+z=E(x),\quad r_1=z,
+\]
 
-### Model Components
+\[
+k_\ell=\arg\min_k d(r_\ell,e_{\ell,k}),\quad
+q_\ell=e_{\ell,k_\ell},\quad
+r_{\ell+1}=r_\ell-q_\ell.
+\]
 
-#### 1. Encoder Network
+The SID is `(k_1,...,k_C)`, and reconstruction is
 
-```python
-class Encoder(nn.Module):
-    """Feature encoder network"""
-    def __init__(self, input_dim, hidden_dim, latent_dim):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
-        )
-    
-    def forward(self, features):
-        return self.layers(features)
-```
+\[
+\hat x=D\!\left(\sum_{\ell=1}^{C}q_\ell\right).
+\]
 
-#### 2. Vector Quantization
+Codebook position is part of the identity: code 7 in layer 0 is not the same token as code 7 in layer 1.
 
-```python
-class VectorQuantizer(nn.Module):
-    """Vector quantization layer"""
-    def __init__(self, num_embeddings, embedding_dim, commitment_cost=0.25):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
-        self.commitment_cost = commitment_cost
-        
-        self.embeddings = nn.Embedding(num_embeddings, embedding_dim)
-        
-    def forward(self, inputs):
-        # Calculate distances
-        distances = torch.cdist(inputs, self.embeddings.weight)
-        
-        # Get closest embeddings
-        encoding_indices = torch.argmin(distances, dim=-1)
-        quantized = self.embeddings(encoding_indices)
-        
-        # Calculate losses
-        commitment_loss = F.mse_loss(quantized.detach(), inputs)
-        embedding_loss = F.mse_loss(quantized, inputs.detach())
-        
-        quantized = inputs + (quantized - inputs).detach()
-        
-        return quantized, commitment_loss, embedding_loss, encoding_indices
-```
+The loss combines reconstruction and each layer's codebook/commitment loss:
 
-#### 3. Decoder Network
+\[
+\mathcal L_q^{(\ell)}=
+\lVert\operatorname{sg}(r_\ell)-q_\ell\rVert_2^2+
+\beta\lVert r_\ell-\operatorname{sg}(q_\ell)\rVert_2^2.
+\]
+
+Current embedding pipelines set `n_cat_features=0`; a positive value treats trailing decoder dimensions as BCE-with-logits targets.
+
+## Quantization modes and outputs
+
+| Mode | Training behavior |
+|---|---|
+| `GUMBEL_SOFTMAX` | soft mixture from temperature-scaled noisy negative distances |
+| `STE` | hard nearest code with straight-through gradient |
+| `ROTATION_TRICK` | hard nearest code with rotation-trick encoder gradient |
+| `SINKHORN` | balanced batch assignment followed by hard STE |
+
+Distance is L2 in current RQ-VAE construction. `codebook_normalize` affects the encoder and first codebook path only; `sim_vq` adds a shared projection after codebook lookup.
 
 ```python
-class Decoder(nn.Module):
-    """Feature reconstruction decoder"""
-    def __init__(self, latent_dim, hidden_dim, output_dim):
-        super().__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim)
-        )
-    
-    def forward(self, latent):
-        return self.layers(latent)
+out = rqvae.get_semantic_ids(x)
+# out.embeddings:   [B,D,C]
+# out.residuals:    [B,D,C]
+# out.sem_ids:      [B,C]
+# out.quantize_loss:[B]
 ```
 
-## Training Process
+`forward(batch, gumbel_t)` returns scalar total/reconstruction/RQ losses plus diagnostic embedding norms and the batch tuple-uniqueness ratio. Batch uniqueness is not a substitute for full-catalog collision analysis.
 
-### Loss Function
+## Downstream geometries
 
-RQVAE uses a combination of reconstruction loss and quantization losses:
+These checkpoints are not interchangeable:
+
+| Downstream | input | latent | hidden dimensions | K | layers |
+|---|---:|---:|---|---:|---:|
+| TIGER | 768 | 32 | 512,256,128,64 | 256 | 3 |
+| LCRec | 768 | 64 | 512,256,128 | 256 | 5 |
+| COBRA | 768 | 32 | 512,256,128,64 | 32 | 3 |
+
+All current variants use Sentence-T5-XL item embeddings, STE in earlier layers, and Sinkhorn in the last layer. The downstream dataset's `rqvae_*` parameters must match checkpoint geometry and the same item order/encoder provenance.
+
+## Data, training, and loading
+
+`AmazonItemDataset` builds an item mapping from review order, encodes metadata, and caches a split/encoder-specific parquet file. RQ-VAE randomly reserves 5% of item embeddings for reconstruction monitoring; that split is unrelated to user-sequence validation/test.
+
+```bash
+python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
+python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
+```
+
+Current downstream configs train for 5,000 epochs with 50 warmup epochs and batch 1,024. Initial K-means bootstrap accumulates up to roughly 20,000 examples. A recovered checkpoint must not run bootstrap again.
 
 ```python
-def compute_loss(self, features, reconstructed, commitment_loss, embedding_loss):
-    # Reconstruction loss
-    recon_loss = F.mse_loss(reconstructed, features)
-    
-    # Total loss
-    total_loss = (
-        recon_loss + 
-        self.commitment_cost * commitment_loss + 
-        embedding_loss
-    )
-    
-    return {
-        'total_loss': total_loss,
-        'reconstruction_loss': recon_loss,
-        'commitment_loss': commitment_loss,
-        'embedding_loss': embedding_loss
-    }
+from genrec.models.rqvae import RqVae
+
+rqvae = RqVae.from_pretrained(checkpoint, map_location="cpu")
+rqvae.eval()
+sem_ids = rqvae.get_semantic_ids(item_embeddings).sem_ids
 ```
 
-### Training Loop
+The checkpoint stores epoch/iteration, model, `model_config`, optimizer, and scheduler. `from_pretrained` reconstructs geometry and disables reinitialization; `load_pretrained` loads into an explicitly constructed model and does the same. There is no `load_from_checkpoint` or `generate_semantic_ids` method.
 
-```python
-def train_step(model, batch, optimizer):
-    optimizer.zero_grad()
-    
-    # Forward pass
-    features = batch['features']
-    reconstructed, commitment_loss, embedding_loss, sem_ids = model(features)
-    
-    # Compute losses
-    losses = model.compute_loss(features, reconstructed, commitment_loss, embedding_loss)
-    
-    # Backward pass
-    losses['total_loss'].backward()
-    optimizer.step()
-    
-    return losses, sem_ids
+## Collisions and health
+
+Track layer usage, dead codes, complete-tuple collision rate, and maximum collision group separately. Perfect usage at each layer can coexist with many duplicate full SIDs. Downstream headline metrics must resolve predictions to item IDs and deduplicate them.
+
+`get_semantic_ids_dedup` freezes the first `C-1` codes and Sinkhorn-reassigns colliding last-layer groups. It can still leave or introduce collisions and only warns; it is not a uniqueness guarantee.
+
+```bash
+python scripts/verify_codebook_health.py \
+  --kind rqvae \
+  --checkpoint out/tiger/amazon/beauty/rqvae/checkpoint_epoch_4999.pt \
+  --dataset-folder dataset/amazon --split beauty \
+  --encoder ./models_hub/sentence-t5-xl
 ```
 
-## Semantic ID Generation
+Useful source maps: [`rqvae.py`](https://github.com/phonism/genrec/blob/main/genrec/models/rqvae.py), [`loss.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/loss.py), [`amazon.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon.py), [`rqvae_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/rqvae_trainer.py), and [`verify_codebook_health.py`](https://github.com/phonism/genrec/blob/main/scripts/verify_codebook_health.py).
 
-### Item to Semantic ID Mapping
+Known limits include staged rather than end-to-end objectives, batch-level rather than catalog-global Sinkhorn balance, `torch.compile` portability, and severe high-K collapse risk on small catalogs. Lower collision does not guarantee higher recommendation quality; report both tokenizer health and item-level metrics.
 
-```python
-def generate_semantic_ids(model, item_features):
-    """Generate semantic IDs for items"""
-    model.eval()
-    
-    with torch.no_grad():
-        encoded = model.encoder(item_features)
-        _, _, _, sem_ids = model.quantizer(encoded)
-    
-    return sem_ids
-```
-
-### Batch Processing
-
-```python
-def batch_generate_semantic_ids(model, dataloader):
-    """Generate semantic IDs for entire dataset"""
-    model.eval()
-    all_sem_ids = []
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            features = batch['features']
-            sem_ids = model.generate_semantic_ids(features)
-            all_sem_ids.append(sem_ids)
-    
-    return torch.cat(all_sem_ids, dim=0)
-```
-
-## Evaluation Metrics
-
-### Reconstruction Quality
-
-```python
-def compute_reconstruction_metrics(original, reconstructed):
-    """Compute reconstruction quality metrics"""
-    mse = F.mse_loss(reconstructed, original)
-    mae = F.l1_loss(reconstructed, original)
-    
-    # Cosine similarity
-    cos_sim = F.cosine_similarity(original, reconstructed, dim=-1).mean()
-    
-    return {
-        'mse': mse.item(),
-        'mae': mae.item(),
-        'cosine_similarity': cos_sim.item()
-    }
-```
-
-### Quantization Metrics
-
-```python
-def compute_quantization_metrics(model, dataloader):
-    """Compute quantization quality metrics"""
-    model.eval()
-    
-    total_perplexity = 0
-    total_usage = torch.zeros(model.quantizer.num_embeddings)
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            features = batch['features']
-            _, _, _, encoding_indices = model(features)
-            
-            # Compute perplexity
-            avg_probs = torch.bincount(encoding_indices.flatten(), 
-                                     minlength=model.quantizer.num_embeddings).float()
-            avg_probs = avg_probs / avg_probs.sum()
-            perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
-            
-            total_perplexity += perplexity
-            total_usage += avg_probs
-    
-    # Usage statistics
-    active_codes = (total_usage > 0).sum().item()
-    usage_entropy = -torch.sum(total_usage * torch.log(total_usage + 1e-10))
-    
-    return {
-        'perplexity': total_perplexity / len(dataloader),
-        'active_codes': active_codes,
-        'usage_entropy': usage_entropy.item()
-    }
-```
-
-## Model Optimization
-
-### Learning Rate Scheduling
-
-```python
-class WarmupScheduler:
-    """Warmup learning rate scheduler"""
-    def __init__(self, optimizer, warmup_steps, max_lr):
-        self.optimizer = optimizer
-        self.warmup_steps = warmup_steps
-        self.max_lr = max_lr
-        self.step_count = 0
-    
-    def step(self):
-        self.step_count += 1
-        if self.step_count <= self.warmup_steps:
-            lr = self.max_lr * self.step_count / self.warmup_steps
-        else:
-            lr = self.max_lr * 0.95 ** ((self.step_count - self.warmup_steps) // 1000)
-        
-        for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
-```
-
-### Gradient Clipping
-
-```python
-def train_with_gradient_clipping(model, dataloader, optimizer, max_grad_norm=1.0):
-    """Training with gradient clipping"""
-    for batch in dataloader:
-        optimizer.zero_grad()
-        
-        # Forward pass
-        losses, _ = model.train_step(batch)
-        
-        # Backward pass with gradient clipping
-        losses['total_loss'].backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-        
-        optimizer.step()
-```
-
-## Advanced Features
-
-### Multiple Quantizers
-
-```python
-class MultiQuantizer(nn.Module):
-    """Multiple quantization layers"""
-    def __init__(self, num_quantizers, num_embeddings, embedding_dim):
-        super().__init__()
-        self.quantizers = nn.ModuleList([
-            VectorQuantizer(num_embeddings, embedding_dim)
-            for _ in range(num_quantizers)
-        ])
-    
-    def forward(self, inputs):
-        quantized_list = []
-        commitment_losses = []
-        embedding_losses = []
-        sem_ids_list = []
-        
-        current_input = inputs
-        for quantizer in self.quantizers:
-            quantized, commitment_loss, embedding_loss, sem_ids = quantizer(current_input)
-            
-            quantized_list.append(quantized)
-            commitment_losses.append(commitment_loss)
-            embedding_losses.append(embedding_loss)
-            sem_ids_list.append(sem_ids)
-            
-            # Residual connection
-            current_input = current_input - quantized.detach()
-        
-        # Combine quantized representations
-        final_quantized = sum(quantized_list)
-        total_commitment_loss = sum(commitment_losses)
-        total_embedding_loss = sum(embedding_losses)
-        
-        return final_quantized, total_commitment_loss, total_embedding_loss, sem_ids_list
-```
-
-### Exponential Moving Average
-
-```python
-class EMAQuantizer(VectorQuantizer):
-    """Quantizer with exponential moving average updates"""
-    def __init__(self, num_embeddings, embedding_dim, decay=0.99):
-        super().__init__(num_embeddings, embedding_dim)
-        self.decay = decay
-        self.register_buffer('cluster_size', torch.zeros(num_embeddings))
-        self.register_buffer('embed_avg', self.embeddings.weight.clone())
-    
-    def forward(self, inputs):
-        quantized, commitment_loss, _, encoding_indices = super().forward(inputs)
-        
-        if self.training:
-            # Update EMA
-            encodings = F.one_hot(encoding_indices, self.num_embeddings).float()
-            self.cluster_size.mul_(self.decay).add_(
-                encodings.sum(0), alpha=1 - self.decay
-            )
-            
-            embed_sum = encodings.transpose(0, 1) @ inputs
-            self.embed_avg.mul_(self.decay).add_(embed_sum, alpha=1 - self.decay)
-            
-            # Normalize
-            n = self.cluster_size.sum()
-            cluster_size = (
-                (self.cluster_size + 1e-5) / (n + self.num_embeddings * 1e-5) * n
-            )
-            embed_normalized = self.embed_avg / cluster_size.unsqueeze(1)
-            self.embeddings.weight.data.copy_(embed_normalized)
-        
-        return quantized, commitment_loss, torch.tensor(0.0), encoding_indices
-```
-
-## Practical Applications
-
-### Item Similarity
-
-```python
-def compute_item_similarity(model, item_features_1, item_features_2):
-    """Compute similarity between items using semantic IDs"""
-    sem_ids_1 = model.generate_semantic_ids(item_features_1)
-    sem_ids_2 = model.generate_semantic_ids(item_features_2)
-    
-    # Exact match similarity
-    exact_match = (sem_ids_1 == sem_ids_2).float().mean()
-    
-    # Embedding space similarity
-    embed_1 = model.quantizer.embeddings(sem_ids_1)
-    embed_2 = model.quantizer.embeddings(sem_ids_2)
-    cosine_sim = F.cosine_similarity(embed_1, embed_2, dim=-1).mean()
-    
-    return {
-        'exact_match': exact_match.item(),
-        'embedding_similarity': cosine_sim.item()
-    }
-```
-
-### Recommendation System Integration
-
-```python
-class RQVAERecommender:
-    """RQVAE-based recommender system"""
-    def __init__(self, rqvae_model):
-        self.rqvae = rqvae_model
-        self.rqvae.eval()
-    
-    def encode_items(self, item_features):
-        """Encode items to semantic IDs"""
-        return self.rqvae.generate_semantic_ids(item_features)
-    
-    def find_similar_items(self, query_item_features, item_database, top_k=10):
-        """Find similar items using semantic IDs"""
-        query_sem_ids = self.encode_items(query_item_features)
-        db_sem_ids = self.encode_items(item_database)
-        
-        # Compute similarities
-        similarities = []
-        for i, db_sem_id in enumerate(db_sem_ids):
-            sim = (query_sem_ids == db_sem_id).float().mean()
-            similarities.append((i, sim.item()))
-        
-        # Sort and return top-k
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        return similarities[:top_k]
-```
-
-RQVAE provides a powerful foundation for learning discrete semantic representations that can be effectively used in generative recommendation models like TIGER.
+See the exact [RQ-VAE API](../api/rqvae.md) and the [generative-recommendation taxonomy](../landscape/taxonomy.md).

@@ -1,454 +1,173 @@
-# Custom Datasets
+# Adding a custom dataset
 
-This guide explains how to add custom datasets to the genrec framework.
+The repository has no `BaseRecommenderDataset`, dataset factory, processor
+registry, or dataclass configuration layer. Extend the closest concrete adapter,
+reuse the shared split protocol and collate contract, and bind the new class to a
+trainer through Gin when that trainer exposes a `dataset` argument.
 
-## Basic Concepts
+## Choose the closest integration point
 
-### Dataset Types
+| Goal | Best reference |
+|---|---|
+| One embedding per item / tokenizer input | `AmazonItemDataset` |
+| Item-ID next-item baseline | `AmazonSASRecDataset` |
+| Timestamp-aware HSTU | `AmazonHSTUDataset` |
+| SID encoder-decoder | `AmazonSeqDataset` |
+| LLM prompt, SFT, or RL | `AmazonOneRecSFTDataset`, `AmazonOneRecRLDataset` |
+| Parallel OPQ prediction | `AmazonRPGDataset` |
+| Dense item-to-item retrieval | `AmazonNoteLLMDataset` |
+| Lexical IDs and multiple passages | `AmazonGRAMDataset` |
 
-The framework supports two main dataset types:
+Do not hide genuine differences in ID bases, padding, text inputs, and sample
+augmentation behind a new universal abstraction.
 
-1. **ItemDataset**: Item-level datasets for training RQVAE
-2. **SequenceDataset**: Sequence-level datasets for training TIGER
+## Minimal raw schema
 
-### Base Architecture
+Normalize the source into two logical tables:
 
-All datasets inherit from `BaseRecommenderDataset`:
-
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
-
-class MyCustomDataset(BaseRecommenderDataset):
-    def __init__(self, config):
-        super().__init__(config)
-        # Initialize custom parameters
-        
-    def download(self):
-        # Implement data download logic
-        pass
-        
-    def load_raw_data(self):
-        # Load raw data files
-        pass
-        
-    def preprocess_data(self, raw_data):
-        # Preprocess data
-        pass
-        
-    def extract_items(self, processed_data):
-        # Extract item information
-        pass
-        
-    def extract_interactions(self, processed_data):
-        # Extract user interaction information
-        pass
+```text
+interactions: user_key, item_key, timestamp[, rating/action]
+items:        item_key, title[, description, brand, category, ...]
 ```
 
-## Implementation Steps
+Required invariants:
 
-### 1. Create Configuration Class
+1. `(user, item, timestamp)` parses deterministically.
+2. Equal timestamps have a stable tie-break.
+3. The item mapping is identical across splits and the embedding catalog.
+4. Every validation/test target maps to the catalog.
+5. Source revision, filtering, and checksums are recorded.
 
-First define dataset-specific configuration:
+## Item-ID sequence skeleton
 
-```python
-from dataclasses import dataclass
-from genrec.data.configs import DatasetConfig
-
-@dataclass
-class MyDatasetConfig(DatasetConfig):
-    # Dataset-specific parameters
-    api_key: str = ""
-    data_format: str = "json"
-    categories: List[str] = None
-```
-
-### 2. Implement Data Download
+Reuse `select_protocol_sequences` rather than implementing another leave-one-out
+split. A SASRec-like adapter reserves 0 for padding and maps real items from 1:
 
 ```python
-def download(self):
-    """Download dataset to local storage"""
-    if self._data_exists():
-        return
-        
-    print("Downloading custom dataset...")
-    
-    # Example: Download from API
-    import requests
-    response = requests.get(f"https://api.example.com/data?key={self.config.api_key}")
-    
-    # Save locally
-    data_path = self.root_path / "raw" / "data.json"
-    data_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    with open(data_path, 'w') as f:
-        json.dump(response.json(), f)
-    
-    print("Download completed.")
+from collections import defaultdict
+from torch.utils.data import Dataset
 
-def _data_exists(self):
-    """Check if data already exists"""
-    data_path = self.root_path / "raw" / "data.json"
-    return data_path.exists()
-```
+from genrec.data.evaluation_protocol import select_protocol_sequences
 
-### 3. Implement Data Loading
 
-```python
-def load_raw_data(self):
-    """Load raw data"""
-    data_path = self.root_path / "raw" / "data.json"
-    
-    with open(data_path, 'r') as f:
-        raw_data = json.load(f)
-    
-    # Parse data structure
-    users = raw_data.get('users', [])
-    items = raw_data.get('items', [])
-    interactions = raw_data.get('interactions', [])
-    
-    return {
-        "users": pd.DataFrame(users),
-        "items": pd.DataFrame(items), 
-        "interactions": pd.DataFrame(interactions)
-    }
-```
-
-### 4. Implement Data Preprocessing
-
-```python
-def preprocess_data(self, raw_data):
-    """Preprocess data"""
-    # Clean item data
-    items_df = self._clean_items(raw_data["items"])
-    
-    # Clean interaction data
-    interactions_df = self._clean_interactions(raw_data["interactions"])
-    
-    # Filter low-frequency users and items
-    interactions_df = self.filter_low_interactions(
-        interactions_df,
-        min_user_interactions=self.config.processing_config.min_user_interactions,
-        min_item_interactions=self.config.processing_config.min_item_interactions
-    )
-    
-    # Process item features
-    items_df = self._process_item_features(items_df)
-    
-    return {
-        "items": items_df,
-        "interactions": interactions_df
-    }
-
-def _clean_items(self, items_df):
-    """Clean item data"""
-    # Fill missing values
-    items_df["title"] = items_df["title"].fillna("Unknown")
-    items_df["category"] = items_df["category"].fillna("Unknown")
-    
-    # Standardize text
-    items_df["title"] = items_df["title"].str.strip()
-    
-    return items_df
-
-def _clean_interactions(self, interactions_df):
-    """Clean interaction data"""
-    # Remove duplicate interactions
-    interactions_df = interactions_df.drop_duplicates(["user_id", "item_id"])
-    
-    # Add timestamp if missing
-    if "timestamp" not in interactions_df.columns:
-        interactions_df["timestamp"] = range(len(interactions_df))
-    
-    return interactions_df
-```
-
-### 5. Implement Feature Extraction
-
-```python
-def _process_item_features(self, items_df):
-    """Process item features"""
-    # Use text processor to generate embeddings
-    cache_key = f"custom_dataset_{self.config.split}"
-    embeddings = self.text_processor.encode_item_features(
-        items_df,
-        cache_key=cache_key,
-        force_reload=self.config.force_reload
-    )
-    
-    # Add embedding features
-    items_df = items_df.copy()
-    items_df["features"] = embeddings.tolist()
-    
-    # Create text fields for reference
-    texts = []
-    for _, row in items_df.iterrows():
-        text = f"Title: {row['title']}; Category: {row['category']}"
-        texts.append(text)
-    
-    items_df["text"] = texts
-    
-    return items_df
-
-def extract_items(self, processed_data):
-    """Extract item information"""
-    return processed_data["items"]
-
-def extract_interactions(self, processed_data):
-    """Extract interaction information"""
-    return processed_data["interactions"]
-```
-
-## Create Dataset Wrappers
-
-### Item Dataset
-
-```python
-from genrec.data.base_dataset import ItemDataset
-import gin
-
-@gin.configurable
-class MyItemDataset(ItemDataset):
-    """Custom item dataset"""
-    
+class MySASRecDataset(Dataset):
     def __init__(
         self,
-        root: str,
-        split: str = "default",
-        train_test_split: str = "all",
-        api_key: str = "",
-        **kwargs
+        root,
+        split,
+        train_test_split="train",
+        max_seq_len=50,
+        min_seq_len=5,
+        evaluation_protocol="leave_one_out",
+        temporal_train_ratio=0.8,
+        temporal_valid_ratio=0.1,
     ):
-        # Create configuration
-        config = MyDatasetConfig(
-            root_dir=root,
-            split=split,
-            api_key=api_key,
-            **kwargs
+        rows = load_my_interactions(root, split)
+        self.item_id_mapping = {}
+        user_sequences = defaultdict(list)
+        for row in rows:
+            if row.item_key not in self.item_id_mapping:
+                self.item_id_mapping[row.item_key] = len(self.item_id_mapping) + 1
+            item_id = self.item_id_mapping[row.item_key]
+            user_sequences[row.user_key].append((row.timestamp, item_id))
+
+        selected, self.protocol_info = select_protocol_sequences(
+            user_sequences,
+            train_test_split,
+            protocol=evaluation_protocol,
+            min_seq_len=min_seq_len,
+            temporal_train_ratio=temporal_train_ratio,
+            temporal_valid_ratio=temporal_valid_ratio,
         )
-        
-        # Create base dataset
-        base_dataset = MyCustomDataset(config)
-        
-        # Initialize item dataset
-        super().__init__(
-            base_dataset=base_dataset,
-            split=train_test_split,
-            return_text=False
+        self.evaluation_protocol = evaluation_protocol
+        self.num_items = len(self.item_id_mapping)
+        self.sequences = [[item for _, item in seq] for _, seq in selected]
+        self.samples = build_samples_like_amazon_sasrec(
+            self.sequences, train_test_split, max_seq_len
         )
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        return self.samples[index]  # {"history": [...], "target": int}
 ```
 
-### Sequence Dataset
+If the returned schema is identical, reuse `sasrec_collate_fn` and
+`sasrec_eval_collate_fn` from `genrec.data.amazon_sasrec`.
 
-```python
-from genrec.data.base_dataset import SequenceDataset
+## Trainer binding
 
-@gin.configurable
-class MySequenceDataset(SequenceDataset):
-    """Custom sequence dataset"""
-    
-    def __init__(
-        self,
-        root: str,
-        split: str = "default",
-        train_test_split: str = "train",
-        api_key: str = "",
-        pretrained_rqvae_path: Optional[str] = None,
-        **kwargs
-    ):
-        # Create configuration
-        config = MyDatasetConfig(
-            root_dir=root,
-            split=split,
-            api_key=api_key,
-            **kwargs
-        )
-        
-        # Load semantic encoder
-        semantic_encoder = None
-        if pretrained_rqvae_path:
-            from genrec.models.rqvae import RqVae
-            semantic_encoder = RqVae.load_from_checkpoint(pretrained_rqvae_path)
-            semantic_encoder.eval()
-        
-        # Create base dataset
-        base_dataset = MyCustomDataset(config)
-        
-        # Initialize sequence dataset
-        super().__init__(
-            base_dataset=base_dataset,
-            split=train_test_split,
-            semantic_encoder=semantic_encoder
-        )
-```
-
-## Register Dataset
-
-### Using Factory Pattern
-
-```python
-from genrec.data.dataset_factory import DatasetFactory
-
-# Register dataset
-DatasetFactory.register_dataset(
-    "my_dataset",
-    base_class=MyCustomDataset,
-    item_class=MyItemDataset,
-    sequence_class=MySequenceDataset
-)
-
-# Use factory to create dataset
-item_dataset = DatasetFactory.create_item_dataset(
-    "my_dataset",
-    root_dir="path/to/data",
-    api_key="your_api_key"
-)
-```
-
-## Configuration File Integration
-
-### Gin Configuration File
-
-Create configuration file `config/my_dataset.gin`:
+Trainers such as TIGER, OneRec, and GRAM expose the dataset class as a Gin
+parameter:
 
 ```gin
-import my_module.my_dataset
+import my_package.my_dataset
 
-# Dataset parameters
-train.dataset_folder="dataset/my_dataset"
-train.dataset=@MyItemDataset
-
-# Custom parameters
-MyItemDataset.api_key="your_api_key"
-MyItemDataset.split="category_a"
-
-# Text encoding parameters
-MyItemDataset.encoder_model_name="sentence-transformers/all-MiniLM-L6-v2"
+train.dataset = @MyTigerDataset
+MyTigerDataset.root = "dataset/my_data"
+MyTigerDataset.split = "category_a"
 ```
 
-## Testing and Validation
+The current SASRec and HSTU trainers instantiate `AmazonSASRecDataset` and
+`AmazonHSTUDataset` inside `train`. Supporting another adapter therefore
+requires adding a configurable dataset parameter or a structurally equivalent
+trainer. Update train, validation, and test construction together.
 
-### Unit Tests
+## Item-tokenizer adapters
+
+RQ-VAE and RQ-KMeans expect a fixed-width float vector from each item. A custom
+adapter should expose:
+
+```text
+embeddings: np.ndarray [N, D]
+dim: int
+__len__() -> N
+__getitem__(index) -> List[float]
+```
+
+Persist the `item_key <-> row_index` mapping with the array. An anonymous
+`[N, D]` matrix cannot be safely joined back to user sequences.
+
+## Extra requirements for generative adapters
+
+Keep the real target item even when the model predicts a semantic ID:
 
 ```python
-import unittest
-from my_dataset import MyCustomDataset, MyDatasetConfig
+from genrec.data.schemas import SeqData
 
-class TestMyDataset(unittest.TestCase):
-    def setUp(self):
-        self.config = MyDatasetConfig(
-            root_dir="test_data",
-            api_key="test_key"
-        )
-        self.dataset = MyCustomDataset(self.config)
-    
-    def test_data_loading(self):
-        """Test data loading"""
-        # Mock data
-        raw_data = self.dataset.load_raw_data()
-        self.assertIn("items", raw_data)
-        self.assertIn("interactions", raw_data)
-    
-    def test_preprocessing(self):
-        """Test preprocessing"""
-        raw_data = {"items": pd.DataFrame(), "interactions": pd.DataFrame()}
-        processed = self.dataset.preprocess_data(raw_data)
-        self.assertIn("items", processed)
-        self.assertIn("interactions", processed)
+return SeqData(
+    user_id=user_id,
+    item_ids=flat_history_codes,
+    target_ids=target_sid,
+    target_item=target_item_id,
+)
 ```
 
-### Data Quality Validation
+At evaluation time, construct `SemanticIdItemMapper` from **training
+interactions only**, resolve each SID to one item, remove duplicate items, and
+score against `target_item`. Validation/test target popularity must not enter
+the resolver.
 
-```python
-def validate_dataset(dataset):
-    """Validate dataset quality"""
-    # Check data completeness
-    assert len(dataset) > 0, "Dataset is empty"
-    
-    # Check feature dimensions
-    sample = dataset[0]
-    assert len(sample) == 768, f"Wrong feature dimension: {len(sample)}"
-    
-    # Check data types
-    assert isinstance(sample, list), "Wrong data type"
-    
-    print("Dataset validation passed")
-```
+## Tests and provenance
 
-## Best Practices
+At minimum, test:
 
-### 1. Error Handling
+- identical item mappings across splits;
+- padding and ID-base conventions;
+- leave-one-out or global-temporal target boundaries;
+- catalog coverage of every target;
+- collate shapes, masks, and padding direction;
+- embedding/SID row alignment;
+- full-catalog item-level evaluation.
 
-```python
-def load_raw_data(self):
-    try:
-        # Data loading logic
-        return data
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Data file not found: {self.data_path}")
-    except Exception as e:
-        raise RuntimeError(f"Data loading failed: {str(e)}")
-```
+Useful references are `tests/test_evaluation_protocol.py`,
+`tests/test_honest_metrics.py`, and `tests/test_notellm_full_catalog.py`.
 
-### 2. Logging
+Store a manifest with the source URL/revision, raw hashes, filtering rule,
+mapping rule, user/item/interaction counts, timestamp unit, and preparation
+time. Commit preparation code, schemas, checksums, and a small synthetic fixture;
+do not commit restricted raw data.
 
-```python
-import logging
-
-logger = logging.getLogger(__name__)
-
-def preprocess_data(self, raw_data):
-    logger.info("Starting data preprocessing")
-    
-    # Preprocessing logic
-    
-    logger.info(f"Preprocessing completed, items: {len(items_df)}, interactions: {len(interactions_df)}")
-```
-
-### 3. Configuration Validation
-
-```python
-def __post_init__(self):
-    super().__post_init__()
-    
-    if not self.api_key:
-        raise ValueError("API key cannot be empty")
-    
-    if self.data_format not in ["json", "csv"]:
-        raise ValueError(f"Unsupported data format: {self.data_format}")
-```
-
-## Example: MovieLens Dataset
-
-Complete MovieLens dataset implementation example:
-
-```python
-@dataclass
-class MovieLensConfig(DatasetConfig):
-    """MovieLens dataset configuration"""
-    version: str = "1m"  # 1m, 10m, 20m
-    
-class MovieLensDataset(BaseRecommenderDataset):
-    """MovieLens dataset implementation"""
-    
-    URLS = {
-        "1m": "http://files.grouplens.org/datasets/movielens/ml-1m.zip",
-        "10m": "http://files.grouplens.org/datasets/movielens/ml-10m.zip",
-    }
-    
-    def download(self):
-        if self._data_exists():
-            return
-            
-        url = self.URLS[self.config.version]
-        # Download and extract logic
-        
-    def load_raw_data(self):
-        # Load ratings.dat, movies.dat, users.dat
-        pass
-        
-    def preprocess_data(self, raw_data):
-        # MovieLens-specific preprocessing
-        pass
-```
-
-Through these steps, you can successfully add custom dataset support to the genrec framework.
+Before considering the adapter complete, document its Gin binding, command,
+output directory, data license, and supported-model status.

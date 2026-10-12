@@ -1,461 +1,176 @@
 # 贡献指南
 
-感谢您对 genrec 项目的关注！我们欢迎社区的贡献，无论是代码、文档、测试还是反馈。
+GenRec 是用于生成式推荐研究、复现和公平比较的实验代码库，不是生产服务框架。一个可合并的贡献不仅要“能跑”，还要让下一位研究者能够确认：运行了哪段代码、用了什么协议、产物来自哪个源码快照、文档描述的是否正是当前实现。
 
-## 开始贡献
+## 开始前
 
-### 环境设置
+先阅读与你的改动直接相关的代码、配置和测试：
 
-1. **Fork 项目**
-   ```bash
-   # 在 GitHub 上 fork 项目到您的账户
-   # 然后克隆您的 fork
-   git clone https://github.com/YOUR_USERNAME/genrec.git
-   cd genrec
-   ```
+- [仓库地图](architecture/repository-map.md)说明目录职责；
+- [扩展指南](architecture/extension-guide.md)说明如何加入模型、数据集、训练器和评测；
+- [配置系统](architecture/configuration.md)说明 Gin 的解析顺序和 `{split}` 替换；
+- [评测系统](architecture/evaluation-system.md)说明 item-level 指标、SID 冲突解析和 `results.json`；
+- [文档维护规范](reference/documentation-policy.md)定义事实来源和状态写法；
+- [模型文档模板](models/template.md)定义模型页的完成标准；
+- [命令索引](reference/command-index.md)只收录已经从当前代码核验的入口。
 
-2. **设置开发环境**
-   ```bash
-   # 创建虚拟环境
-   python -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   # 或 venv\Scripts\activate  # Windows
-   
-   # 安装开发依赖
-   pip install -e ".[dev]"
-   ```
+仓库没有 `genrec.base.BaseModel`，也没有要求所有实现继承的统一 `BaseTrainer`。不同论文的输入、目标和解码方式差异很大；新增实现应复用相邻模型的真实接口，而不是先假设一个不存在的基类。共享能力目前主要位于 `genrec/modules/`、`genrec/trainers/trainer_utils.py` 和 `genrec/modules/utils.py`。
 
-3. **安装预提交钩子**
-   ```bash
-   pre-commit install
-   ```
+## 环境
 
-### 开发工作流
-
-1. **创建功能分支**
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-2. **进行开发**
-   - 遵循代码规范
-   - 添加必要的测试
-   - 更新相关文档
-
-3. **提交更改**
-   ```bash
-   git add .
-   git commit -m "Add: 简洁描述您的更改"
-   ```
-
-4. **推送到您的 fork**
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-5. **创建 Pull Request**
-   - 在 GitHub 上创建 PR
-   - 填写详细的 PR 描述
-   - 等待代码审查
-
-## 贡献类型
-
-### 🐛 Bug 修复
-
-发现了 bug？请：
-1. 查看现有 issues 是否已报告
-2. 如果没有，创建新的 issue 描述问题
-3. 提供复现步骤和环境信息
-4. 如果能修复，提交 PR
-
-**Bug 报告模板：**
-```markdown
-## Bug 描述
-简要描述 bug 的表现
-
-## 复现步骤
-1. 执行步骤1
-2. 执行步骤2
-3. 观察到错误
-
-## 预期行为
-描述您期望的正确行为
-
-## 环境信息
-- Python 版本：
-- PyTorch 版本：
-- 操作系统：
-- GPU 信息（如果相关）：
-```
-
-### ✨ 新功能
-
-添加新功能前：
-1. 创建功能请求 issue 讨论设计
-2. 确保功能符合项目目标
-3. 考虑向后兼容性
-4. 添加完整的测试和文档
-
-**功能请求模板：**
-```markdown
-## 功能描述
-描述您希望添加的功能
-
-## 使用场景
-解释这个功能的使用场景和价值
-
-## 设计提案
-如果有具体的设计想法，请详细描述
-
-## 替代方案
-考虑过的其他解决方案
-```
-
-### 📚 文档改进
-
-文档贡献包括：
-- 修复错别字和语法错误
-- 改进代码示例
-- 添加教程和指南
-- 翻译内容
-
-### 🧪 测试
-
-测试贡献包括：
-- 添加单元测试
-- 改进测试覆盖率
-- 添加集成测试
-- 性能测试
-
-## 代码规范
-
-### Python 代码风格
-
-我们使用以下工具保持代码一致性：
-
-- **Black**: 代码格式化
-- **isort**: 导入排序
-- **flake8**: 代码检查
-- **mypy**: 类型检查
-
-配置文件在项目根目录：
-- `pyproject.toml`
-- `.flake8`
-- `mypy.ini`
-
-### 代码风格示例
-
-```python
-from typing import List, Optional, Dict, Any
-import torch
-import torch.nn as nn
-from genrec.base import BaseModel
-
-
-class ExampleModel(BaseModel):
-    """示例模型类.
-    
-    Args:
-        input_dim: 输入维度
-        hidden_dim: 隐藏层维度
-        output_dim: 输出维度
-        dropout: Dropout 概率
-    """
-    
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        dropout: float = 0.1,
-    ) -> None:
-        super().__init__()
-        
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        
-        # 定义层
-        self.linear1 = nn.Linear(input_dim, hidden_dim)
-        self.linear2 = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """前向传播.
-        
-        Args:
-            x: 输入张量 (batch_size, input_dim)
-            
-        Returns:
-            输出张量 (batch_size, output_dim)
-        """
-        h = self.linear1(x)
-        h = torch.relu(h)
-        h = self.dropout(h)
-        output = self.linear2(h)
-        
-        return output
-```
-
-### 提交信息格式
-
-使用清晰的提交信息：
-
-```
-类型: 简短描述 (不超过 50 字符)
-
-详细描述（如果需要）：
-- 解释为什么做这个更改
-- 提及任何重要的技术细节
-- 引用相关的 issue (#123)
-
-Breaking change: 如果有破坏性更改，说明影响
-```
-
-**提交类型：**
-- `Add`: 新功能
-- `Fix`: Bug 修复
-- `Update`: 更新现有功能
-- `Remove`: 删除功能
-- `Refactor`: 重构代码
-- `Docs`: 文档更改
-- `Test`: 测试相关
-- `Style`: 代码风格调整
-
-## 测试指南
-
-### 运行测试
+从仓库根目录安装开发与文档依赖：
 
 ```bash
-# 运行所有测试
-pytest
-
-# 运行特定测试文件
-pytest tests/test_models.py
-
-# 运行特定测试
-pytest tests/test_models.py::test_rqvae_forward
-
-# 生成覆盖率报告
-pytest --cov=genrec
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+python -m pip install -e ".[dev,docs]"
 ```
 
-### 编写测试
+深度学习实验还需要与机器 CUDA 驱动匹配的 PyTorch。预训练编码器和语言模型的位置由 `config/base.gin` 中的常量指定；不要把个人机器的绝对路径、访问令牌或大模型权重提交进仓库。
 
-测试文件结构：
-```
-tests/
-├── conftest.py                 # 测试配置和固件
-├── test_models/
-│   ├── test_rqvae.py          # RQVAE 测试
-│   └── test_tiger.py          # TIGER 测试
-├── test_data/
-│   ├── test_datasets.py       # 数据集测试
-│   └── test_processors.py     # 处理器测试
-└── test_utils/
-    └── test_metrics.py         # 工具函数测试
-```
+## 推荐工作流
 
-测试示例：
-```python
-import pytest
-import torch
-from genrec.models.rqvae import RqVae
+1. 明确改动属于实现修复、协议修复、复现结果还是新模型，并记录预期影响。
+2. 找到最接近的 dataset、collator、model、trainer 和 Gin 配置，先写清输入/输出 shape 与 ID 约定。
+3. 实现最小闭环；对论文设定和本仓库取舍分别注释，不用“论文一致”代替核验清单。
+4. 增加与风险相称的测试，至少覆盖改动过的协议边界或张量接口。
+5. 运行格式、测试和文档检查。
+6. 若产生实验数字，保留 checkpoint、日志、`results.json` 和精确源码 provenance。
+7. 同步对应模型页、架构页或命令索引；代码行为改变但文档未更新，视为未完成。
 
+### 保持改动可审阅
 
-class TestRqVae:
-    """RQVAE 模型测试"""
-    
-    @pytest.fixture
-    def model(self):
-        """创建测试模型"""
-        return RqVae(
-            input_dim=768,
-            hidden_dim=256,
-            latent_dim=128,
-            num_embeddings=512
-        )
-    
-    @pytest.fixture
-    def sample_input(self):
-        """创建样本输入"""
-        return torch.randn(32, 768)
-    
-    def test_forward(self, model, sample_input):
-        """测试前向传播"""
-        reconstructed, commitment_loss, embedding_loss, sem_ids = model(sample_input)
-        
-        # 检查输出形状
-        assert reconstructed.shape == sample_input.shape
-        assert sem_ids.shape == (32,)
-        
-        # 检查损失类型
-        assert isinstance(commitment_loss, torch.Tensor)
-        assert isinstance(embedding_loss, torch.Tensor)
-    
-    def test_generate_semantic_ids(self, model, sample_input):
-        """测试语义ID生成"""
-        sem_ids = model.generate_semantic_ids(sample_input)
-        
-        assert sem_ids.shape == (32,)
-        assert sem_ids.dtype == torch.long
-        assert torch.all(sem_ids >= 0)
-        assert torch.all(sem_ids < model.quantizer.num_embeddings)
-    
-    @pytest.mark.parametrize("input_dim,hidden_dim", [
-        (256, 128),
-        (512, 256),
-        (1024, 512),
-    ])
-    def test_different_dimensions(self, input_dim, hidden_dim):
-        """测试不同维度配置"""
-        model = RqVae(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            latent_dim=64,
-            num_embeddings=256
-        )
-        
-        sample_input = torch.randn(16, input_dim)
-        output = model(sample_input)
-        
-        assert output[0].shape == (16, input_dim)
-```
+- 不把无关格式化、数据生成和模型改动混在同一提交中。
+- 不提交 `dataset/`、`models_hub/`、`out/`、W&B 缓存或 checkpoint。
+- 不手工修改历史结果来“对齐”新协议；旧结果应保留原口径并显式标记。
+- 删除或重命名缓存键、checkpoint 字段、Gin selector 时，说明迁移方式和不兼容范围。
+- 随机种子只是复现条件之一；同时记录 split、协议、配置、依赖产物和源码身份。
 
-## 文档贡献
+## 实现约定
 
-### 文档结构
+### 数据与 ID
 
-```
-docs/
-├── zh/                         # 中文文档
-│   ├── index.md               # 首页
-│   ├── installation.md        # 安装指南
-│   ├── quickstart.md          # 快速开始
-│   ├── models/                # 模型文档
-│   ├── dataset/               # 数据集文档
-│   ├── training/              # 训练指南
-│   └── api/                   # API 参考
-└── en/                        # 英文文档
-    └── ...                    # 同样的结构
-```
+模型相关数据类放在 `genrec/data/`。新增或修改数据路径时，必须写清：
 
-### 编写文档
+- 原始文件和缓存文件的目录契约；
+- 原始 item ID、内部连续 ID、padding ID 与 SID token 的转换；
+- train/valid/test 的切分单位和时间边界；
+- `__getitem__` 与 collator 返回的字段、dtype、shape 和 padding 规则；
+- 缓存键包含哪些会改变样本语义的参数；
+- 训练集统计是否被错误地从 valid/test 泄漏。
 
-1. **使用 Markdown 格式**
-2. **包含代码示例**
-3. **添加适当的链接**
-4. **保持简洁明了**
+序列推荐的 headline 结果必须注明 `leave_one_out` 或 `global_temporal`。更改候选集、负采样、窗口化或 SID→item 解析会改变协议，不能只当作性能优化。
 
-文档示例：
-```markdown
-# 模型训练
+### 模型与训练器
 
-本指南介绍如何训练 genrec 模型。
+模型类放在 `genrec/models/`，可复用组件放在 `genrec/modules/`，入口放在 `genrec/trainers/`。当前训练器并不共享统一基类，因此新增实现应明确实现自己的调用链，同时遵守这些跨模型约定：
 
-## 快速开始
+- `forward`、loss 和生成/打分接口的 tensor shape 可从代码和文档定位；
+- 设备移动由 PyTorch/Accelerate 路径统一处理，不在 dataset 中硬编码 GPU；
+- 多进程下只由主进程写日志、checkpoint 和结果，并在需要时正确 gather 全局统计；
+- early stopping、best checkpoint 的选择指标和最终 test 使用的权重一致；
+- SID 模型生成后先按训练集统计解析到 item，再去重并计算 item-level 指标；
+- 新的外部模型、tokenizer 或缓存产物在配置和文档中列为前置依赖。
 
-最简单的训练方式：
+训练入口使用 `genrec.modules.utils.parse_config` 解析一个 Gin 文件及重复的 `--gin` 覆盖项。若顶层函数不是 `train`，覆盖 selector 必须使用真实函数名，例如 `train_sft`、`train_grpo`、`train_clm`、`train_rpg` 或 `train_gram`。
 
-```python
-from genrec.models.rqvae import RqVae
-from genrec.data.p5_amazon import P5AmazonItemDataset
+### 配置
 
-# 加载数据
-dataset = P5AmazonItemDataset(root="data", split="beauty")
+默认实验配置放在 `config/<model>/...`，并应能从仓库根目录解析。提交前检查：
 
-# 创建模型
-model = RqVae(input_dim=768, num_embeddings=1024)
+- 配置导入了实际使用的 configurable；
+- 路径与上下游产物的保存位置相符；
+- 模型 geometry 与 tokenizer checkpoint 一致；
+- 数据集协议显式绑定，而不是依赖 Python 默认值；
+- `{split}` 只用于本仓库解析器支持的字面替换；
+- 命令示例引用存在的配置，不引用私人实验文件。
 
-# 训练（详细代码见下文）
-trainer.fit(model, dataloader)
-```
+## 测试与静态检查
 
-## 详细配置
-
-### 数据配置
-
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|---------|------|
-| `root` | str | - | 数据集根目录 |
-| `split` | str | "beauty" | 数据分割 |
-
-更多详细信息请参考 [API 文档](api/datasets.md)。
-```
-
-### 本地预览
+先运行与改动最相关的测试，再运行完整测试集。当前测试是 `tests/test_*.py` 的扁平结构；不要在文档中引用不存在的通用 `tests/test_models.py`。
 
 ```bash
-# 安装 MkDocs
-pip install mkdocs mkdocs-material
+# 示例：评测、SID 与结果协议
+pytest -q \
+  tests/test_evaluation_protocol.py \
+  tests/test_honest_metrics.py \
+  tests/test_sid_collisions.py
 
-# 启动本地服务器
-mkdocs serve
-
-# 在浏览器中访问 http://127.0.0.1:8000
+# 完整测试
+pytest -q
 ```
 
-## 发布流程
+格式和静态检查以 `pyproject.toml` 为准：
 
-### 版本管理
+```bash
+ruff check genrec scripts tests
+black --check genrec scripts tests
+mypy genrec
+git diff --check
+```
 
-我们使用 [语义化版本控制](https://semver.org/lang/zh-CN/)：
+部分测试需要 PyTorch、NumPy、Transformers、FAISS 或本地模型；无法运行时，应在 PR 中给出具体缺失依赖和未执行范围，而不是写“测试通过”。静态检查若存在仓库既有基线问题，至少保证新增/修改文件不引入新问题，并附上实际命令与输出摘要。
 
-- **MAJOR**: 不兼容的 API 更改
-- **MINOR**: 向后兼容的功能添加
-- **PATCH**: 向后兼容的错误修复
+改动文档时还要运行：
 
-### 发布检查清单
+```bash
+mkdocs build --strict
+rg -n "待补充|TODO|训练中|7 种模型|8 种模型" docs/zh
+```
 
-发布新版本前：
+## 结果与 provenance
 
-- [ ] 所有测试通过
-- [ ] 文档已更新
-- [ ] CHANGELOG.md 已更新
-- [ ] 版本号已更新
-- [ ] 创建 Git 标签
+日志中的单个数字不能直接成为正式 benchmark。要进入结果表，实验至少需要可定位的 `results.json`，并满足[复现工作流](architecture/reproducibility.md)和以下条件：
 
-## 代码审查
+- `model`、`split`、`seed`、`config.evaluation_protocol` 完整；
+- `extra.evaluation_level` 为 `item`；
+- SID 模型记录 `extra.sid_resolution = "most_popular_training_only"`；
+- `Recall@5`、`Recall@10`、`NDCG@10` 是有限的 `[0, 1]` 数值；
+- `git_sha`、精确源码归档名和 SHA-256 可核验；
+- 多 seed 只在相同模型、split、协议和评测层级内聚合。
 
-### 审查标准
+推荐先验证，再聚合：
 
-代码审查关注：
+```bash
+python scripts/validate_matrix_results.py out/matrix \
+  --models sasrec hstu \
+  --splits beauty sports toys \
+  --protocols leave_one_out \
+  --seeds 42 43 44
 
-1. **正确性**: 代码是否解决了问题
-2. **可读性**: 代码是否易于理解
-3. **可维护性**: 代码是否易于修改
-4. **性能**: 是否有明显的性能问题
-5. **测试**: 是否有充分的测试覆盖
+python scripts/aggregate_results.py out/matrix \
+  --metrics Recall@5 Recall@10 NDCG@10 \
+  --format md
+```
 
-### 审查流程
+`scripts/stamp_results_provenance.py` 只用于给已知确切来源的产物补写身份；不能用它把不明来源结果包装成正式复现。`BENCHMARKS.md` 应由通过验证的同协议产物聚合或逐项追溯，不应手工混入 SID-level、sampled-negative 或旧口径数字。
 
-1. **自动检查**: CI/CD 管道运行测试
-2. **代码审查**: 维护者审查代码
-3. **反馈和修改**: 根据反馈进行调整
-4. **批准和合并**: 审查通过后合并
+## 模型文档的完成定义
 
-## 获得帮助
+新增模型、关键变体或会改变结果语义的实现，必须同步模型页。复制[模型文档模板](models/template.md)，并完成而非保留占位文字。模型页只有在以下信息均可核验时才算完成：
 
-如果您在贡献过程中遇到问题：
+- 状态卡区分“完整链路 / 组件 / 实验性 / 未实现”和“已复现 / 待重评 / 未复现”；
+- 论文、官方代码与本仓库事实分别注明来源；
+- 输入、输出、item 表示、关键 shape 与特殊 token 明确；
+- 端到端数据流和代码映射落到真实文件、类、函数与配置；
+- 从仓库根目录可复制的命令、前置产物和输出路径完整；
+- checkpoint 选择、候选生成、约束、去重和指标层级明确；
+- 与论文的差异、已知限制和失败证据没有被省略；
+- 页面中的相对链接、配置名和脚本名在当前仓库存在；
+- 最近核验日期只在实现或事实重新核验后更新。
 
-1. **查看现有文档和 FAQ**
-2. **搜索现有 issues**
-3. **在 GitHub Discussions 中提问**
-4. **创建新的 issue**
+仅有论文综述而没有本仓库状态，不算实现文档；仅有训练命令而没有协议与依赖，也不算可复现说明。未实现模型同样可以有模型页，但必须明确标为“未实现”，不能提供看似可运行的本仓库命令。
 
-## 行为准则
+## 提交说明
 
-我们致力于为每个人提供友好、安全和欢迎的环境。请：
+PR 或交付说明应让审阅者无需猜测即可复核：
 
-- **保持尊重**: 尊重不同的观点和经验
-- **保持包容**: 欢迎新手和不同背景的贡献者
-- **保持建设性**: 提供有帮助的反馈和建议
-- **保持专业**: 专注于技术讨论
+- 改了什么，以及为什么会影响或不会影响既有结果；
+- 实际运行的测试、格式检查和文档构建命令；
+- 未运行项目及原因；
+- 数据集、模型权重和上游 checkpoint 前置条件；
+- 若有结果，给出协议、seed、产物路径和源码 provenance；
+- 若改变公开接口、缓存或 checkpoint，给出迁移说明。
 
-## 联系方式
-
-- **GitHub Issues**: 技术问题和 Bug 报告
-- **GitHub Discussions**: 一般讨论和问答
-- **邮件**: [项目邮箱]（如果有）
-
-感谢您对 genrec 项目的贡献！🎉
+发现代码、配置、测试和文档互相矛盾时，不要静默选择最顺口的版本。按[文档维护规范](reference/documentation-policy.md)记录冲突，并让代码行为、默认配置和状态声明可以并列核验。

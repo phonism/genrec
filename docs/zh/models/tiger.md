@@ -1,514 +1,215 @@
-# TIGER 模型
+# TIGER
 
-TIGER (Recommender Systems with Generative Retrieval) 是一种基于 Transformer 的生成式推荐模型，通过序列建模的方式进行物品推荐。
+TIGER 把 next-item recommendation 改写为短 token 序列生成：先用 RQ-VAE 把每个 item 编成多层 Semantic ID，再让 T5 encoder–decoder 根据历史 SID 自回归生成目标 SID。
 
-## 模型架构
+## 定位与状态
 
-### 核心思想
+| 项目 | 内容 |
+|---|---|
+| 原论文 | [Recommender Systems with Generative Retrieval](https://arxiv.org/abs/2305.05065)，NeurIPS 2023 |
+| 官方参考代码 | [google-research/google-research/tree/master/tiger](https://github.com/google-research/google-research/tree/master/tiger) |
+| 任务 | next-item generative retrieval |
+| 表示 | RQ-VAE Semantic ID，默认 3 × 256 codes |
+| backbone | 仓库内纯 PyTorch T5 encoder–decoder |
+| 解码 | 当前代码为普通 beam search；未硬接 Trie |
+| 主评测 | training-only SID→item 解析、item 去重后的 Recall/NDCG |
+| 复现 | 历史 SID-level checkpoint 需按当前 item-level 代码重评 |
+| 最近核验 | 2026-08-30 |
 
-TIGER 将推荐问题转化为序列生成问题：
-- 输入：用户历史交互序列（语义ID表示）
-- 输出：推荐物品的语义ID序列
+## 两阶段流水线
 
 ```mermaid
-graph TD
-    A[用户历史序列] --> B[语义ID编码]
-    B --> C[Transformer编码器]
-    C --> D[Transformer解码器]
-    D --> E[生成推荐序列]
-    E --> F[语义ID解码]
-    F --> G[推荐物品]
+flowchart LR
+    M[item metadata] --> E[sentence-t5-xl]
+    E --> R[RQ-VAE]
+    R --> S[item to SID catalog]
+    H[user item history] --> X[replace each item by SID]
+    S --> X
+    X --> T[T5 encoder-decoder]
+    T --> B[beam candidates]
+    B --> D[offset decode]
+    D --> P[training-only SID to item]
+    P --> U[item deduplication]
+    U --> K[Recall / NDCG]
 ```
 
-### 模型组件
+第一阶段只看 item 内容 embedding；第二阶段才使用用户行为序列。两个阶段必须使用同一个 item 顺序、sentence encoder 和 RQ-VAE 几何。
 
-#### 1. 嵌入层
+## SID token 编码
 
-```python
-class SemIdEmbedding(nn.Module):
-    """语义ID嵌入层"""
-    def __init__(self, num_embeddings, embedding_dim, sem_id_dim=3):
-        super().__init__()
-        self.sem_id_dim = sem_id_dim
-        self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        
-    def forward(self, sem_ids):
-        # sem_ids: (batch_size, seq_len, sem_id_dim)
-        embedded = self.embedding(sem_ids)
-        return embedded.mean(dim=-2)  # 聚合语义ID维度
+原始 SID 的每层 code 都在 `[0,K-1]`，如果直接共用 token 范围，模型无法知道 code 属于哪一层。collate 使用位置偏移：
+
+\[
+\tilde c_j=c_j+jK+1,\qquad j=0,\ldots,C-1.
+\]
+
+0 保留给 padding / decoder start；词表大小为 `C*K+1`。例如 `K=256`、SID `[12,7,99]` 会变成 `[13,264,612]`。历史中每个 item 的 C 个 token 依次展平，最长输入 token 数是 `max_seq_len * C`。
+
+!!! warning "层数必须同步"
+    `AmazonSeqDataset` 生成的 SID 宽度、trainer 的 `sem_id_dim`、词表大小和 `max_length` 必须一致。若 dataset 追加第 4 个 disambiguation code，却仍用 `sem_id_dim=3`，会造成 token layer 错位。
+
+## T5 目标
+
+给定历史 token 序列 \(x\) 与目标 SID token \(y_{1:C}\)，模型优化 teacher-forcing 交叉熵：
+
+\[
+\mathcal L=-\sum_{j=1}^{C}
+\log p_\theta(y_j\mid y_{<j},x).
+\]
+
+encoder 双向编码全部历史 token；decoder 用 causal self-attention 和 cross-attention 逐层生成目标 code。input/output embedding 与 LM head 按 T5 方式共享。
+
+当前 `Tiger` 包装的是 `genrec/modules/t5.py` 中的纯 PyTorch 实现，不是运行时直接实例化 Hugging Face T5。该实现以 weight-compatible 为目标，并有 `verify_t5_equivalence.py` / `verify_pure_t5.py` 辅助检查；旧 trainer docstring 中的 “HF T5-based” 是历史描述。
+
+## 当前模型配置
+
+默认 Amazon Gin：
+
+| 参数 | 值 |
+|---|---:|
+| encoder / decoder layers | 4 / 4 |
+| `d_model` / `d_ff` | 128 / 1024 |
+| heads / `d_kv` | 6 / 64 |
+| dropout | 0.1 |
+| SID | 3 × 256 |
+| history | 50 items = 150 tokens |
+| beam size | 30 |
+| optimizer | Adam, lr `1e-4`, no scheduler |
+
+注意 `num_heads * d_kv` 不要求等于 `d_model`；T5 会把 Q/K/V 投影到多头内部维度。
+
+## 数据样本
+
+`AmazonSeqDataset` 默认按用户时间排序，并在 leave-one-out 下：
+
+- train：排除最后两个 item，使用 sliding window；每个剩余 item（首项除外）都做一次 target；
+- valid：倒数第二项为 target；
+- test：最后一项为 target；
+- history 只保留最近 `max_seq_len` 个 item；
+- `SeqData.item_ids` 是已经展平但尚未 offset 的历史 codes；
+- `SeqData.target_ids` 是原始 target SID，`target_item` 保存真实 item ID。
+
+训练样本策略与 SASRec 不同：TIGER 每个用户产生多条 prefix 样本，而当前 SASRec 每用户一条序列、在 collate 内做多位置监督。比较时需要意识到 I/O 和 sample count 不同。
+
+### 碰撞处理选项
+
+dataset 提供两个互斥策略：
+
+- `add_disambiguation=True`：为同 SID item 追加组内序号，SID 从 C 层变 C+1 层；
+- `dedup_sinkhorn=True`：保持层数，用 RQ-VAE 最后一层 Sinkhorn 重分配碰撞组。
+
+默认配置两者都关闭，并在评测时诚实解析碰撞。若同时打开，代码优先 Sinkhorn 并忽略 suffix。使用 suffix 时必须同步 `sem_id_dim` 和 vocab；suffix 最大值还必须小于 `codebook_size`。
+
+## 解码：代码事实与旧文档差异
+
+`Tiger.generate()` 调用纯 PyTorch T5 的 beam search，设置：
+
+```text
+max_length = sem_id_dim + 1
+num_beams = beam_size
+num_return_sequences = beam_size
 ```
 
-#### 2. Transformer 架构
+返回的第一个 decoder-start token 被移除，剩下 `[B,beam,C]`。
 
-```python
-class TransformerEncoderDecoder(nn.Module):
-    """Transformer 编码器-解码器"""
-    def __init__(self, config):
-        super().__init__()
-        
-        # 编码器
-        encoder_layer = TransformerEncoderLayer(
-            d_model=config.embedding_dim,
-            nhead=config.num_heads,
-            dim_feedforward=config.attn_dim,
-            dropout=config.dropout
-        )
-        self.encoder = TransformerEncoder(encoder_layer, config.n_layers)
-        
-        # 解码器  
-        decoder_layer = TransformerDecoderLayer(
-            d_model=config.embedding_dim,
-            nhead=config.num_heads,
-            dim_feedforward=config.attn_dim,
-            dropout=config.dropout
-        )
-        self.decoder = TransformerDecoder(decoder_layer, config.n_layers)
+!!! danger "当前没有 Trie 约束"
+    当前实现没有向 `generate()` 传 prefix callback，也没有 catalog Trie。模型可能在第 j 步生成属于其他 codebook offset 区间的 token，或产生目录中不存在的 SID。item mapper 会丢弃无法解析的候选，但这会降低有效候选数。项目概览中曾写“TIGER 使用 Trie 约束”，那描述的是预期/常见范式，不是当前代码事实。
+
+若后续加入 Trie，应复用 `genrec/utils/generation_trie.py` 的接口思想，并同时增加“所有输出合法”“batch beam reorder 正确”“有效候选不足时补齐”的测试；不能只在文档中改状态。
+
+## 诚实 item-level 评测
+
+SID 可能碰撞。`SemanticIdItemMapper.from_sequences` 只根据训练前缀统计 item popularity，对每个 SID 选择一个确定代表 item，流行度相同时取较小 item ID：
+
+\[
+g(s)=\arg\max_{i:\operatorname{SID}(i)=s}
+\operatorname{pop}_{train}(i).
+\]
+
+评测依次：
+
+1. 把 offset token 还原成 raw SID；
+2. 用 \(g\) 映射到唯一 item；目录外 SID 丢弃；
+3. 同一 item 多次出现只保留第一次；
+4. 从更深 beam 继续补候选，不足位置填 `-1`；
+5. 对真实 `target_item` 计算 item-level Recall@5/10 与 NDCG@5/10。
+
+trainer 仍记录 pre-dedup SID-level 指标，但日志明确标为 diagnostic，`results.json` 的主 `metrics`、valid 早停与 best checkpoint 选择均使用 item-level Recall@10。
+
+## 代码映射
+
+| 层次 | 文件 | 对象 | 职责 |
+|---|---|---|---|
+| wrapper | `genrec/models/tiger.py` | `Tiger` | T5 构造、forward、beam generate |
+| T5 | `genrec/modules/t5.py` | `T5ForConditionalGeneration` | 纯 PyTorch encoder–decoder 与 generation |
+| tokenizer | `genrec/models/rqvae.py` | `RqVae` | item embedding → SID |
+| 数据 | `genrec/data/amazon.py` | `AmazonSeqDataset` | SID catalog、序列样本、碰撞策略 |
+| collate | `genrec/trainers/tiger_trainer.py` | `t5_collate` | offset encoding、左 padding、raw targets |
+| resolver | `genrec/modules/metrics.py` | `SemanticIdItemMapper` | training-only SID→item 与去重 |
+| trainer | `genrec/trainers/tiger_trainer.py` | `train` | 单设备训练、早停、双口径日志 |
+| config | `config/tiger/amazon/*.gin` | — | RQ-VAE 与 TIGER 两阶段参数 |
+
+## 运行
+
+```bash
+# Stage 1：训练匹配几何的 RQ-VAE
+python genrec/trainers/rqvae_trainer.py \
+  config/tiger/amazon/rqvae.gin --split beauty
+
+# Stage 2：训练 TIGER
+python genrec/trainers/tiger_trainer.py \
+  config/tiger/amazon/tiger.gin --split beauty
 ```
 
-#### 3. 约束生成
+checkpoint 默认依赖：
 
-TIGER 使用 Trie 数据结构约束生成过程：
-
-```python
-class TrieNode(defaultdict):
-    """Trie 节点"""
-    def __init__(self):
-        super().__init__(TrieNode)
-        self.is_end = False
-
-def build_trie(valid_item_ids):
-    """构建有效物品ID的Trie"""
-    root = TrieNode()
-    for seq in valid_item_ids.tolist():
-        node = root
-        for token in seq:
-            node = node[token]
-        node.is_end = True
-    return root
+```text
+out/tiger/amazon/<split>/rqvae/checkpoint_epoch_4999.pt
 ```
 
-## 语义ID映射
+覆盖路径时同时检查 encoder 和几何：
 
-### 从物品到语义ID
-
-TIGER 使用预训练的 RQVAE 将物品特征映射为语义ID：
-
-```python
-# 物品特征 -> 语义ID
-item_features = torch.tensor([...])  # (768,)
-rqvae_output = rqvae(item_features)
-semantic_ids = rqvae_output.sem_ids  # (3,) 三个语义ID
+```bash
+python genrec/trainers/tiger_trainer.py \
+  config/tiger/amazon/tiger.gin --split beauty \
+  --gin 'train.pretrained_rqvae_path="/abs/path/checkpoint.pt"'
 ```
 
-### 语义ID序列
+训练器目前直接选择 `cuda` 或 `cpu`，没有用 Accelerate 包装 TIGER model/data loader；多 GPU 命令不能类推 OneRec 的 accelerate launch。W&B 可关闭：`--gin 'train.wandb_logging=False'`。
 
-用户交互历史转换为语义ID序列：
+## checkpoint 与结果
 
-```python
-user_history = [item1, item2, item3, ...]
-semantic_sequence = []
+- 最佳 item-level valid Recall@10 权重：`best_model.pt`（仅 model state dict）；
+- `results.json`：主 item metrics、seed、config、best epoch、`sid_resolution=most_popular_training_only`；
+- `sid_reference_metrics`：旧 SID-level 诊断，不能进入 headline 表格；
+- RQ-VAE checkpoint 另存 optimizer/scheduler/model_config，与 TIGER checkpoint 格式不同。
 
-for item_id in user_history:
-    item_sem_ids = rqvae.get_semantic_ids(item_features[item_id])
-    semantic_sequence.extend(item_sem_ids.tolist())
+## 与论文/参考实现的差异
 
-# 结果：[id1, id2, id3, id4, id5, id6, ...]
-```
+| 方面 | TIGER 工作 | 本仓库当前实现 |
+|---|---|---|
+| item tokenizer | RQ-VAE semantic IDs | RQ-VAE，多种量化模式及碰撞诊断 |
+| backbone | T5 类 encoder–decoder | 仓库内 pure-PyTorch T5 |
+| candidate validity | 生成目录 SID 的范式 | 普通 beam；没有硬 Trie，非法 SID 后过滤 |
+| collision | 论文协议不等同当前诚实解析 | training-only most-popular resolver + item dedup |
+| model selection | 依原实验协议 | item-level valid Recall@10 |
+| distributed | 参考环境不同 | 当前 trainer 为单进程设备路径 |
 
-## 训练过程
+本仓库历史表中的 TIGER SID-tuple 数字不能与当前 item-level 数字混用。只有按新代码重评 checkpoint 后，结果才可重新进入主对比表。
 
-### 数据准备
+## 常见问题
 
-```python
-class SeqData(NamedTuple):
-    """序列数据格式"""
-    user_id: int
-    item_ids: List[int]      # 输入序列（语义ID）
-    target_ids: List[int]    # 目标序列（语义ID）
-```
+- **大量候选被丢弃**：统计每个 code position 的 offset 区间合法率和 catalog SID 命中率；当前无 Trie。
+- **加载 RQ-VAE 后 SID 全变**：使用 `RqVae.from_pretrained` 或已修复的 `load_pretrained`，防止第一次前向重新 K-Means 初始化。
+- **输入维度不匹配**：检查 parquet encoder、`rqvae_input_dim`、latent/hidden dims、codebook size/layers。
+- **SID Recall 高而 item Recall 低**：报告 collision group、resolver retention 与去重前后候选；这是表示歧义，不是指标实现 bug。
+- **设置 `add_disambiguation=True` 后训练异常**：同步将 `sem_id_dim` 改为 C+1，并确保 suffix 落在合法 code 范围。
+- **评测很慢**：成本约随 test users、beam size 和自回归层数增长；当前没有批量 Trie/KV-cache 专项优化。
+- **和 SASRec 比较时结果漂移**：确认两者使用同一目标切分、`max_seq_len=50` 和 item-level full-catalog 定义。
 
-### 损失函数
+## 参考
 
-使用交叉熵损失进行序列建模：
-
-```python
-def compute_loss(logits, target_ids, mask):
-    """计算序列建模损失"""
-    # logits: (batch_size, seq_len, vocab_size)
-    # target_ids: (batch_size, seq_len)
-    # mask: (batch_size, seq_len)
-    
-    loss_fn = nn.CrossEntropyLoss(ignore_index=-1)
-    
-    # 重塑为 2D
-    logits_flat = logits.view(-1, logits.size(-1))
-    target_flat = target_ids.view(-1)
-    
-    # 计算损失
-    loss = loss_fn(logits_flat, target_flat)
-    
-    return loss
-```
-
-### 训练循环
-
-```python
-def train_step(model, batch, optimizer):
-    """单步训练"""
-    optimizer.zero_grad()
-    
-    # 前向传播
-    user_ids = batch["user_input_ids"]
-    item_ids = batch["item_input_ids"] 
-    target_ids = batch["target_input_ids"]
-    
-    logits = model(user_ids, item_ids)
-    
-    # 计算损失
-    loss = compute_loss(logits, target_ids, batch["seq_mask"])
-    
-    # 反向传播
-    loss.backward()
-    optimizer.step()
-    
-    return loss.item()
-```
-
-## 推理过程
-
-### 生成式推荐
-
-```python
-def generate_recommendations(model, user_sequence, max_length=10):
-    """生成推荐序列"""
-    model.eval()
-    
-    with torch.no_grad():
-        # 编码用户序列
-        encoded = model.encode_sequence(user_sequence)
-        
-        # 自回归生成
-        generated = []
-        current_input = encoded
-        
-        for _ in range(max_length):
-            # 预测下一个token
-            logits = model.decode_step(current_input)
-            next_token = torch.argmax(logits, dim=-1)
-            
-            generated.append(next_token.item())
-            
-            # 更新输入
-            current_input = torch.cat([current_input, next_token.unsqueeze(0)])
-    
-    return generated
-```
-
-### Trie约束生成
-
-```python
-def generate_with_trie_constraint(model, user_sequence, trie, max_length=10):
-    """使用Trie约束的生成"""
-    model.eval()
-    
-    generated = []
-    current_node = trie
-    
-    with torch.no_grad():
-        for step in range(max_length):
-            # 获取有效的下一个tokens
-            valid_tokens = list(current_node.keys())
-            if not valid_tokens:
-                break
-                
-            # 预测并约束
-            logits = model.decode_step(user_sequence + generated)
-            masked_logits = mask_invalid_tokens(logits, valid_tokens)
-            
-            next_token = torch.argmax(masked_logits, dim=-1).item()
-            generated.append(next_token)
-            
-            # 更新Trie位置
-            current_node = current_node[next_token]
-            
-            # 检查是否是完整的物品ID
-            if current_node.is_end:
-                break
-    
-    return generated
-```
-
-## 评估指标 {#评估指标}
-
-### Top-K 推荐指标
-
-```python
-def compute_recall_at_k(predictions, targets, k=10):
-    """计算 Recall@K"""
-    recall_scores = []
-    
-    for pred, target in zip(predictions, targets):
-        # 获取 top-k 预测
-        top_k_pred = set(pred[:k])
-        target_set = set(target)
-        
-        # 计算召回率
-        if len(target_set) > 0:
-            recall = len(top_k_pred & target_set) / len(target_set)
-            recall_scores.append(recall)
-    
-    return np.mean(recall_scores)
-
-def compute_ndcg_at_k(predictions, targets, k=10):
-    """计算 NDCG@K"""
-    ndcg_scores = []
-    
-    for pred, target in zip(predictions, targets):
-        # 计算DCG
-        dcg = 0
-        for i, item in enumerate(pred[:k]):
-            if item in target:
-                dcg += 1 / np.log2(i + 2)  # +2 因为log2(1)=0
-        
-        # 计算IDCG
-        idcg = sum(1 / np.log2(i + 2) for i in range(min(len(target), k)))
-        
-        # 计算NDCG
-        ndcg = dcg / idcg if idcg > 0 else 0
-        ndcg_scores.append(ndcg)
-    
-    return np.mean(ndcg_scores)
-```
-
-### 多样性指标
-
-```python
-def compute_diversity(recommendations):
-    """计算推荐多样性"""
-    all_items = set()
-    for rec_list in recommendations:
-        all_items.update(rec_list)
-    
-    # 物品覆盖度
-    coverage = len(all_items) / total_items
-    
-    # 基尼系数
-    item_counts = defaultdict(int)
-    for rec_list in recommendations:
-        for item in rec_list:
-            item_counts[item] += 1
-    
-    counts = list(item_counts.values())
-    gini = compute_gini_coefficient(counts)
-    
-    return {"coverage": coverage, "gini": gini}
-```
-
-## 模型优化
-
-### 位置编码
-
-```python
-class PositionalEncoding(nn.Module):
-    """位置编码"""
-    def __init__(self, d_model, max_seq_length=5000):
-        super().__init__()
-        
-        pe = torch.zeros(max_seq_length, d_model)
-        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
-        
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * 
-                           (-math.log(10000.0) / d_model))
-        
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        
-        self.register_buffer('pe', pe.unsqueeze(0))
-    
-    def forward(self, x):
-        return x + self.pe[:, :x.size(1)]
-```
-
-### 注意力机制优化
-
-```python
-class MultiHeadAttention(nn.Module):
-    """优化的多头注意力"""
-    def __init__(self, d_model, num_heads, dropout=0.1):
-        super().__init__()
-        assert d_model % num_heads == 0
-        
-        self.d_k = d_model // num_heads
-        self.num_heads = num_heads
-        
-        self.w_q = nn.Linear(d_model, d_model)
-        self.w_k = nn.Linear(d_model, d_model)
-        self.w_v = nn.Linear(d_model, d_model)
-        self.w_o = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, query, key, value, mask=None):
-        batch_size = query.size(0)
-        
-        # Linear transformations
-        Q = self.w_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.w_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.w_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        
-        # Scaled dot-product attention
-        attention, weights = scaled_dot_product_attention(Q, K, V, mask, self.dropout)
-        
-        # Concatenate heads
-        attention = attention.transpose(1, 2).contiguous().view(
-            batch_size, -1, self.num_heads * self.d_k
-        )
-        
-        output = self.w_o(attention)
-        return output, weights
-```
-
-## 高级功能
-
-### 用户行为建模
-
-```python
-class UserBehaviorEncoder(nn.Module):
-    """用户行为编码器"""
-    def __init__(self, config):
-        super().__init__()
-        
-        # 时间编码
-        self.time_encoder = nn.Linear(1, config.embedding_dim)
-        
-        # 行为类型编码
-        self.behavior_embedding = nn.Embedding(
-            config.num_behavior_types, 
-            config.embedding_dim
-        )
-        
-    def forward(self, sequences, timestamps, behavior_types):
-        # 序列编码
-        seq_encoded = self.item_encoder(sequences)
-        
-        # 时间编码
-        time_encoded = self.time_encoder(timestamps.unsqueeze(-1))
-        
-        # 行为编码
-        behavior_encoded = self.behavior_embedding(behavior_types)
-        
-        # 融合特征
-        combined = seq_encoded + time_encoded + behavior_encoded
-        
-        return combined
-```
-
-### 冷启动处理
-
-```python
-class ColdStartHandler:
-    """冷启动处理器"""
-    
-    def __init__(self, model, item_features):
-        self.model = model
-        self.item_features = item_features
-        
-    def recommend_for_new_user(self, user_profile, k=10):
-        """为新用户推荐"""
-        # 基于用户画像找相似物品
-        similar_items = self.find_similar_items(user_profile)
-        
-        # 使用物品特征进行推荐
-        recommendations = self.model.recommend_by_content(similar_items, k)
-        
-        return recommendations
-    
-    def recommend_new_item(self, item_features, k=10):
-        """推荐新物品"""
-        # 找到特征相似的现有物品
-        similar_existing = self.find_similar_existing_items(item_features)
-        
-        # 基于相似物品的用户进行推荐
-        target_users = self.get_users_who_liked(similar_existing)
-        
-        return target_users[:k]
-```
-
-## 实际应用
-
-### 在线服务
-
-```python
-class TIGERRecommendationService:
-    """TIGER 推荐服务"""
-    
-    def __init__(self, model_path, device='cuda'):
-        self.model = Tiger.load_from_checkpoint(model_path)
-        self.model.to(device)
-        self.model.eval()
-        self.device = device
-        
-    def get_recommendations(self, user_id, user_history, k=10):
-        """获取推荐结果"""
-        # 预处理用户历史
-        semantic_sequence = self.preprocess_user_history(user_history)
-        
-        # 生成推荐
-        with torch.no_grad():
-            recommendations = self.model.generate_recommendations(
-                semantic_sequence, max_length=k
-            )
-        
-        # 后处理：语义ID -> 物品ID
-        item_recommendations = self.semantic_to_items(recommendations)
-        
-        return item_recommendations
-    
-    def batch_recommend(self, user_requests):
-        """批量推荐"""
-        batch_results = []
-        
-        for user_id, user_history in user_requests:
-            recommendations = self.get_recommendations(user_id, user_history)
-            batch_results.append((user_id, recommendations))
-        
-        return batch_results
-```
-
-### A/B测试支持
-
-```python
-class ABTestingFramework:
-    """A/B测试框架"""
-    
-    def __init__(self, model_a, model_b):
-        self.model_a = model_a  # 控制组模型
-        self.model_b = model_b  # 实验组模型
-        
-    def recommend_with_ab_test(self, user_id, user_history, test_group=None):
-        """A/B测试推荐"""
-        if test_group is None:
-            # 随机分组
-            test_group = 'A' if hash(user_id) % 2 == 0 else 'B'
-        
-        if test_group == 'A':
-            return self.model_a.recommend(user_history), 'A'
-        else:
-            return self.model_b.recommend(user_history), 'B'
-    
-    def collect_metrics(self, user_id, recommendations, group, feedback):
-        """收集A/B测试指标"""
-        # 记录用户反馈和推荐结果
-        metrics_data = {
-            'user_id': user_id,
-            'group': group,
-            'recommendations': recommendations,
-            'feedback': feedback,
-            'timestamp': time.time()
-        }
-        
-        # 存储到数据库或日志系统
-        self.save_metrics(metrics_data)
-```
-
-TIGER 模型通过生成式的方法解决推荐问题，具有强大的序列建模能力和灵活的生成机制，特别适合处理复杂的用户行为序列和多样化的推荐场景。
+- [TIGER 论文](https://arxiv.org/abs/2305.05065)
+- [Google Research TIGER 参考目录](https://github.com/google-research/google-research/tree/master/tiger)
+- [RQ-VAE 组件](rqvae.md)
+- [SID 评测术语](../reference/terminology.md)

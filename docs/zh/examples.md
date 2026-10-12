@@ -1,324 +1,211 @@
-# 示例代码
+# 可运行示例
 
-本页面包含使用 genrec 的实用示例。
+项目以 trainer + Gin 为主入口。直接写 Python 训练循环容易漏掉 checkpoint、评测口径和 provenance，因此先给 CLI 例子，再给只用于理解 API 的小片段。
 
-## 基础使用示例
+## 单模型 smoke test
 
-### 从零开始训练 RQVAE
+```bash
+python genrec/trainers/sasrec_trainer.py \
+  config/sasrec/amazon.gin --split beauty \
+  --gin 'train.epochs=1' \
+  --gin 'train.patience=1' \
+  --gin 'train.wandb_logging=False' \
+  --gin 'train.save_dir_root="out/_smoke/sasrec/beauty"'
+```
+
+smoke test 只验证代码路径，不代表模型质量。正式结果不要复用 `_smoke` checkpoint。
+
+## Gin 多参数覆盖
+
+```bash
+python genrec/trainers/hstu_trainer.py \
+  config/hstu/amazon.gin --split sports \
+  --gin 'train.seed=7' \
+  --gin 'train.loss_type="sampled_softmax"' \
+  --gin 'train.ss_sampling_strategy="local"' \
+  --gin 'train.num_negatives=256' \
+  --gin 'train.save_dir_root="out/hstu_ss/amazon/sports/s7"'
+```
+
+推荐从专用 `amazon_ss.gin` 开始，而不是在 CE config 上覆盖一长串参数；上例主要展示语法。
+
+## 切换评测协议
+
+```bash
+python genrec/trainers/sasrec_trainer.py \
+  config/sasrec/amazon.gin --split beauty \
+  --gin 'AmazonSASRecDataset.evaluation_protocol="global_temporal"' \
+  --gin 'train.seed=42' \
+  --gin 'train.save_dir_root="out/sasrec/amazon/beauty/global_temporal/s42"'
+```
+
+协议必须进入输出路径，避免 leave-one-out 的 `results.json` 被覆盖。
+
+## 量化器健康报告
+
+```bash
+python scripts/verify_codebook_health.py \
+  --kind rqkmeans \
+  --checkpoint out/onerec/amazon/beauty/rqkmeans/rqkmeans.pt \
+  --dataset-folder dataset/amazon \
+  --split beauty \
+  --encoder /data/models/Qwen3-Embedding-8B
+```
+
+换 RQ-VAE 时使用 `--kind rqvae`。脚本报告逐层 usage/dead codes/max frequency 和完整 SID collision；不要只看其中一列。
+
+## 结果矩阵
+
+```bash
+python scripts/run_matrix.py --help
+python scripts/run_matrix.py \
+  --models sasrec hstu \
+  --splits beauty sports toys \
+  --seeds 42 43 44 \
+  --dry-run
+```
+
+以本机脚本 `--help` 为准；先 dry-run 检查 model→trainer/config 映射，再提交远程 cell。完成后：
+
+```bash
+python scripts/validate_matrix_results.py --help
+python scripts/aggregate_results.py --help
+```
+
+validator 会拒绝 metric level/protocol/provenance 不完整的主结果。
+
+## 直接调用 SASRec
 
 ```python
 import torch
-from genrec.models.rqvae import RqVae, QuantizeForwardMode
-from genrec.data.p5_amazon import P5AmazonItemDataset
-from torch.utils.data import DataLoader
+from genrec.models.sasrec import SASRec
 
-# 创建数据集
-dataset = P5AmazonItemDataset(
-    root="dataset/amazon",
-    split="beauty",
-    train_test_split="train"
+model = SASRec(
+    num_items=100,
+    max_seq_len=5,
+    embed_dim=16,
+    num_heads=2,
+    num_blocks=2,
+    ffn_dim=64,
+    dropout=0.0,
+    loss_type="ce",
 )
 
-# 创建模型
-model = RqVae(
-    input_dim=768,
-    embed_dim=32,
-    hidden_dims=[512, 256, 128],
-    codebook_size=256,
-    n_layers=3,
-    commitment_weight=0.25,
-    codebook_mode=QuantizeForwardMode.ROTATION_TRICK
+input_ids = torch.tensor([[0, 0, 4, 8, 3]])
+targets = torch.tensor([[0, 0, 8, 3, 9]])
+logits, loss = model(input_ids, targets)
+top5 = model.predict(input_ids, top_k=5)
+
+print(logits.shape)  # [1, 5, 101]
+print(float(loss), top5)
+```
+
+真实评测应调用 trainer 的 full-dataloader 逻辑；这个片段没有数据协议和结果保存。
+
+## 直接调用 HSTU
+
+```python
+import torch
+from genrec.models.hstu import HSTU
+
+model = HSTU(
+    num_items=100,
+    max_seq_len=5,
+    embed_dim=16,
+    num_heads=2,
+    num_blocks=1,
+    dropout=0.0,
+    use_temporal_bias=True,
 )
 
-# 训练循环
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005)
-dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
-
-for epoch in range(100):
-    for batch in dataloader:
-        optimizer.zero_grad()
-        
-        outputs = model(torch.tensor(batch))
-        loss = outputs.loss
-        
-        loss.backward()
-        optimizer.step()
-        
-    print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+items = torch.tensor([[0, 2, 5, 7, 8]])
+times = torch.tensor([[0, 100, 200, 260, 400]])
+logits, _ = model(items, times)
+print(logits.shape)  # [1, 5, 101]
 ```
 
-### 使用数据集工厂
+sampled-softmax 的 score normalization 由 trainer 构造；不要仅在这个片段把 `sampled_softmax=True` 而忘记 `score_l2_norm/temperature`。
+
+## 加载 RQ-VAE 并生成 SID
 
 ```python
-from genrec.data.dataset_factory import DatasetFactory
+import pandas as pd
+import numpy as np
+import torch
 
-# 创建物品数据集
-item_dataset = DatasetFactory.create_item_dataset(
-    "p5_amazon",
-    "dataset/amazon",
-    split="train"
+from genrec.models.rqvae import RqVae
+
+df = pd.read_parquet(
+    "dataset/amazon/processed/beauty/item_emb_sentence-t5-xl.parquet"
+)
+x = torch.tensor(np.stack(df["embedding"].values), dtype=torch.float32)
+
+model = RqVae.from_pretrained(
+    "out/tiger/amazon/beauty/rqvae/checkpoint_epoch_4999.pt",
+    map_location="cpu",
+).eval()
+
+with torch.no_grad():
+    sid = model.get_semantic_ids(x).sem_ids
+print(sid.shape)  # [num_items, num_codebooks]
+```
+
+不要用不存在的 `load_from_checkpoint`，也不要脱离 mapping 单独保存 SID 数组。
+
+## SID→item 的诚实解析
+
+```python
+import torch
+from genrec.modules.metrics import SemanticIdItemMapper
+
+catalog_sids = [[1, 2], [1, 2], [3, 4]]
+training_sequences = [[0, 0, 1, 2], [1, 2, 2, 0]]
+mapper = SemanticIdItemMapper.from_sequences(
+    catalog_sids,
+    training_sequences,
+    train_holdout=2,
 )
 
-# 创建序列数据集
-sequence_dataset = DatasetFactory.create_sequence_dataset(
-    "p5_amazon", 
-    "dataset/amazon",
-    split="train",
-    pretrained_rqvae_path="./checkpoints/rqvae.pt"
-)
+beam = torch.tensor([[[1, 2], [1, 2], [3, 4], [9, 9]]])
+items = mapper.map_predictions(beam)
+print(items)
 ```
 
-### 自定义配置
+同一 SID 两次会映射到同一代表 item，再被去重；不存在的 SID 被丢弃，缺位填 `-1`。
+
+## 检查 `results.json`
 
 ```python
-from genrec.data.configs import P5AmazonConfig, TextEncodingConfig
+import json
+from pathlib import Path
 
-# 自定义文本编码配置
-text_config = TextEncodingConfig(
-    encoder_model="sentence-transformers/all-MiniLM-L6-v2",
-    template="产品: {title} | 品牌: {brand} | 类别: {categories}",
-    batch_size=32
-)
-
-# 自定义数据集配置
-dataset_config = P5AmazonConfig(
-    root_dir="my_data",
-    split="electronics",
-    text_config=text_config
-)
+payload = json.loads(Path("out/sasrec/amazon/beauty/results.json").read_text())
+for key in ["model", "split", "seed", "metrics", "config"]:
+    print(key, payload.get(key))
 ```
 
-## 高级示例
+实际 schema 还包含源码 provenance；不要用这个读取片段重写结果文件，生成应统一走 `save_run_results`。
 
-### 多 GPU 训练
+## OneRec 三阶段
 
-```python
-from accelerate import Accelerator
+```bash
+python genrec/trainers/rqkmeans_trainer.py \
+  config/onerec/amazon/rqkmeans.gin --split beauty
 
-def train_with_accelerate():
-    accelerator = Accelerator()
-    
-    # 模型、优化器、数据加载器
-    model = RqVae(...)
-    optimizer = torch.optim.AdamW(model.parameters())
-    dataloader = DataLoader(...)
-    
-    # 准备分布式训练
-    model, optimizer, dataloader = accelerator.prepare(
-        model, optimizer, dataloader
-    )
-    
-    for epoch in range(epochs):
-        for batch in dataloader:
-            optimizer.zero_grad()
-            
-            with accelerator.autocast():
-                outputs = model(batch)
-                loss = outputs.loss
-                
-            accelerator.backward(loss)
-            optimizer.step()
+accelerate launch --config_file config/accelerate_4gpu.yaml \
+  -m genrec.trainers.onerec_sft_trainer \
+  config/onerec/amazon/sft.gin --split beauty
+
+accelerate launch --config_file config/accelerate_4gpu.yaml \
+  -m genrec.trainers.onerec_grpo_trainer \
+  config/onerec/amazon/grpo.gin --split beauty
 ```
 
-### 自定义数据集实现
+GRPO 前先运行 `python scripts/check_grpo_readiness.py --help`，检查 SFT checkpoint、tokenizer 和 reward 稀疏度。
 
-```python
-from genrec.data.base_dataset import BaseRecommenderDataset
+## 下一步
 
-class MyCustomDataset(BaseRecommenderDataset):
-    def download(self):
-        # 实现数据下载逻辑
-        pass
-        
-    def load_raw_data(self):
-        # 加载原始数据文件
-        return {"items": items_df, "interactions": interactions_df}
-        
-    def preprocess_data(self, raw_data):
-        # 自定义预处理
-        return processed_data
-        
-    def extract_items(self, processed_data):
-        return processed_data["items"]
-        
-    def extract_interactions(self, processed_data):
-        return processed_data["interactions"]
-```
-
-## 集成示例
-
-### Weights & Biases 集成
-
-```python
-import wandb
-
-# 初始化 wandb
-wandb.init(
-    project="my-recommendation-project",
-    config={
-        "learning_rate": 0.0005,
-        "batch_size": 64,
-        "model_type": "rqvae"
-    }
-)
-
-# 训练过程中记录指标
-for epoch in range(epochs):
-    # ... 训练代码 ...
-    
-    wandb.log({
-        "epoch": epoch,
-        "loss": loss.item(),
-        "reconstruction_loss": recon_loss.item(),
-        "quantization_loss": quant_loss.item()
-    })
-```
-
-### 超参数调优
-
-```python
-import optuna
-
-def objective(trial):
-    # 建议超参数
-    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-    batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
-    embed_dim = trial.suggest_categorical("embed_dim", [16, 32, 64])
-    
-    # 使用建议的参数训练模型
-    model = RqVae(embed_dim=embed_dim, ...)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    
-    # 训练循环
-    val_loss = train_and_evaluate(model, optimizer, batch_size)
-    
-    return val_loss
-
-# 运行优化
-study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=100)
-```
-
-## 评估示例
-
-### 模型评估
-
-```python
-def evaluate_model(model, test_dataloader, device):
-    model.eval()
-    total_loss = 0
-    total_samples = 0
-    
-    with torch.no_grad():
-        for batch in test_dataloader:
-            batch = batch.to(device)
-            outputs = model(batch)
-            
-            total_loss += outputs.loss.item() * len(batch)
-            total_samples += len(batch)
-    
-    return total_loss / total_samples
-
-# 评估 RQVAE
-test_loss = evaluate_model(rqvae_model, test_dataloader, device)
-print(f"测试重构损失: {test_loss:.4f}")
-```
-
-### 推荐生成
-
-```python
-def generate_recommendations(tiger_model, user_sequence, top_k=10):
-    """为用户序列生成 Top-K 推荐"""
-    tiger_model.eval()
-    
-    with torch.no_grad():
-        # 编码用户序列
-        logits = tiger_model.generate(user_sequence, max_length=top_k)
-        
-        # 获取 Top-K 物品
-        top_items = torch.topk(logits, top_k).indices
-        
-    return top_items.tolist()
-
-# 生成推荐
-user_seq = [1, 5, 23, 45]  # 用户交互历史
-recommendations = generate_recommendations(tiger_model, user_seq, top_k=10)
-print(f"推荐物品: {recommendations}")
-```
-
-## 实用工具
-
-### 数据分析
-
-```python
-from genrec.data.processors.sequence_processor import SequenceStatistics
-
-# 分析序列统计信息
-stats = SequenceStatistics.compute_sequence_stats(sequence_data)
-print(f"平均序列长度: {stats['avg_seq_length']:.2f}")
-print(f"唯一物品数量: {stats['num_unique_items']}")
-```
-
-### 模型检查
-
-```python
-def inspect_codebook_usage(rqvae_model, dataloader):
-    """分析码本利用率"""
-    used_codes = set()
-    
-    with torch.no_grad():
-        for batch in dataloader:
-            outputs = rqvae_model(batch)
-            semantic_ids = outputs.sem_ids
-            used_codes.update(semantic_ids.flatten().tolist())
-    
-    usage_rate = len(used_codes) / rqvae_model.codebook_size
-    print(f"码本利用率: {usage_rate:.2%}")
-    
-    return used_codes
-
-used_codes = inspect_codebook_usage(model, dataloader)
-```
-
-## 技巧和最佳实践
-
-### 内存优化
-
-```python
-# 为大型模型启用梯度检查点
-model.gradient_checkpointing_enable()
-
-# 使用混合精度训练
-from torch.cuda.amp import autocast, GradScaler
-
-scaler = GradScaler()
-
-for batch in dataloader:
-    optimizer.zero_grad()
-    
-    with autocast():
-        outputs = model(batch)
-        loss = outputs.loss
-    
-    scaler.scale(loss).backward()
-    scaler.step(optimizer)
-    scaler.update()
-```
-
-### 调试
-
-```python
-# 启用详细日志
-import logging
-
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
-
-# 记录模型统计信息
-def log_model_stats(model):
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    logger.info(f"总参数量: {total_params:,}")
-    logger.info(f"可训练参数量: {trainable_params:,}")
-```
+- [完整命令与依赖](getting-started.md)
+- [配置系统](architecture/configuration.md)
+- [评测系统](architecture/evaluation-system.md)
+- [新增模型/数据集](architecture/extension-guide.md)

@@ -1,184 +1,103 @@
-# LCRec
+# LCRec: adapting a causal LLM with collaborative semantic IDs
 
-Adapting Large Language Models by Integrating Collaborative Semantics for Recommendation.
+| Field | Current repository |
+|---|---|
+| Paper | [Adapting Large Language Models by Integrating Collaborative Semantics](https://arxiv.org/abs/2311.09049), ICDE 2024 |
+| Task | next-item generative retrieval plus text/SID alignment tasks |
+| Item representation | main config: 5×256; paper-alignment config: 4×256 plus USM |
+| Backbone | Hugging Face causal LM; current Gin selects local Qwen3-1.7B |
+| Training | response-only causal LM, full-parameter by default |
+| Decoding | position-specific codebook masks with KV-cached beam search |
+| Headline | item Recall/NDCG after training-only SID resolution and deduplication |
+| Checkpoint | Hugging Face model/tokenizer directory; no optimizer/scheduler/epoch |
 
-## Overview
+The wrapper uses `AutoModelForCausalLM` and `AutoTokenizer`; it is not hard-coded to Qwen. Python's Qwen2.5 fallback and old docstrings are not the current experiment setting. The repository's [`reference/LC-Rec/`](https://github.com/phonism/genrec/tree/main/reference/LC-Rec) is reference code, while this implementation is an independent GenRec adaptation.
 
-LCRec adapts large language models (LLMs) for recommendation by integrating collaborative semantics through codebook tokens. It uses semantic IDs from RQ-VAE to represent items and fine-tunes an LLM to generate item recommendations.
+## Two stages and vocabulary
 
-## Architecture
+Stage 1 trains LCRec's dedicated RQ-VAE. The legacy main recipe uses input 768, latent 64, hidden 512/256/128 and five 256-code layers. `rqvae_paper_recipe.gin` follows the reference indexer geometry with latent 32, hidden 2048/1024/512/256/128/64 and four 256-code layers. It also matches the released `run.sh` behavior: first-batch K-Means on 1,024 items, Xavier-normal MLP weights, and mean-reduced reconstruction/per-layer VQ losses. Stage 2 trains the causal LM on user sequences. The catalog order, Sentence-T5-XL embedding space, and RQ-VAE geometry must remain identical.
 
-```
-Item Text → RQ-VAE → Semantic IDs [<C0_x>, <C1_y>, ..., <C4_z>]
-                          ↓
-User History + Prompt → LLM (Qwen) → Generated Semantic IDs
-                          ↓
-                    Constrained Decoding
-                          ↓
-                    Recommended Items
-```
+For each configured layer, `LCRec.add_codebook_tokens()` adds position-specific special tokens such as `<C0_0>`. A complete SID contains five tokens in the legacy recipe or four in the paper recipe. Model input/output embeddings are resized, so the saved tokenizer is a required checkpoint artifact.
 
-### Key Components
+`uniform_semantic_mapping=True` performs the official-style iterative Sinkhorn reassignment on collision groups in the final codebook. True duplicates or a fixed point may still collide, and the adapter reports the resulting unique count instead of silently treating tuples as item identities.
 
-- **Semantic ID Generation**: RQ-VAE with 5 codebooks (256 codes each)
-- **Codebook Tokens**: Special tokens `<Ci_j>` added to LLM vocabulary
-- **Constrained Decoding**: Beam search with prefix constraints
-- **Multi-task Training**: seqrec, item2index, index2item tasks
+## Tasks and objective
 
-## Training Pipeline
+`AmazonLCRecDataset` implements six tasks:
 
-### Step 1: Train RQ-VAE for Semantic IDs
+| Task | Mapping | Enabled in current main config? |
+|---|---|---|
+| `seqrec` | history SIDs to next SID | Yes |
+| `item2index` | item text to SID | Yes |
+| `index2item` | SID to item text | Yes |
+| `fusionseqrec` | history SIDs to item text | No |
+| `itemsearch` | synthetic query/history to SID | No |
+| `preferenceobtain` | history to category-preference text | No |
 
-```bash
-python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
-```
+The optional tasks use local metadata heuristics and are not equivalent to the paper's data generation simply because all six names exist. The legacy main config enables three tasks; `lcrec_paper_recipe.gin` enables all six. Validation/test datasets generate `seqrec` only.
 
-### Step 2: Fine-tune LLM
+The collator concatenates `prompt + response + EOS` and sets prompt/padding labels to `-100`:
 
-```bash
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
-```
+\[
+\mathcal L=-\sum_{t\in response+EOS}\log p_\theta(x_t\mid x_{<t}).
+\]
 
-### Debug Mode (Quick Testing)
+`train.max_length=512` controls actual LM truncation. Dataset `max_text_len` is currently stored but does not truncate LCRec metadata.
 
-```bash
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec_debug.gin
-```
+## Generation and evaluation
 
-## Configuration
-
-```gin
-# config/lcrec/amazon/lcrec.gin
-
-# Training
-train.epochs = 4
-train.batch_size = 32
-train.learning_rate = 2e-5
-train.max_length = 512
-
-# Model
-train.pretrained_path = %MODEL_HUB_QWEN3_1_7B
-train.use_lora = False
-
-# Codebook
-train.num_codebooks = 5
-train.codebook_size = 256
-
-# Evaluation
-train.eval_beam_width = 10
-```
-
-## Tasks
-
-LCRec supports three training tasks:
-
-| Task | Input | Output |
-|------|-------|--------|
-| **seqrec** | User history | Next item semantic ID |
-| **item2index** | Item text | Item semantic ID |
-| **index2item** | Semantic ID | Item text |
-
-## Model API
+The class has **no `LCRec.generate()` method**. Its production trainer uses:
 
 ```python
-from genrec.models import LCRec
-
-model = LCRec(pretrained_path="Qwen/Qwen2.5-1.5B")
-model.add_codebook_tokens(num_codebooks=5, codebook_size=256)
-
-# Generate recommendations
-outputs = model.generate(
-    input_ids=prompt_ids,
-    max_new_tokens=6,
-    num_beams=10,
+sem_ids, scores = model.generate_constrained_beam(
+    input_ids=input_ids,
+    attention_mask=attention_mask,
+    position_mask=helper.position_mask,
+    code_map=helper.code_map,
+    num_codebooks=5,
+    beam_width=10,
+    topk=10,
 )
 ```
 
-## Experiment Results
+`generate_topk` is an older per-example alternative. `ConstrainedDecodingHelper` allows only `<Cj_*>` at code position `j` and EOS after the final code. This guarantees positional token type, **not membership in the catalog**; it is not a catalog PrefixTrie.
 
-### Setup
+The item mapper resolves each SID using only training-prefix popularity, breaks ties by smaller item ID, drops absent tuples, and removes duplicate items. Item-level Recall/NDCG@1/5/10 drives validation-only model selection. The trainer saves `checkpoint_best`, reloads that state on every rank, then evaluates test exactly once. Pre-resolution SID tuple metrics remain diagnostics under `results.json.extra`.
 
-- **LLM**: Qwen2.5-1.5B (full fine-tuning, no LoRA)
-- **Tokenizer**: RQ-VAE (5 codebooks × 256 codes, sentence-t5-xl encoder)
-- **Training**: batch_size=16, lr=2e-5, max_seq_len=50, 10 epochs, cosine schedule
-- **Evaluation**: Constrained beam search (beam_width=10), seqrec task
-- **Dataset**: Amazon Reviews (5-core)
-- **Hardware**: Single A800-80GB GPU
+| Layer | Source | Contract |
+|---|---|---|
+| wrapper | [`lcrec.py`](https://github.com/phonism/genrec/blob/main/genrec/models/lcrec.py) | HF forward and custom beam methods |
+| data | [`amazon_lcrec.py`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_lcrec.py) | task/prompt/response/target dictionaries |
+| collator/helper/trainer | [`lcrec_trainer.py`](https://github.com/phonism/genrec/blob/main/genrec/trainers/lcrec_trainer.py) | response mask, code-position mask, Accelerate loop |
+| resolver | [`metrics.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/metrics.py) | SID candidates to deduplicated items |
 
-### Amazon Beauty
+## Run and artifacts
 
-| Epoch | Valid R@5 | Valid R@10 | Valid N@10 | Test R@5 | Test R@10 | Test N@10 |
-|-------|----------|-----------|-----------|---------|----------|----------|
-| 0 | 0.0231 | 0.0313 | 0.0172 | 0.0165 | 0.0224 | 0.0123 |
-| 1 | 0.0327 | 0.0522 | 0.0268 | 0.0250 | 0.0403 | 0.0204 |
-| 2 | 0.0428 | 0.0636 | 0.0339 | 0.0305 | 0.0462 | 0.0247 |
-| 3 | 0.0512 | 0.0774 | 0.0422 | 0.0391 | 0.0586 | 0.0323 |
-| 4 | 0.0584 | 0.0833 | 0.0479 | 0.0474 | 0.0683 | 0.0390 |
-| **5** | **0.0619** | **0.0878** | **0.0510** | **0.0481** | **0.0704** | **0.0403** |
-| 6 | 0.0608 | 0.0829 | 0.0490 | 0.0437 | 0.0636 | 0.0364 |
-| 7 | 0.0536 | 0.0766 | 0.0453 | 0.0391 | 0.0577 | 0.0330 |
-| 8 | 0.0510 | 0.0727 | 0.0426 | 0.0364 | 0.0521 | 0.0301 |
-| 9 | 0.0494 | 0.0704 | 0.0415 | 0.0351 | 0.0513 | 0.0292 |
+```bash
+python -m genrec.trainers.rqvae_trainer \
+  config/lcrec/amazon/rqvae.gin --split beauty
 
-**Best**: Epoch 5 — Valid R@10=0.0878, Test R@10=0.0704
+python -m genrec.trainers.lcrec_trainer \
+  config/lcrec/amazon/lcrec.gin --split beauty
 
-### Amazon Toys
+# Paper-structure adaptation: 4-code indexer, USM, six tasks, history 20,
+# beam 20, and Qwen3-4B as the locally available LLaMA-7B substitute.
+python -m genrec.trainers.rqvae_trainer \
+  config/lcrec/amazon/rqvae_paper_recipe.gin --split beauty
+python -m genrec.trainers.lcrec_trainer \
+  config/lcrec/amazon/lcrec_paper_recipe.gin --split beauty
+```
 
-| Epoch | Valid R@5 | Valid R@10 | Valid N@10 | Test R@5 | Test R@10 | Test N@10 |
-|-------|----------|-----------|-----------|---------|----------|----------|
-| 0 | 0.0081 | 0.0092 | 0.0064 | 0.0073 | 0.0090 | 0.0060 |
-| 1 | 0.0267 | 0.0423 | 0.0217 | 0.0243 | 0.0370 | 0.0189 |
-| 2 | 0.0387 | 0.0557 | 0.0305 | 0.0286 | 0.0443 | 0.0229 |
-| 3 | 0.0462 | 0.0668 | 0.0365 | 0.0379 | 0.0573 | 0.0307 |
-| 4 | 0.0518 | 0.0764 | 0.0433 | 0.0410 | 0.0631 | 0.0351 |
-| 5 | 0.0577 | 0.0814 | 0.0476 | 0.0448 | **0.0670** | **0.0383** |
-| **6** | **0.0566** | **0.0821** | **0.0481** | 0.0433 | 0.0614 | 0.0368 |
-| 7 | 0.0528 | 0.0739 | 0.0449 | 0.0392 | 0.0553 | 0.0330 |
-| 8 | 0.0498 | 0.0677 | 0.0420 | 0.0367 | 0.0509 | 0.0301 |
-| 9 | 0.0478 | 0.0664 | 0.0408 | 0.0363 | 0.0506 | 0.0298 |
+Stage 2 currently reads `out/lcrec/amazon/<split>/rqvae/checkpoint_epoch_1999.pt`. The RQ-VAE run continues past that checkpoint, so an alternative epoch requires an explicit path override.
 
-**Best**: Epoch 6 — Valid R@10=0.0821, Test R@10=0.0670 (E5)
+There is no `lcrec_debug.gin`. For a smoke run after real model/tokenizer assets exist, override epochs/sample limits on the standard config.
 
-### Amazon Sports
+The current main config uses Qwen3-1.7B, 10 epochs, batch 16 with accumulation 4, learning rate `2e-5`, 1% warmup, 50 history items, 512 LM tokens, full-parameter bf16 training, beam 10, and per-epoch save/eval.
 
-| Epoch | Valid R@5 | Valid R@10 | Valid N@10 | Test R@5 | Test R@10 | Test N@10 |
-|-------|----------|-----------|-----------|---------|----------|----------|
-| 0 | 0.0160 | 0.0227 | 0.0130 | 0.0119 | 0.0160 | 0.0094 |
-| 1 | 0.0199 | 0.0315 | 0.0167 | 0.0143 | 0.0225 | 0.0120 |
-| 2 | 0.0229 | 0.0355 | 0.0189 | 0.0174 | 0.0275 | 0.0145 |
-| 3 | 0.0301 | 0.0430 | 0.0242 | 0.0219 | 0.0317 | 0.0177 |
-| 4 | 0.0326 | 0.0470 | 0.0259 | 0.0226 | 0.0344 | 0.0187 |
-| **5** | **0.0331** | **0.0472** | **0.0265** | **0.0238** | **0.0360** | **0.0198** |
-| 6 | 0.0310 | 0.0455 | 0.0254 | 0.0221 | 0.0319 | 0.0177 |
-| 7 | 0.0261 | 0.0381 | 0.0214 | 0.0174 | 0.0260 | 0.0144 |
-| 8 | 0.0226 | 0.0344 | 0.0191 | 0.0148 | 0.0229 | 0.0125 |
-| 9 | 0.0222 | 0.0329 | 0.0184 | 0.0143 | 0.0217 | 0.0118 |
+Output contains `checkpoint_epoch_<zero-based epoch>/`, `checkpoint_best/`, `checkpoint_final/`, and `results.json`. `checkpoint_best` is selected only on validation Recall@10; `results.json` contains its one-shot test metrics. Final still means last. `eval_only=True` currently evaluates validation only and does not write a new results artifact. LoRA without PEFT only warns and falls back, so verify trainable-parameter counts.
 
-**Best**: Epoch 5 — Valid R@10=0.0472, Test R@10=0.0360
+## Reproduction boundary
 
-### Amazon Home
+The paper-alignment recipe matches four codebooks, USM, six tasks, history 20, four epochs, effective batch 16, learning rate `5e-5`, and beam 20. It still substitutes Sentence-T5-XL and Qwen3-4B for the release's LLaMA-derived embeddings/LLaMA-7B and runs Amazon-2014 Beauty rather than the paper datasets. Historical SID-tuple results are not current item-level headlines; publishable values must come from verified artifacts in `BENCHMARKS.md`.
 
-(Still training, Epoch 5 eval in progress)
-
-| Epoch | Valid R@5 | Valid R@10 | Valid N@10 | Test R@5 | Test R@10 | Test N@10 |
-|-------|----------|-----------|-----------|---------|----------|----------|
-| 0 | 0.0062 | 0.0105 | 0.0053 | 0.0047 | 0.0084 | 0.0041 |
-| 1 | 0.0094 | 0.0151 | 0.0079 | 0.0082 | 0.0128 | 0.0065 |
-| 2 | 0.0137 | 0.0209 | 0.0112 | 0.0102 | 0.0159 | 0.0086 |
-| 3 | 0.0168 | 0.0245 | 0.0135 | 0.0137 | 0.0204 | 0.0112 |
-| **4** | **0.0194** | **0.0278** | **0.0160** | **0.0163** | **0.0234** | **0.0133** |
-
-**Best so far**: Epoch 4 — Valid R@10=0.0278, Test R@10=0.0234
-
-### Summary (Best Valid Recall@10)
-
-| Dataset | R@5 | R@10 | N@10 | Test R@10 | Test N@10 | Best Epoch |
-|---------|-----|------|------|-----------|-----------|------------|
-| **Beauty** | 0.0619 | 0.0878 | 0.0510 | 0.0704 | 0.0403 | 5 |
-| **Toys** | 0.0566 | 0.0821 | 0.0481 | 0.0670 | 0.0383 | 6 (test best E5) |
-| **Sports** | 0.0331 | 0.0472 | 0.0265 | 0.0360 | 0.0198 | 5 |
-| **Home** | 0.0194 | 0.0278 | 0.0160 | 0.0234 | 0.0133 | 4 (in progress) |
-
-## Reference
-
-- [LC-Rec: Adapting Large Language Models by Integrating Collaborative Semantics for Recommendation](https://arxiv.org/abs/2311.09049)
+See [RQ-VAE](rqvae.md), [trainer API](../api/trainers.md#semantic-id-recommenders), and [evaluation architecture](../architecture/evaluation-system.md).

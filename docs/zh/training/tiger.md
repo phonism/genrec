@@ -1,354 +1,116 @@
-# TIGER 训练
+# 训练 TIGER
 
-本指南详细介绍如何训练 TIGER 模型。
+TIGER 训练分为 RQ-VAE tokenizer 和 T5 推荐器两阶段。当前 trainer 为单进程设备路径，默认普通 beam search；不要照搬旧文档中的 Accelerate 多卡或 Trie 命令。
 
-## 前置条件
-
-### 1. 预训练的 RQVAE 模型
-
-TIGER 需要预训练的 RQVAE 模型来生成语义 ID：
+## 前置检查
 
 ```bash
-# 确保 RQVAE 模型已训练完成
-ls out/rqvae/p5_amazon/beauty/checkpoint_*.pt
+test -f dataset/amazon/raw/beauty/reviews_Beauty_5.json.gz
+test -f dataset/amazon/processed/beauty/item_emb_sentence-t5-xl.parquet
+test -f out/tiger/amazon/beauty/rqvae/checkpoint_epoch_4999.pt
 ```
 
-如果没有，请先完成 [RQVAE 训练](rqvae.md)。
+确认 RQ-VAE 是 TIGER 的 3×256、latent 32、hidden `[512,256,128,64]` 配置，并由同一 sentence-t5-xl cache 训练。
 
-### 2. 数据准备
-
-确保使用与 RQVAE 相同的数据集：
+## Stage 1：tokenizer
 
 ```bash
-# 数据应该已经存在
-ls dataset/amazon/
+python genrec/trainers/rqvae_trainer.py \
+  config/tiger/amazon/rqvae.gin --split beauty
 ```
 
-## 训练配置
+完成后先跑 codebook health 与 collision 检查，见 [RQ-VAE 训练](rqvae.md)。
 
-### 默认配置
-
-查看 TIGER 配置文件：
+## Stage 2：TIGER
 
 ```bash
-cat config/tiger/p5_amazon.gin
+python genrec/trainers/tiger_trainer.py \
+  config/tiger/amazon/tiger.gin --split beauty \
+  --gin 'train.wandb_logging=False'
 ```
 
-关键参数：
+当前默认：200 epochs、batch 256、Adam lr `1e-4`、50 item history、30 beams、valid Recall@10 patience 10。
 
-```gin
-# 训练参数
-train.epochs=5000               # 训练轮数
-train.learning_rate=3e-4        # 学习率
-train.batch_size=256            # 批量大小
-train.weight_decay=0.035        # 权重衰减
-
-# 模型参数
-train.embedding_dim=128         # 嵌入维度
-train.attn_dim=512             # 注意力维度
-train.dropout=0.3              # Dropout率
-train.num_heads=8              # 注意力头数
-train.n_layers=8               # Transformer层数
-
-# 序列参数
-train.max_seq_len=512          # 最大序列长度
-train.num_item_embeddings=256  # 物品嵌入数量
-train.num_user_embeddings=2000 # 用户嵌入数量
-train.sem_id_dim=3             # 语义ID维度
-
-# 预训练模型路径
-train.pretrained_rqvae_path="./out/rqvae/p5_amazon/beauty/checkpoint_299999.pt"
-```
-
-## 开始训练
-
-### 基本训练命令
+如果 checkpoint 不在默认位置：
 
 ```bash
-python genrec/trainers/tiger_trainer.py config/tiger/p5_amazon.gin
+python genrec/trainers/tiger_trainer.py \
+  config/tiger/amazon/tiger.gin --split beauty \
+  --gin 'train.pretrained_rqvae_path="/abs/path/checkpoint.pt"'
 ```
 
-### 分布式训练
+## 训练样本与 token 数
 
-使用多GPU训练：
+每个 train user 的序列先去掉 valid/test 两项，再生成所有非空 prefix → next-item 样本。3-code SID 下：
+
+```text
+50 history items × 3 codes = 150 encoder tokens
+target = 3 decoder labels
+vocab = 3 × 256 + padding = 769
+```
+
+`t5_collate` 左 padding encoder token，并按 codebook position 加 offset。不要把 `max_seq_len` 当 token 数传给 `max_history_tokens`。
+
+## 评测流程
+
+每次 valid：
+
+1. 生成 `beam_size` 个长度为 C 的 token 序列；
+2. 去掉 decoder-start token，反解 position offset；
+3. 记录 SID exact-match 诊断；
+4. 用训练前缀流行度将每个 SID 解析到唯一 item；
+5. 丢弃非法 SID、对 item 去重；
+6. 计算 item-level Recall@5/10、NDCG@5/10；
+7. 按 item Recall@10 选择 `best_model.pt`。
+
+测试集在 valid 提升时运行，另可按 `eval_test_every_epoch` 周期诊断。`results.json` 的主 metrics 对应最佳 valid checkpoint 的 item-level test 结果。
+
+## 当前没有硬约束解码
+
+`Tiger.generate` 没有 Trie/prefix callback。要测候选有效率，可在 eval 中统计：
+
+- 每个生成位置是否落在该 codebook 的 offset 区间；
+- raw SID 是否存在于 catalog；
+- beam 经解析和 item 去重后剩余多少候选。
+
+增大 beam 能给后过滤更多候选，但不等价于修复非法生成，也会线性增加候选输出和更多 decoder 计算。
+
+## 输出
+
+```text
+out/tiger/amazon/beauty/
+├── best_model.pt          # model.state_dict only
+├── tiger_<timestamp>.log
+└── results.json
+```
+
+加载 `best_model.pt` 时要按 Gin 参数先构造相同 `Tiger(model_config)`；它不是 Hugging Face `save_pretrained` 目录。
+
+## 可比实验规则
+
+- `AmazonSeqDataset.add_disambiguation=False` 是当前默认；改变后是 tokenizer/ID 设计消融；
+- `dedup_sinkhorn` 与 suffix 不应同时使用；
+- `sem_id_dim`、codebook size、RQ-VAE 层数同时变化时不能归因于单一变量；
+- SID-level 历史数字不进入 headline；
+- 与 SASRec/HSTU 对比时统一 `max_seq_len=50`、split、seed 与 item-level catalog。
+
+## 排错
+
+- **RQ-VAE state shape mismatch**：下游 dataset 手动构造 RQ-VAE；检查五个几何参数，不要 `strict=False` 掩盖。
+- **beam 输出 shape 错**：generation 预期 `[B*beam,C+1]`；第一个 token 是 start，再 reshape。
+- **item metrics 全零但 SID 有命中**：检查 `target_item` 是否保留、item mapping 行序和 training-only resolver。
+- **有效候选不足 10**：统计非法 SID 和 dedup 比率；mapper 会用 `-1` padding，不会把缺位当命中。
+- **多 GPU 没有加速**：当前 TIGER trainer 没有 Accelerate/DDP 封装；需要单独实现和验证 distributed path。
+- **旧文档代码找不到 `build_trie`**：`genrec.models.tiger` 没有这个函数。当前状态见 [TIGER 模型页](../models/tiger.md)。
+
+## 推荐验证
 
 ```bash
-accelerate config
-accelerate launch genrec/trainers/tiger_trainer.py config/tiger/p5_amazon.gin
+pytest -q tests/test_honest_metrics.py tests/test_rqvae_checkpoint.py
+python scripts/verify_t5_equivalence.py
+python scripts/verify_pure_t5.py
 ```
 
-### 训练过程
+后两个文件没有参数解析或 `--help` 模式；执行即会构造 Hugging Face 与本地 T5 并完成整次数值对齐检查，需要已安装 `transformers` 和 `torch`。它们是实现 parity 诊断，不是训练前必跑的轻量命令。
 
-训练过程中会看到：
-
-1. **数据加载**: 序列数据集加载和语义ID生成
-2. **模型初始化**: Transformer模型初始化
-3. **训练循环**: 损失下降和指标监控
-4. **验证评估**: 周期性性能评估
-
-## 自定义配置
-
-### 创建自定义配置
-
-```gin
-# my_tiger_config.gin
-import genrec.data.p5_amazon
-
-# 调整模型规模
-train.embedding_dim=256
-train.attn_dim=1024
-train.n_layers=12
-train.num_heads=16
-
-# 调整训练参数
-train.learning_rate=1e-4
-train.batch_size=128
-train.epochs=10000
-
-# 自定义路径
-train.dataset_folder="my_dataset"
-train.pretrained_rqvae_path="my_rqvae/checkpoint.pt"
-train.save_dir_root="my_tiger_output/"
-
-# 实验跟踪
-train.wandb_logging=True
-train.wandb_project="my_tiger_experiment"
-```
-
-## 模型架构解析
-
-### Transformer 结构
-
-TIGER 使用编码器-解码器架构：
-
-```python
-class Tiger(nn.Module):
-    def __init__(self, config):
-        # 用户和物品嵌入
-        self.user_embedding = UserIdEmbedding(...)
-        self.item_embedding = SemIdEmbedding(...)
-        
-        # Transformer 编码器-解码器
-        self.transformer = TransformerEncoderDecoder(...)
-        
-        # 输出投影
-        self.output_projection = nn.Linear(...)
-```
-
-### 语义ID映射
-
-TIGER 将物品转换为语义ID序列：
-
-```python
-# 物品 -> 语义ID序列
-item_id = 123
-semantic_ids = rqvae.get_semantic_ids(item_features[item_id])
-# semantic_ids: [45, 67, 89]  # 长度为 sem_id_dim
-```
-
-## 训练监控
-
-### 关键指标
-
-- **训练损失**: 序列建模损失
-- **验证损失**: 验证集性能
-- **Recall@K**: Top-K 召回率
-- **NDCG@K**: 归一化折扣累积增益
-
-### Weights & Biases 集成
-
-启用实验跟踪：
-
-```gin
-train.wandb_logging=True
-train.wandb_project="tiger_p5_amazon"
-train.wandb_log_interval=100
-```
-
-查看训练曲线：
-- 访问 [wandb.ai](https://wandb.ai)
-- 找到你的项目和实验
-
-## 模型评估
-
-### 推荐质量评估
-
-```python
-from genrec.models.tiger import Tiger
-from genrec.modules.metrics import TopKAccumulator
-
-# 加载模型
-model = Tiger.load_from_checkpoint("out/tiger/checkpoint.pt")
-
-# 创建评估器
-evaluator = TopKAccumulator(k=[5, 10, 20])
-
-# 在测试集上评估
-test_dataloader = DataLoader(test_dataset, batch_size=256)
-metrics = evaluator.evaluate(model, test_dataloader)
-
-print(f"Recall@10: {metrics['recall@10']:.4f}")
-print(f"NDCG@10: {metrics['ndcg@10']:.4f}")
-```
-
-### 生成式推荐
-
-```python
-def generate_recommendations(model, user_sequence, top_k=10):
-    """为用户生成推荐"""
-    model.eval()
-    
-    with torch.no_grad():
-        # 编码用户序列
-        sequence_embedding = model.encode_sequence(user_sequence)
-        
-        # 生成推荐
-        logits = model.generate(sequence_embedding, max_length=top_k)
-        
-        # 获取Top-K物品
-        recommendations = torch.topk(logits, top_k).indices
-    
-    return recommendations.tolist()
-
-# 使用示例
-user_history = [item1_semantic_ids, item2_semantic_ids, ...]
-recommendations = generate_recommendations(model, user_history, top_k=10)
-```
-
-## 高级功能
-
-### Trie约束生成
-
-TIGER 支持基于Trie的约束生成：
-
-```python
-from genrec.models.tiger import build_trie
-
-# 构建有效物品ID的Trie
-valid_items = torch.tensor([[1, 2, 3], [4, 5, 6], ...])  # 语义ID序列
-trie = build_trie(valid_items)
-
-# 约束生成
-constrained_output = model.generate_with_trie(
-    user_sequence, 
-    trie=trie,
-    max_length=10
-)
-```
-
-### 序列增强
-
-训练时支持序列增强：
-
-```gin
-train.subsample=True  # 动态子采样
-train.augmentation=True  # 序列增强
-```
-
-## 故障排除
-
-### 常见问题
-
-**Q: RQVAE检查点找不到？**
-
-A: 检查路径是否正确：
-```bash
-# 确认文件存在
-ls -la out/rqvae/p5_amazon/beauty/checkpoint_299999.pt
-
-# 更新配置文件中的路径
-train.pretrained_rqvae_path="实际的检查点路径"
-```
-
-**Q: 训练速度慢？**
-
-A: 优化建议：
-- 增加批量大小：`train.batch_size=512`
-- 减少序列长度：`train.max_seq_len=256`
-- 使用多GPU训练
-
-**Q: 推荐效果差？**
-
-A: 调优建议：
-- 增加模型规模：`train.n_layers=12`
-- 调整学习率：`train.learning_rate=1e-4`
-- 增加训练轮数：`train.epochs=10000`
-
-### 调试技巧
-
-1. **检查语义ID生成**：
-```python
-# 验证RQVAE是否正常工作
-rqvae = RqVae.load_from_checkpoint(pretrained_path)
-sample_item = dataset[0]
-semantic_ids = rqvae.get_semantic_ids(sample_item)
-print(f"Semantic IDs: {semantic_ids}")
-```
-
-2. **监控注意力权重**：
-```python
-# 检查模型是否学到有意义的注意力模式
-attention_weights = model.get_attention_weights(user_sequence)
-print(f"Attention shape: {attention_weights.shape}")
-```
-
-## 性能优化
-
-### 内存优化
-
-```gin
-# 减少内存使用
-train.gradient_accumulate_every=4  # 梯度累积
-train.batch_size=64               # 较小批量
-train.max_seq_len=256            # 较短序列
-```
-
-### 混合精度训练
-
-```gin
-train.mixed_precision_type="fp16"  # 使用半精度
-```
-
-## 实验建议
-
-### 超参数网格搜索
-
-```python
-# 建议的超参数范围
-learning_rates = [1e-4, 3e-4, 1e-3]
-batch_sizes = [128, 256, 512]
-model_dims = [128, 256, 512]
-n_layers = [6, 8, 12]
-
-for lr in learning_rates:
-    for bs in batch_sizes:
-        # 创建配置并训练
-        config = create_config(lr=lr, batch_size=bs)
-        train_model(config)
-```
-
-### A/B测试
-
-比较不同架构：
-
-```gin
-# 实验A: 标准TIGER
-train.n_layers=8
-train.num_heads=8
-
-# 实验B: 更深的模型
-train.n_layers=12
-train.num_heads=16
-
-# 实验C: 更宽的模型
-train.embedding_dim=256
-train.attn_dim=1024
-```
-
-## 下一步
-
-训练完成后：
-
-1. [评估推荐效果](../models/tiger.md#评估指标)
-2. [部署到生产环境](../deployment.md)
-3. [尝试其他数据集](../dataset/custom.md)
+详细架构、offset 公式和实现差异见 [TIGER](../models/tiger.md)。

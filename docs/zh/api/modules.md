@@ -1,684 +1,301 @@
-# 模块 API 参考
+# 公用模块 API
 
-核心构建模块的详细文档，包括编码器、损失函数、指标等。
+本页索引 [`genrec/modules/`](https://github.com/phonism/genrec/tree/main/genrec/modules) 中当前可调用的组件。它们是模型间复用的 PyTorch 工具，不构成独立的稳定 SDK；模型专用层仍应查看对应模型源码。
 
-## 编码器模块
+## 包级导出
 
-### TransformerEncoder
-
-基于 Transformer 的编码器。
+[`genrec.modules.__init__`](https://github.com/phonism/genrec/blob/main/genrec/modules/__init__.py) 只重导出以下符号：
 
 ```python
-class TransformerEncoder(nn.Module):
-    """Transformer 编码器"""
-    
-    def __init__(
-        self,
-        vocab_size: int,
-        embedding_dim: int,
-        num_heads: int,
-        num_layers: int,
-        attn_dim: int,
-        dropout: float = 0.1,
-        max_seq_length: int = 1024
-    ):
-        super().__init__()
-        
-        self.embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.pos_encoding = PositionalEncoding(embedding_dim, max_seq_length)
-        
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embedding_dim,
-            nhead=num_heads,
-            dim_feedforward=attn_dim,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-        self.dropout = nn.Dropout(dropout)
+from genrec.modules import (
+    ReconstructionLoss, CategoricalReconstructionLoss, QuantizeLoss,
+    TopKAccumulator, L2Norm, RMSNorm,
+    SemIdEmbedding, UserIdEmbedding,
+    parse_config, setup_logger,
+)
 ```
 
-**方法:**
+`SemanticIdItemMapper`、encoder、Transformer、K-means、scheduler 和纯 PyTorch T5 均须从具体模块导入。
 
-#### forward(input_ids, attention_mask)
+## Embedding
 
-前向传播。
+源文件：[`embedding.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/embedding.py)
 
-```python
-def forward(
-    self, 
-    input_ids: torch.Tensor, 
-    attention_mask: Optional[torch.Tensor] = None
-) -> torch.Tensor:
-    """
-    前向传播
-    
-    Args:
-        input_ids: 输入序列 (batch_size, seq_len)
-        attention_mask: 注意力掩码 (batch_size, seq_len)
-        
-    Returns:
-        编码后的序列 (batch_size, seq_len, embedding_dim)
-    """
-    # 嵌入和位置编码
-    embeddings = self.embedding(input_ids)
-    embeddings = self.pos_encoding(embeddings)
-    embeddings = self.dropout(embeddings)
-    
-    # 创建填充掩码
-    if attention_mask is not None:
-        # 转换为 Transformer 期望的格式
-        src_key_padding_mask = (attention_mask == 0)
-    else:
-        src_key_padding_mask = None
-    
-    # Transformer 编码
-    encoded = self.transformer(
-        embeddings,
-        src_key_padding_mask=src_key_padding_mask
-    )
-    
-    return encoded
-```
-
-### PositionalEncoding
-
-位置编码模块。
+### `SemIdEmbedding`
 
 ```python
-class PositionalEncoding(nn.Module):
-    """正弦位置编码"""
-    
-    def __init__(self, embedding_dim: int, max_seq_length: int = 5000):
-        super().__init__()
-        
-        pe = torch.zeros(max_seq_length, embedding_dim)
-        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
-        
-        div_term = torch.exp(torch.arange(0, embedding_dim, 2).float() * 
-                           (-math.log(10000.0) / embedding_dim))
-        
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        
-        self.register_buffer('pe', pe.unsqueeze(0))
-    
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        添加位置编码
-        
-        Args:
-            x: 输入嵌入 (batch_size, seq_len, embedding_dim)
-            
-        Returns:
-            添加位置编码后的嵌入
-        """
-        return x + self.pe[:, :x.size(1)]
-```
-
-### MultiHeadAttention
-
-多头注意力机制。
-
-```python
-class MultiHeadAttention(nn.Module):
-    """多头注意力"""
-    
-    def __init__(
-        self,
-        embedding_dim: int,
-        num_heads: int,
-        dropout: float = 0.1
-    ):
-        super().__init__()
-        assert embedding_dim % num_heads == 0
-        
-        self.embedding_dim = embedding_dim
-        self.num_heads = num_heads
-        self.head_dim = embedding_dim // num_heads
-        
-        self.w_q = nn.Linear(embedding_dim, embedding_dim)
-        self.w_k = nn.Linear(embedding_dim, embedding_dim)
-        self.w_v = nn.Linear(embedding_dim, embedding_dim)
-        self.w_o = nn.Linear(embedding_dim, embedding_dim)
-        
-        self.dropout = nn.Dropout(dropout)
-        self.scale = math.sqrt(self.head_dim)
-        
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        多头注意力计算
-        
-        Args:
-            query: 查询向量 (batch_size, seq_len, embedding_dim)
-            key: 键向量 (batch_size, seq_len, embedding_dim)
-            value: 值向量 (batch_size, seq_len, embedding_dim)
-            mask: 注意力掩码 (batch_size, seq_len, seq_len)
-            
-        Returns:
-            (attention_output, attention_weights): 注意力输出和权重
-        """
-        batch_size, seq_len, _ = query.size()
-        
-        # 线性变换
-        Q = self.w_q(query).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        K = self.w_k(key).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        V = self.w_v(value).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-        
-        # 计算注意力分数
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
-        
-        # 应用掩码
-        if mask is not None:
-            mask = mask.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
-            scores.masked_fill_(mask == 0, -1e9)
-        
-        # 注意力权重
-        attention_weights = F.softmax(scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-        
-        # 注意力输出
-        attention_output = torch.matmul(attention_weights, V)
-        attention_output = attention_output.transpose(1, 2).contiguous().view(
-            batch_size, seq_len, self.embedding_dim
-        )
-        
-        output = self.w_o(attention_output)
-        
-        return output, attention_weights
-```
-
-## 损失函数
-
-### VQVAELoss
-
-VQVAE 损失函数。
-
-```python
-class VQVAELoss(nn.Module):
-    """VQVAE 损失函数"""
-    
-    def __init__(
-        self,
-        commitment_cost: float = 0.25,
-        beta: float = 1.0
-    ):
-        super().__init__()
-        self.commitment_cost = commitment_cost
-        self.beta = beta
-        
-    def forward(
-        self,
-        x: torch.Tensor,
-        x_recon: torch.Tensor,
-        commitment_loss: torch.Tensor,
-        embedding_loss: torch.Tensor
-    ) -> Dict[str, torch.Tensor]:
-        """
-        计算 VQVAE 损失
-        
-        Args:
-            x: 原始输入
-            x_recon: 重构输出
-            commitment_loss: 承诺损失
-            embedding_loss: 嵌入损失
-            
-        Returns:
-            损失字典
-        """
-        # 重构损失
-        recon_loss = F.mse_loss(x_recon, x, reduction='mean')
-        
-        # 总损失
-        total_loss = (
-            recon_loss + 
-            self.commitment_cost * commitment_loss + 
-            self.beta * embedding_loss
-        )
-        
-        return {
-            'total_loss': total_loss,
-            'reconstruction_loss': recon_loss,
-            'commitment_loss': commitment_loss,
-            'embedding_loss': embedding_loss
-        }
-```
-
-### SequenceLoss
-
-序列建模损失函数。
-
-```python
-class SequenceLoss(nn.Module):
-    """序列建模损失函数"""
-    
-    def __init__(
-        self,
-        vocab_size: int,
-        ignore_index: int = -100,
-        label_smoothing: float = 0.0
-    ):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.ignore_index = ignore_index
-        self.label_smoothing = label_smoothing
-        
-        if label_smoothing > 0:
-            self.criterion = nn.CrossEntropyLoss(
-                ignore_index=ignore_index,
-                label_smoothing=label_smoothing
-            )
-        else:
-            self.criterion = nn.CrossEntropyLoss(ignore_index=ignore_index)
-    
-    def forward(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None
-    ) -> Dict[str, torch.Tensor]:
-        """
-        计算序列建模损失
-        
-        Args:
-            logits: 模型输出 (batch_size, seq_len, vocab_size)
-            labels: 目标标签 (batch_size, seq_len)
-            attention_mask: 注意力掩码 (batch_size, seq_len)
-            
-        Returns:
-            损失字典
-        """
-        # 展平张量
-        flat_logits = logits.view(-1, self.vocab_size)
-        flat_labels = labels.view(-1)
-        
-        # 计算损失
-        loss = self.criterion(flat_logits, flat_labels)
-        
-        # 计算准确率
-        with torch.no_grad():
-            predictions = torch.argmax(flat_logits, dim=-1)
-            mask = (flat_labels != self.ignore_index)
-            correct = (predictions == flat_labels) & mask
-            accuracy = correct.sum().float() / mask.sum().float()
-        
-        return {
-            'loss': loss,
-            'accuracy': accuracy
-        }
-```
-
-### ContrastiveLoss
-
-对比学习损失函数。
-
-```python
-class ContrastiveLoss(nn.Module):
-    """对比学习损失函数"""
-    
-    def __init__(
-        self,
-        temperature: float = 0.1,
-        margin: float = 0.2
-    ):
-        super().__init__()
-        self.temperature = temperature
-        self.margin = margin
-        
-    def forward(
-        self,
-        anchor: torch.Tensor,
-        positive: torch.Tensor,
-        negative: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        计算对比损失
-        
-        Args:
-            anchor: 锚点嵌入 (batch_size, embedding_dim)
-            positive: 正样本嵌入 (batch_size, embedding_dim)
-            negative: 负样本嵌入 (batch_size, num_negatives, embedding_dim)
-            
-        Returns:
-            对比损失
-        """
-        # 标准化嵌入
-        anchor = F.normalize(anchor, dim=-1)
-        positive = F.normalize(positive, dim=-1)
-        negative = F.normalize(negative, dim=-1)
-        
-        # 计算相似度
-        pos_sim = torch.sum(anchor * positive, dim=-1) / self.temperature
-        neg_sim = torch.bmm(negative, anchor.unsqueeze(-1)).squeeze(-1) / self.temperature
-        
-        # 计算对比损失
-        logits = torch.cat([pos_sim.unsqueeze(1), neg_sim], dim=1)
-        labels = torch.zeros(logits.size(0), dtype=torch.long, device=logits.device)
-        
-        loss = F.cross_entropy(logits, labels)
-        
-        return loss
-```
-
-## 评估指标
-
-### RecommendationMetrics
-
-推荐系统评估指标。
-
-```python
-class RecommendationMetrics:
-    """推荐系统评估指标"""
-    
-    @staticmethod
-    def recall_at_k(predictions: List[List[int]], targets: List[List[int]], k: int) -> float:
-        """
-        计算 Recall@K
-        
-        Args:
-            predictions: 预测列表
-            targets: 目标列表
-            k: Top-K
-            
-        Returns:
-            Recall@K 值
-        """
-        recall_scores = []
-        
-        for pred, target in zip(predictions, targets):
-            if len(target) == 0:
-                continue
-                
-            top_k_pred = set(pred[:k])
-            target_set = set(target)
-            
-            recall = len(top_k_pred & target_set) / len(target_set)
-            recall_scores.append(recall)
-        
-        return np.mean(recall_scores) if recall_scores else 0.0
-    
-    @staticmethod
-    def precision_at_k(predictions: List[List[int]], targets: List[List[int]], k: int) -> float:
-        """计算 Precision@K"""
-        precision_scores = []
-        
-        for pred, target in zip(predictions, targets):
-            if k == 0:
-                continue
-                
-            top_k_pred = set(pred[:k])
-            target_set = set(target)
-            
-            precision = len(top_k_pred & target_set) / k
-            precision_scores.append(precision)
-        
-        return np.mean(precision_scores) if precision_scores else 0.0
-    
-    @staticmethod
-    def ndcg_at_k(predictions: List[List[int]], targets: List[List[int]], k: int) -> float:
-        """计算 NDCG@K"""
-        ndcg_scores = []
-        
-        for pred, target in zip(predictions, targets):
-            if len(target) == 0:
-                continue
-            
-            # 计算 DCG
-            dcg = 0
-            for i, item in enumerate(pred[:k]):
-                if item in target:
-                    dcg += 1 / np.log2(i + 2)
-            
-            # 计算 IDCG
-            idcg = sum(1 / np.log2(i + 2) for i in range(min(len(target), k)))
-            
-            # 计算 NDCG
-            ndcg = dcg / idcg if idcg > 0 else 0
-            ndcg_scores.append(ndcg)
-        
-        return np.mean(ndcg_scores) if ndcg_scores else 0.0
-    
-    @staticmethod
-    def hit_rate_at_k(predictions: List[List[int]], targets: List[List[int]], k: int) -> float:
-        """计算 Hit Rate@K"""
-        hits = 0
-        total = 0
-        
-        for pred, target in zip(predictions, targets):
-            if len(target) == 0:
-                continue
-                
-            top_k_pred = set(pred[:k])
-            target_set = set(target)
-            
-            if len(top_k_pred & target_set) > 0:
-                hits += 1
-            total += 1
-        
-        return hits / total if total > 0 else 0.0
-    
-    @staticmethod
-    def coverage(predictions: List[List[int]], total_items: int) -> float:
-        """计算物品覆盖度"""
-        recommended_items = set()
-        for pred in predictions:
-            recommended_items.update(pred)
-        
-        return len(recommended_items) / total_items
-    
-    @staticmethod
-    def diversity(predictions: List[List[int]]) -> float:
-        """计算推荐多样性（平均 Jaccard 距离）"""
-        if len(predictions) < 2:
-            return 0.0
-        
-        distances = []
-        for i in range(len(predictions)):
-            for j in range(i + 1, len(predictions)):
-                set_i = set(predictions[i])
-                set_j = set(predictions[j])
-                
-                if len(set_i | set_j) > 0:
-                    jaccard_sim = len(set_i & set_j) / len(set_i | set_j)
-                    jaccard_dist = 1 - jaccard_sim
-                    distances.append(jaccard_dist)
-        
-        return np.mean(distances) if distances else 0.0
-```
-
-## 工具模块
-
-### AttentionVisualization
-
-注意力可视化工具。
-
-```python
-class AttentionVisualization:
-    """注意力权重可视化"""
-    
-    @staticmethod
-    def plot_attention_heatmap(
-        attention_weights: torch.Tensor,
-        input_tokens: List[str],
-        output_tokens: List[str],
-        save_path: Optional[str] = None
-    ) -> None:
-        """
-        绘制注意力热力图
-        
-        Args:
-            attention_weights: 注意力权重 (seq_len_out, seq_len_in)
-            input_tokens: 输入标记列表
-            output_tokens: 输出标记列表
-            save_path: 保存路径
-        """
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        
-        plt.figure(figsize=(10, 8))
-        
-        # 创建热力图
-        sns.heatmap(
-            attention_weights.cpu().numpy(),
-            xticklabels=input_tokens,
-            yticklabels=output_tokens,
-            cmap='Blues',
-            annot=True,
-            fmt='.2f'
-        )
-        
-        plt.title('Attention Weights')
-        plt.xlabel('Input Tokens')
-        plt.ylabel('Output Tokens')
-        plt.xticks(rotation=45)
-        plt.yticks(rotation=0)
-        
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        
-        plt.show()
-```
-
-### ModelUtils
-
-模型工具函数。
-
-```python
-class ModelUtils:
-    """模型工具函数"""
-    
-    @staticmethod
-    def count_parameters(model: nn.Module) -> int:
-        """计算模型参数数量"""
-        return sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    @staticmethod
-    def get_model_size(model: nn.Module) -> str:
-        """获取模型大小（以 MB 为单位）"""
-        param_size = 0
-        buffer_size = 0
-        
-        for param in model.parameters():
-            param_size += param.nelement() * param.element_size()
-        
-        for buffer in model.buffers():
-            buffer_size += buffer.nelement() * buffer.element_size()
-        
-        size_mb = (param_size + buffer_size) / 1024 / 1024
-        return f"{size_mb:.2f} MB"
-    
-    @staticmethod
-    def freeze_layers(model: nn.Module, layer_names: List[str]) -> None:
-        """冻结指定层的参数"""
-        for name, param in model.named_parameters():
-            for layer_name in layer_names:
-                if layer_name in name:
-                    param.requires_grad = False
-                    break
-    
-    @staticmethod
-    def unfreeze_layers(model: nn.Module, layer_names: List[str]) -> None:
-        """解冻指定层的参数"""
-        for name, param in model.named_parameters():
-            for layer_name in layer_names:
-                if layer_name in name:
-                    param.requires_grad = True
-                    break
-    
-    @staticmethod
-    def initialize_weights(model: nn.Module, init_type: str = 'xavier') -> None:
-        """初始化模型权重"""
-        for name, param in model.named_parameters():
-            if 'weight' in name:
-                if init_type == 'xavier':
-                    nn.init.xavier_uniform_(param)
-                elif init_type == 'kaiming':
-                    nn.init.kaiming_uniform_(param)
-                elif init_type == 'normal':
-                    nn.init.normal_(param, mean=0, std=0.02)
-            elif 'bias' in name:
-                nn.init.constant_(param, 0)
-```
-
-## 使用示例
-
-### 使用编码器
-
-```python
-from genrec.modules import TransformerEncoder
-
-# 创建编码器
-encoder = TransformerEncoder(
-    vocab_size=1000,
-    embedding_dim=512,
-    num_heads=8,
-    num_layers=6,
-    attn_dim=2048
+SemIdEmbedding(
+    num_embeddings: int,
+    sem_ids_dim: int,
+    embeddings_dim: int,
 )
 
-# 编码序列
-input_ids = torch.randint(0, 1000, (32, 50))  # (batch_size, seq_len)
-attention_mask = torch.ones_like(input_ids)
-
-encoded = encoder(input_ids, attention_mask)
-print(f"Encoded shape: {encoded.shape}")  # (32, 50, 512)
+forward(
+    input_ids: Tensor,       # [B, T]
+    token_type_ids: Tensor,  # [B, T]
+) -> Tensor                 # [B, T, D]
 ```
 
-### 使用损失函数
+第 `c` 个码本的 code `i` 被映射为全局索引 `c * num_embeddings + i`。Embedding 表大小为 `sem_ids_dim * num_embeddings + 1`，最后一个位置是 padding；调用者必须自行把 padding code/type 组合成该索引，类本身不校验 code 范围。
+
+### `UserIdEmbedding`
 
 ```python
-from genrec.modules import VQVAELoss, SequenceLoss
-
-# VQVAE 损失
-vqvae_loss = VQVAELoss(commitment_cost=0.25)
-losses = vqvae_loss(x, x_recon, commitment_loss, embedding_loss)
-
-# 序列损失
-seq_loss = SequenceLoss(vocab_size=1000, label_smoothing=0.1)
-losses = seq_loss(logits, labels, attention_mask)
+UserIdEmbedding(num_embeddings: int, embeddings_dim: int)
+forward(input_ids: Tensor) -> Tensor  # [B, T] -> [B, T, D]
 ```
 
-### 计算评估指标
+用户 ID 先按 `num_embeddings` 取模，因此不同原始 ID 可能哈希碰撞。
+
+## 文本 encoder 与 MLP
+
+源文件：[`encoder.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/encoder.py)
+
+| 类 | 构造与输入 | 返回值 / 依赖 |
+|---|---|---|
+| `LightT5Encoder` | `(n_layers=1, hidden_dim=768, output_dim=768, num_heads=8, ff_dim=2048, vocab_size=32128, max_seq_len=512, dropout=0.1)`；`forward([B,L] 或 [B,T,L])` | L2 归一化的 `[B,D]` 或 `[B,T,D]`。随机初始化，token `0` 当 padding；输入不是 2D/3D 时 `ValueError`。名称虽含 T5，内部使用 `nn.TransformerEncoder`。 |
+| `SentenceT5Encoder` | `(model_name="./models_hub/sentence-t5-base", output_dim=768)`；同上 | 从 `sentence-transformers` 模型抽取 encoder/pooling/可选 dense，并启用 gradient checkpointing；返回归一化向量。依赖模型目录的模块布局包含 `"0"`、`"1"`。 |
+| `ErnieEncoder` | `(model_name="./models_hub/ernie-3.0-medium-zh", out_dim=768)`；`tokenize(texts)`、`encode(texts)`、`forward([B,L] 或 [B,T,L])` | Hugging Face `AutoTokenizer/AutoModel` 的 CLS 向量；`encode()` 最终 reshape 为 `[-1,out_dim]`。 |
+| `BgeEncoder` | `(model_name="./models_hub/bge-base-zh")`；`forward(input_ids, attention_mask, token_type_ids)` | 输入各为 `[B,L]` 或 `[B,T,L]`，返回 L2 归一化 CLS `[B,D]` / `[B,T,D]`；`encode(texts, device="cuda")` 的 `device` 参数当前未被使用。 |
+| `MLP` | `(input_dim, hidden_dims, out_dim, dropout=0.0, normalize=False)`；`forward(x)` | 最后一维必须等于 `input_dim`，否则 `AssertionError`；中间层使用 SiLU，可选 dropout，最后可选 L2 归一化。 |
+
+`LightT5Encoder` 和 `SentenceT5Encoder` 的位置长度由输入 `L` 决定；前者若 `L > max_seq_len`，位置 embedding 查表会越界。
+四个 encoder 都只在内部 `T > 1` 时恢复三维形状；输入恰为 `[B,1,L]` 时实际返回 `[B,D]`，而不是 `[B,1,D]`。需要保留单 item 维的调用方应自行 `unsqueeze(1)`。
+
+## Transformer
+
+源文件：[`transformer.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/transformer.py)
+
+### 注意两个同名类
+
+仓库中有两个不同的 `T5Attention`：
 
 ```python
-from genrec.modules import RecommendationMetrics
-
-# 示例数据
-predictions = [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]
-targets = [[1, 3, 5], [7, 9]]
-
-# 计算指标
-recall_5 = RecommendationMetrics.recall_at_k(predictions, targets, 5)
-ndcg_5 = RecommendationMetrics.ndcg_at_k(predictions, targets, 5)
-hit_rate = RecommendationMetrics.hit_rate_at_k(predictions, targets, 5)
-
-print(f"Recall@5: {recall_5:.4f}")
-print(f"NDCG@5: {ndcg_5:.4f}")
-print(f"Hit Rate@5: {hit_rate:.4f}")
+from genrec.modules.transformer import T5Attention  # 通用 encoder-decoder 组件
+from genrec.modules.t5 import T5Attention           # 完整 T5 内部层
 ```
 
-### 模型工具
+不要用模糊的包级导入替换它们。
+
+### 通用 Transformer 签名
 
 ```python
-from genrec.modules import ModelUtils
-
-# 模型信息
-param_count = ModelUtils.count_parameters(model)
-model_size = ModelUtils.get_model_size(model)
-
-print(f"Parameters: {param_count:,}")
-print(f"Model size: {model_size}")
-
-# 冻结/解冻层
-ModelUtils.freeze_layers(model, ['embedding', 'pos_encoding'])
-ModelUtils.unfreeze_layers(model, ['transformer'])
-
-# 权重初始化
-ModelUtils.initialize_weights(model, init_type='xavier')
+T5Attention(
+    d_model, n_heads, dropout=0.0,
+    is_cross_attention=False, has_relative_bias=True,
+    num_relative_buckets=32, max_distance=128,
+    d_kv=0, scale_attn=True, bidirectional=True,
+)
+forward(
+    query, key=None, value=None,
+    attn_mask=None, key_padding_mask=None,
+    position_bias=None, need_weights=False,
+) -> tuple[Tensor, Tensor | None]
 ```
+
+`query`/`key`/`value` 采用 `[B,L,D]`。输出是 attention 结果 `[B,Q,D]` 与可在层间共享的 position bias `[1,H,Q,K]`。`need_weights` 当前不改变返回值；self-attention 忽略传入的 `key/value`，直接从 `query` 生成 K/V。`d_kv=0` 时要求 `d_model % n_heads == 0`。
+
+其余层：
+
+```python
+FeedForward(dim, hidden_dim=2048, dropout=0.1)
+
+MultiHeadAttention(
+    dim, num_heads, dropout=0.1, kv_dim=None, bias=True,
+    is_cross_attention=False, d_kv=0,
+    has_relative_bias=True, scale_attn=True, bidirectional=True,
+)
+forward(query, key=None, value=None, attn_mask=None,
+        key_padding_mask=None, position_bias=None)
+    -> tuple[Tensor, Tensor | None]
+
+TransformerBlock(
+    dim, num_heads, dropout=0.1, norm_cls=RMSNorm,
+    ff_hidden_dim=2048, cross_attn=False, d_kv=0,
+    has_relative_bias=True, scale_attn=True,
+    decoder_bidirectional=True,
+)
+forward(x, *, context=None, attn_mask=None,
+        key_padding_mask=None, memory_key_padding_mask=None,
+        position_bias=None) -> tuple[Tensor, Tensor | None]
+```
+
+高层容器均接收 batch-first `[B,L,D]`：
+
+```python
+TransformerEncoder(
+    dim, depth, num_heads, dropout=0.1, norm_cls=RMSNorm,
+    ff_hidden_dim=2048, d_kv=0, share_position_bias=False,
+    scale_attn=True, add_final_norm=False,
+)
+forward(src, *, attn_mask=None, key_padding_mask=None) -> Tensor
+
+TransformerDecoder(
+    dim, depth, num_heads, dropout=0.1, norm_cls=RMSNorm,
+    ff_hidden_dim=2048, d_kv=0, share_position_bias=False,
+    scale_attn=True, add_final_norm=False,
+    decoder_bidirectional=True,
+)
+forward(tgt, *, memory, attn_mask=None, key_padding_mask=None,
+        memory_key_padding_mask=None) -> Tensor
+
+TransformerEncoderDecoder(
+    d_model, nhead, num_encoder_layers, num_decoder_layers,
+    dim_feedforward=2048, dropout=0.1, norm_cls=RMSNorm,
+    d_kv=0, share_position_bias=False, scale_attn=True,
+    add_final_norm=False, decoder_bidirectional=True,
+)
+forward(src, tgt, *, src_key_padding_mask=None,
+        tgt_key_padding_mask=None, memory_key_padding_mask=None,
+        src_mask=None, tgt_mask=None) -> Tensor
+```
+
+`TransformerEncoderDecoder.forward()` 在未提供 `tgt_mask` 时自动创建上三角 causal additive mask。布尔 padding mask 中 `True` 表示忽略；attention mask 是加到 score 上的 additive mask，不是 Hugging Face 的 0/1 mask。
+
+## 纯 PyTorch T5
+
+源文件：[`t5.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/t5.py)。这是 TIGER 使用的本地实现；运行时不依赖 Hugging Face `transformers`，但参数布局用于与其 T5 权重对齐。
+
+```python
+@dataclass
+class T5Config:
+    vocab_size: int = 32128
+    d_model: int = 512
+    d_kv: int = 64
+    d_ff: int = 2048
+    num_layers: int = 6
+    num_decoder_layers: int | None = None
+    num_heads: int = 8
+    relative_attention_num_buckets: int = 32
+    relative_attention_max_distance: int = 128
+    dropout_rate: float = 0.1
+    layer_norm_epsilon: float = 1e-6
+    initializer_factor: float = 1.0
+    feed_forward_proj: str = "relu"
+    is_encoder_decoder: bool = True
+    use_cache: bool = True
+    pad_token_id: int = 0
+    eos_token_id: int = 1
+    decoder_start_token_id: int | None = None
+    is_decoder: bool = False
+    tie_word_embeddings: bool = True
+```
+
+```python
+T5ForConditionalGeneration(config: T5Config)
+
+forward(
+    input_ids=None, attention_mask=None,
+    decoder_input_ids=None, decoder_attention_mask=None,
+    labels=None, encoder_outputs=None,
+    use_cache=False, past_key_values=None,
+) -> _Seq2SeqLMOutput
+
+generate(
+    input_ids, attention_mask=None,
+    max_length=20, num_beams=1, num_return_sequences=1,
+) -> LongTensor
+```
+
+返回对象有 `.loss`、`.logits`、`.past_key_values`。传 `labels` 且不传 `decoder_input_ids` 时会右移 label；交叉熵忽略 `-100`。`generate()` 仅实现 greedy/beam search，不支持采样、logits processor 或 Hugging Face `GenerationConfig`。输出包含 decoder start token；beam 分支是 `[B * num_return_sequences,max_length]`，greedy 是 `[B,L]` 且所有样本同时生成 EOS 时 `L` 可小于 `max_length`。
+
+## Loss
+
+源文件：[`loss.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/loss.py)
+
+| API | 返回 |
+|---|---|
+| `ReconstructionLoss()(x_hat, x)` | 对最后一维求和的逐样本平方误差，形状通常 `[B]`，没有 batch mean。 |
+| `CategoricalReconstructionLoss(n_cat_feats)(x_hat, x)` | 前部连续特征平方误差，加末尾 `n_cat_feats` 个 logit 的逐元素 BCE，再对特征求和；返回 `[B]`。 |
+| `QuantizeLoss(commitment_weight=1.0)(query, value)` | codebook loss + `commitment_weight * commitment loss`，只沿最后一维求和；返回保留前导维度的 Tensor。 |
+
+`CategoricalReconstructionLoss` 把 `x_hat` 的分类部分当 logits，调用者不要预先 sigmoid。单独构造时应保证 `n_cat_feats > 0`：传 0 会让 `x_hat[:, :-0]` 成为空切片并返回零 reconstruction；纯连续特征应使用 `ReconstructionLoss`。`RqVae` 已在构造时做了这处分派。
+
+## Metric 与 SID→item 解析
+
+源文件：[`metrics.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/metrics.py)
+
+```python
+SemanticIdItemMapper(
+    semantic_ids: Sequence[Sequence[int]],
+    item_popularity: Mapping[int, int] | Sequence[int] | None = None,
+    padding_item_id: int = -1,
+)
+
+SemanticIdItemMapper.from_sequences(
+    semantic_ids, sequences, train_holdout=2, padding_item_id=-1,
+)
+
+map_predictions(
+    predicted_semantic_ids: Tensor,  # [B, K, C]
+    topk: int | None = None,
+    deduplicate: bool = True,
+) -> Tensor                          # [B, topk]
+```
+
+同一 SID 碰撞时，选择训练流行度最高的 item；并列时选较小 item ID。`from_sequences()` 默认从每个序列末尾扣除 2 个交互，避免用验证/测试目标算流行度。未知 SID 被跳过，结果不足 `topk` 时填 `padding_item_id`。输入不是 3D 或 `topk < 1` 时抛 `ValueError`。诊断属性包括 `collision_rate`、`num_unique_sids`、`num_collision_items` 和 `max_collision_group`。
+
+```python
+TopKAccumulator(ks: list[int] = [1, 5, 10])
+accumulate(actual: Tensor, top_k: Tensor) -> None
+sync_across_processes(accelerator) -> None
+reduce() -> dict[str, float]
+reset() -> None
+```
+
+`actual` 是 `[B,D]`，`top_k` 是 `[B,K,D]`；匹配要求最后一维全部相等。item-level 评测可把 item ID 表成 `D=1`。分布式评测必须由所有 rank 共同调用 `sync_across_processes()`，否则 collective 会挂起；`reduce()` 输出 `Recall@K` 与 `NDCG@K`。
+
+## K-means 与 Gumbel
+
+源文件：[`kmeans.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/kmeans.py)、[`gumbel.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/gumbel.py)
+
+```python
+kmeans_init_(tensor: Tensor, x: Tensor) -> None
+Kmeans(k: int, max_iters: int | None = None, stop_threshold=1e-10)
+Kmeans.run(x: Tensor) -> KmeansOutput
+
+class KmeansOutput(NamedTuple):
+    centroids: Tensor   # [K, D]
+    assignment: Tensor  # [B]
+```
+
+`tensor` 与 `x` 必须为 2D，否则 `AssertionError`。中心从 `B` 个样本中无放回抽取，因此 `k > B` 会由 NumPy 抛错；空簇会随机重置为某个样本。`max_iters=None` 表示只由收敛阈值停止，没有硬迭代上限。
+
+```python
+sample_gumbel(shape: tuple, device, eps=1e-20) -> Tensor
+gumbel_softmax_sample(logits, temperature, device) -> Tensor
+```
+
+后者返回 softmax 概率，不执行 straight-through hard one-hot。
+
+## Normalization 与 scheduler
+
+源文件：[`normalize.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/normalize.py)、[`scheduler.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/scheduler.py)
+
+- `l2norm(x, dim=-1, eps=1e-12)` 与 `L2Norm(dim=-1, eps=1e-12)`。
+- `RMSNorm(dim, eps=1e-6)`：float32 计算 RMS，再转回输入 dtype。
+- `SwishLayerNorm(hidden_dim, eps=1e-5)`：`SiLU(LayerNorm(x))`。
+- `RootMeanSquareLayerNorm(hidden_size, eps=1e-6)`：T5 风格 RMSNorm。
+- `InverseSquareRootScheduler(optimizer, warmup_steps, last_epoch=-1)`：线性 warmup 后按 `sqrt(warmup_steps / step)` 衰减；`warmup_steps=0` 会让衰减阶段 scale 为 0，应避免。
+
+## 通用工具
+
+源文件：[`utils.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/utils.py)
+
+| API | 行为 |
+|---|---|
+| `setup_logger(save_dir, name="train")` | 创建目录、console/file handler；同名 logger 已有 handler 时直接复用。 |
+| `reset_kv_cache(fn)` | 装饰器，调用前后执行 `self.decoder.reset_kv_cache()`；若被装饰函数抛异常，末尾清理不会执行。 |
+| `reset_encoder_cache(fn)` | 仅 `self.jagged_mode` 时清空 `self.transformer.cached_enc_output`。 |
+| `eval_mode(fn)` | 临时切到 eval，再恢复原训练状态；异常时同样没有 `finally` 恢复。 |
+| `select_columns_per_row(x, indices)` | 按每行索引选择，返回形如 `[B,M,...]`；batch 大小和列数用 `assert` 检查。 |
+| `maybe_repeat_interleave(x, repeats, dim)` | Tensor 调用 `repeat_interleave`；非 Tensor 原样返回。 |
+| `parse_config()` / `get_run_split()` | 见 [Gin 与 CLI](configs.md)。 |
+| `compute_debug_metrics(batch, model_output=None, prefix="")` | 返回序列长度分位数；传 model output 时还读取 `model_output.loss_d`。 |
+
+## 依赖边界
+
+- 基础 Tensor 组件依赖 PyTorch；K-means 另依赖 NumPy、einops。
+- `SentenceT5Encoder` 依赖 `sentence-transformers`；`ErnieEncoder`/`BgeEncoder` 依赖 Hugging Face `transformers` 和本地/可访问的预训练权重。
+- [`t5.py`](https://github.com/phonism/genrec/blob/main/genrec/modules/t5.py) 本身不依赖 `transformers`。
+- metric 的分布式同步依赖传入兼容 Hugging Face Accelerate 的 `accelerator` 对象。
