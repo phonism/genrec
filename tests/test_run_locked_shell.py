@@ -73,3 +73,57 @@ def test_gpu_handoff_still_rejects_a_persistent_occupant(tmp_path):
     )
     assert result.returncode == 75
     assert "refusing to share" in result.stderr
+
+
+def _run_with_named_small_occupant(tmp_path, occupant_mask):
+    """nvidia-smi names a live container PID whose own GPU mask is occupant_mask."""
+    occupant = subprocess.Popen(
+        ["sleep", "30"], env={**os.environ, "CUDA_VISIBLE_DEVICES": occupant_mask}
+    )
+    try:
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        fake_nvidia = fake_bin / "nvidia-smi"
+        fake_nvidia.write_text(
+            f"#!/usr/bin/env bash\necho '{occupant.pid}, python, 836'\n"
+        )
+        fake_nvidia.chmod(0o755)
+        env = os.environ.copy()
+        env.update(
+            {
+                "PATH": f"{fake_bin}:{env['PATH']}",
+                "CUDA_VISIBLE_DEVICES": "0",
+                "GENREC_LOCK_DIR": str(tmp_path / "locks"),
+                "GENREC_GPU_DRAIN_WAIT": "0",
+            }
+        )
+        return subprocess.run(
+            ["bash", str(SCRIPT), "--gpus", "0", "--cell", "test.collision", "--", "true"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        occupant.kill()
+        occupant.wait()
+
+
+@pytest.mark.skipif(
+    shutil.which("flock") is None or not Path("/proc/self/environ").exists(),
+    reason="requires util-linux flock and /proc",
+)
+def test_hold_pid_colliding_with_a_process_masked_to_another_gpu_is_allowed(tmp_path):
+    result = _run_with_named_small_occupant(tmp_path, occupant_mask="3")
+    assert result.returncode == 0, result.stderr
+    assert "allowing auto-yield hold.py signature" in result.stderr
+
+
+@pytest.mark.skipif(
+    shutil.which("flock") is None or not Path("/proc/self/environ").exists(),
+    reason="requires util-linux flock and /proc",
+)
+def test_small_named_process_on_the_same_gpu_still_blocks(tmp_path):
+    result = _run_with_named_small_occupant(tmp_path, occupant_mask="0")
+    assert result.returncode == 75
+    assert "refusing to share" in result.stderr

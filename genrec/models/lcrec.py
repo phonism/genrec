@@ -189,9 +189,14 @@ class LCRec(nn.Module):
         num_codebooks: int,
         beam_width: int = 10,
         topk: int = 10,
+        prefix_trie=None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Custom constrained beam search with KV cache reuse.
+
+        ``prefix_trie`` (optional ``PrefixTrie``) further restricts every beam
+        to catalog semantic-ID paths; without it only the per-position codebook
+        mask applies, as in the reference LC-Rec decoder.
 
         Returns:
             sem_ids: [B, topk, num_codebooks] predicted semantic IDs
@@ -214,8 +219,16 @@ class LCRec(nn.Module):
         logits = out.logits[:, -1, :]  # [B, V]
         past_kv = out.past_key_values
 
-        # Apply step-0 mask
-        mask_0 = position_mask[0].unsqueeze(0)  # [1, V]
+        # Apply step-0 mask, intersected with the catalog trie when provided
+        mask_0 = position_mask[0]
+        if prefix_trie is not None:
+            catalog_mask = torch.zeros_like(mask_0)
+            allowed = torch.tensor(
+                prefix_trie.allowed_token_ids(()), device=device, dtype=torch.long
+            )
+            catalog_mask[allowed] = True
+            mask_0 = mask_0 & catalog_mask
+        mask_0 = mask_0.unsqueeze(0)  # [1, V]
         logits = logits.masked_fill(~mask_0, float('-inf'))
         log_probs = F.log_softmax(logits, dim=-1)  # [B, V]
 
@@ -246,8 +259,23 @@ class LCRec(nn.Module):
             logits = out.logits[:, -1, :]  # [B*bw, V]
             past_kv = out.past_key_values
 
-            # Apply step mask
-            mask_s = position_mask[step].unsqueeze(0)  # [1, V]
+            # Apply step mask, plus the per-beam catalog prefix when provided
+            if prefix_trie is None:
+                mask_s = position_mask[step].unsqueeze(0)  # [1, V]
+            else:
+                prefixes = beam_tokens.reshape(B * beam_width, -1).detach().cpu().tolist()
+                row_indices = []
+                token_indices = []
+                for row, prefix in enumerate(prefixes):
+                    allowed = prefix_trie.allowed_token_ids(prefix)
+                    row_indices.extend([row] * len(allowed))
+                    token_indices.extend(allowed)
+                mask_s = torch.zeros_like(logits, dtype=torch.bool)
+                mask_s[
+                    torch.tensor(row_indices, device=device, dtype=torch.long),
+                    torch.tensor(token_indices, device=device, dtype=torch.long),
+                ] = True
+                mask_s &= position_mask[step].unsqueeze(0)
             logits = logits.masked_fill(~mask_s, float('-inf'))
             log_probs = F.log_softmax(logits, dim=-1)  # [B*bw, V]
             log_probs = log_probs.view(B, beam_width, -1)  # [B, bw, V]

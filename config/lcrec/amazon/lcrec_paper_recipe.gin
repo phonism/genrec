@@ -1,7 +1,7 @@
 # LC-Rec alignment recipe for Amazon-2014 Beauty.
 # Matches the public training recipe where the local framework supports it:
-# 4 codebooks, USM, all six alignment tasks, history 20, 4 epochs, effective
-# per-rank batch 16, LR 5e-5, and beam 20. Qwen3-4B substitutes for unavailable
+# 4 codebooks, USM, all six alignment tasks, history 20, 4 epochs, global
+# batch 128, LR 5e-5, and beam 20. Qwen3-4B substitutes for unavailable
 # LLaMA-7B and Amazon-2014 Beauty is not one of LC-Rec's three paper datasets.
 
 include "config/base.gin"
@@ -10,11 +10,14 @@ import genrec.data.amazon_lcrec
 import genrec.models.lcrec
 
 train.epochs = 4
-# Qwen3-4B full-parameter AdamW is close to the 80 GiB limit.  A micro-batch
-# of four leaves enough room for the optimizer state while preserving the
-# paper recipe's effective per-rank batch of 16 through accumulation.
+# Qwen3-4B full-parameter AdamW is close to the 80 GiB limit, so one GPU runs
+# micro-batches of four; 32 accumulation steps give the official global batch
+# of 128 (8 GPUs x 8 per device x 2 accumulation steps).
 train.batch_size = 4
-train.gradient_accumulate_every = 4
+train.gradient_accumulate_every = 32
+# The default foreach AdamW step adds a ~15 GiB fp32 temporary on top of
+# weights + grads + moments (~75 GiB peak); per-tensor steps keep ~60 GiB.
+train.optimizer_foreach = False
 train.learning_rate = 5e-5
 train.weight_decay = 0.01
 train.warmup_ratio = 0.0
@@ -60,7 +63,10 @@ AmazonLCRecDataset.evaluation_protocol = "leave_one_out"
 
 train.do_eval = True
 train.eval_every_epoch = 1
-train.eval_batch_size = 16
+# Eval decodes outside autocast (fp32 KV) next to the resident ~48 GiB of
+# fp32 weights + AdamW state; 16 prompts x beam 20 OOMs on 80 GiB, 4 x 20
+# keeps the beam cache near 6 GiB. Batch size does not change the metrics.
+train.eval_batch_size = 4
 train.eval_beam_width = 20
 train.save_dir_root = "out/lcrec/amazon/{split}/paper_recipe_qwen3_4b"
 train.save_every_epoch = 1

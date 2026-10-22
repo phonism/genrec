@@ -13,6 +13,7 @@ import gin
 import torch
 import wandb
 import math
+from collections import defaultdict
 from typing import List, Dict, Optional
 
 from genrec.models.onerec import OneRec

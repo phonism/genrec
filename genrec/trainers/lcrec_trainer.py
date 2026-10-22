@@ -391,7 +391,7 @@ def train(
     split_batches=True, amp=True, mixed_precision_type="bf16",
     max_train_samples=0, max_eval_samples=0, debug_logging=False,
     eval_only=False, checkpoint_path=None,
-    seed=42,
+    seed=42, optimizer_foreach=None,
 ):
     """Train an LCRec model."""
     _run_config = dict(locals())
@@ -464,7 +464,10 @@ def train(
     valid_dl = DataLoader(valid_ds, batch_size=eval_batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_eval)
     test_dl = DataLoader(test_ds, batch_size=eval_batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=collate_eval)
 
-    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    # foreach=False steps one tensor at a time instead of allocating a
+    # model-sized temporary for the whole parameter list (None = torch default).
+    optimizer = AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay,
+                      foreach=optimizer_foreach)
     train_dl, valid_dl, test_dl = accelerator.prepare(train_dl, valid_dl, test_dl)
 
     total_steps = len(train_dl) * epochs // gradient_accumulate_every

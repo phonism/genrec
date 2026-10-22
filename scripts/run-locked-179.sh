@@ -139,6 +139,18 @@ done
 # PID namespace (nvidia-smi reports "[Not Found]") and auto-yield to real work;
 # ignore only that low-memory signature. Any named or larger process still
 # blocks the run. Set GENREC_HOLD_MAX_MB=0 to disable this exception.
+#
+# nvidia-smi reports host PIDs, so a hold.py PID can collide with an unrelated
+# PID in this container and resolve to a real name. A container process whose
+# CUDA_VISIBLE_DEVICES excludes this GPU cannot be the occupant; treat that
+# collision like "[Not Found]". An unset or unreadable mask still blocks.
+pid_masks_out_gpu() {
+  local pid="$1" gpu="$2" mask
+  mask="$(tr '\0' '\n' 2>/dev/null < "/proc/$pid/environ" \
+    | sed -n 's/^CUDA_VISIBLE_DEVICES=//p')" || return 1
+  [[ -n "$mask" && ",$mask," != *",$gpu,"* ]]
+}
+
 if [[ "$ALLOW_OCCUPIED" != "1" ]]; then
   for gpu in "${NORMALIZED_GPUS[@]}"; do
     drain_remaining="$GPU_DRAIN_WAIT"
@@ -155,7 +167,12 @@ if [[ "$ALLOW_OCCUPIED" != "1" ]]; then
         occupant_name="${occupant_name#${occupant_name%%[![:space:]]*}}"
         occupant_name="${occupant_name%${occupant_name##*[![:space:]]}}"
         occupant_mb="${occupant_mb//[[:space:]]/}"
-        if [[ "$occupant_name" == "[Not Found]" \
+        hold_like=0
+        if [[ "$occupant_name" == "[Not Found]" ]] \
+            || pid_masks_out_gpu "$occupant_pid" "$gpu"; then
+          hold_like=1
+        fi
+        if [[ "$hold_like" == 1 \
               && "$occupant_mb" =~ ^[0-9]+$ \
               && "$HOLD_MAX_MB" =~ ^[0-9]+$ \
               && "$HOLD_MAX_MB" -gt 0 \
