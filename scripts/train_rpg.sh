@@ -14,6 +14,7 @@ case "${SPLIT}" in
     beauty) GIN_CONFIG="config/rpg/amazon.gin" ;;
     sports) GIN_CONFIG="config/rpg/amazon_sports.gin" ;;
     toys) GIN_CONFIG="config/rpg/amazon_toys.gin" ;;
+    home) GIN_CONFIG="config/rpg/amazon_home.gin" ;;
     *) echo "No RPG recipe for split: ${SPLIT}" >&2; exit 2 ;;
 esac
 if [ "${NUM_GPUS}" -gt 1 ]; then

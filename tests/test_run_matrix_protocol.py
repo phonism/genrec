@@ -101,3 +101,18 @@ def test_rpg_uses_split_specific_configs_unless_overridden():
         config_overrides={"rpg": "config/custom_rpg.gin"},
     )
     assert overridden[0].config_path == "config/custom_rpg.gin"
+
+
+def test_home_extension_has_54_isolated_cells_with_matching_sft_dependencies():
+    from scripts.run_matrix import load_preset
+
+    spec = load_preset("amazon2014_home_20261022")
+    cells = [cell for protocol in spec["protocols"] for cell in build_cells(
+        spec["models"], spec["splits"], spec["seeds"],
+        "out/home_extension/{protocol}/{model}/{split}/seed{seed}", {}, protocol,
+        "amazon2014_home_20261022")]
+    assert len(cells) == len({c.save_dir for c in cells}) == 54
+    assert all(c.split == "home" for c in cells)
+    assert all(c.config_path == "config/rpg/amazon_home.gin" for c in cells if c.model == "rpg")
+    sft_paths = {c.save_dir + "/checkpoint_best" for c in cells if c.model == "onerec_sft"}
+    assert {c.sft_checkpoint_path for c in cells if c.model == "onerec_grpo"} == sft_paths

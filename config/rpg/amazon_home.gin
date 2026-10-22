@@ -1,0 +1,8 @@
+# Home extension: transfer the Beauty recipe without tuning on Home test.
+# No original-paper Home result or Home-specific hyperparameter optimum is claimed.
+include "config/rpg/amazon.gin"
+
+# Top-level bindings receive parse_config's {split} expansion before includes.
+train_rpg.split = "{split}"
+train_rpg.save_dir_root = "out/rpg/amazon/{split}"
+train_rpg.wandb_project = "rpg_{split}_training"

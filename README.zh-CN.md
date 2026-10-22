@@ -65,7 +65,7 @@ Beauty 的补充实验：修正后的 HSTU Meta-local sampled softmax，R@10 = 0
 
 ### Amazon 2014 Home
 
-Home 的完整复现正在准备，目标沿用主矩阵的 9 条流水线、两种切分协议和三个种子，共 54 个实验。英文 README 中的 Home 表仍是历史快照，尚未纳入这次核验的 162 个实验；在新结果完成前，不用旧 SID 数字补表。
+Home 的完整复现正在准备，目标沿用主矩阵的 9 条流水线、两种切分协议和三个种子，共 54 个实验，使用独立的 [Home 配方清单](config/matrix/amazon2014_home_20261022.json)。RPG 直接迁移 Beauty 配方，不以 Home test 调参。英文 README 中的 Home 表仍是历史快照，尚未纳入这次核验的 162 个实验；在新结果完成前，不用旧 SID 数字补表。
 
 ### 当前结论
 

@@ -76,6 +76,11 @@ Supplemental Beauty LOO: HSTU corrected Meta-local sampled softmax R@10 0.0754 Â
 
 ### Amazon 2014 Home (legacy snapshot; outside this matrix)
 
+A separate **54-cell Home extension** (same nine pipelines, two protocols and
+three seeds) is being prepared with the [Home preset](config/matrix/amazon2014_home_20261022.json).
+The values below remain historical until the new item-level runs are complete.
+RPG transfers the Beauty recipe without Home-specific test tuning.
+
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
 | SASRec (CE) | 0.0177 | 0.0277 | 0.0106 | 0.0138 |

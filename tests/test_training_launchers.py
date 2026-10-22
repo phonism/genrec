@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
     ("train_rpg.sh", ["beauty", "1"], "python", "config/rpg/amazon.gin"),
     ("train_rpg.sh", ["sports", "1"], "python", "config/rpg/amazon_sports.gin"),
     ("train_rpg.sh", ["toys", "2"], "accelerate", "config/rpg/amazon_toys.gin"),
+    ("train_rpg.sh", ["home", "1"], "python", "config/rpg/amazon_home.gin"),
     ("train_onerec_grpo.sh", [], "python", "config/onerec/amazon/grpo.gin"),
     ("train_onerec_grpo.sh", ["beauty", "1", "--gin", "train_grpo.seed=44"],
      "python", "config/onerec/amazon/grpo.gin"),

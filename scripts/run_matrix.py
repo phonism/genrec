@@ -64,6 +64,7 @@ RPG_SPLIT_CONFIGS = {
     "beauty": "config/rpg/amazon.gin",
     "sports": "config/rpg/amazon_sports.gin",
     "toys": "config/rpg/amazon_toys.gin",
+    "home": "config/rpg/amazon_home.gin",
 }
 
 DATASET_CONFIGURABLES = {
@@ -87,7 +88,10 @@ TRAIN_FN = {
     "rpg":         "train_rpg",
 }
 
-PRESETS = {"amazon2014_20261022": "config/matrix/amazon2014_20261022.json"}
+PRESETS = {
+    "amazon2014_20261022": "config/matrix/amazon2014_20261022.json",
+    "amazon2014_home_20261022": "config/matrix/amazon2014_home_20261022.json",
+}
 
 
 def load_preset(name):

@@ -29,6 +29,7 @@ DATASETS = {
         "meta_Sports_and_Outdoors.json.gz",
     ),
     "toys": ("reviews_Toys_and_Games_5.json.gz", "meta_Toys_and_Games.json.gz"),
+    "home": ("reviews_Home_and_Kitchen_5.json.gz", "meta_Home_and_Kitchen.json.gz"),
 }
 
 
