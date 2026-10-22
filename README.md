@@ -87,7 +87,7 @@ Supplemental Beauty LOO: HSTU corrected Meta-local sampled softmax R@10 0.0754 �
 
 ## Features
 
-- **Multiple Models**: Implementations of SASRec, HSTU, RQVAE, TIGER, LCRec, COBRA, RPG, and NoteLLM
+- **Multiple Models**: 9 recommenders: SASRec, HSTU, TIGER, LCRec, COBRA, RPG, NoteLLM, OneRec, and GRAM; RQ-VAE/RQ-KMeans tokenizer components
 - **Multiple Datasets**: Amazon 2014 (Beauty, Sports, Toys, Clothing) and Amazon 2023 (32 categories)
 - **Modular Design**: Clean separation of models, data, and training logic
 - **Flexible Configuration**: Gin-config based experiment management
@@ -100,12 +100,14 @@ Supplemental Beauty LOO: HSTU corrected Meta-local sampled softmax R@10 0.0754 �
 |-------|------|-------------|
 | **SASRec** | Baseline | Self-Attentive Sequential Recommendation |
 | **HSTU** | Baseline | Hierarchical Sequential Transduction Unit with temporal bias |
-| **RQVAE** | Generative | Residual Quantized VAE for semantic ID generation |
+| **RQVAE / RQ-KMeans** | Tokenizer | Item embeddings to semantic IDs; not standalone recommenders |
 | **TIGER** | Generative | Generative Retrieval with trie-based constrained decoding |
 | **LCRec** | Generative | LLM-based recommendation with collaborative semantics |
 | **COBRA** | Generative | Cascaded sparse-dense representations |
 | **RPG** | Generative | Parallel generation with OPQ semantic IDs and graph-constrained decoding |
-| **NoteLLM** | Generative | Retrievable LLM for note recommendation (experimental) |
+| **NoteLLM** | LLM retrieval | GCL+CSFT item-to-item adaptation |
+| **OneRec** | Generative | Qwen + semantic IDs; SFT/GRPO and alternative CLM |
+| **GRAM** | Generative | Lexical IDs with multi-granularity fusion (outside the matrix) |
 
 ## Installation
 
@@ -131,6 +133,66 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Reproduce the published matrix
+
+Use the dated preset for the tables above. Generic configs elsewhere in this
+repository include older recipes; they are not interchangeable with this snapshot.
+The preset maps each CSV recipe to its Gin file, disables W&B login, separates
+protocol/seed outputs, and makes GRPO load the matching SFT checkpoint.
+Run commands from the repository root with one GPU available per cell. On shared
+hosts, follow the project's GPU lock/scheduling rules before executing commands.
+
+For the full matrix, install the RPG and LoRA dependencies: `pip install -e ".[rpg]" "peft>=0.10.0"`.
+
+Populate `models_hub/` with `sentence-t5-xl`, `Qwen3-Embedding-8B`,
+`Qwen3-1.7B`, and `Qwen3-4B` as needed (see `config/base.gin`). Prepare
+**one seed-42 tokenizer per domain**, shared by recommender seeds 42/43/44:
+
+```bash
+# Use a clean committed checkout; this archive records the code used by new runs.
+mkdir -p out
+GENREC_REPRO_REV=$(git rev-parse HEAD)
+export GENREC_SOURCE_BUNDLE_NAME="genrec-source-${GENREC_REPRO_REV}.tar.gz"
+git archive --format=tar.gz --output="out/${GENREC_SOURCE_BUNDLE_NAME}" HEAD
+export GENREC_SOURCE_BUNDLE_SHA256="$(python -c 'import hashlib,os,pathlib; print(hashlib.sha256(pathlib.Path("out", os.environ["GENREC_SOURCE_BUNDLE_NAME"]).read_bytes()).hexdigest())')"
+
+for split in beauty sports toys; do
+  python -m genrec.trainers.rqvae_trainer config/tiger/amazon/rqvae.gin \
+    --split "$split" --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+  python -m genrec.trainers.rqvae_trainer config/lcrec/amazon/rqvae_paper_recipe.gin \
+    --split "$split" --gin 'train.seed=42'
+  python -m genrec.trainers.rqvae_trainer config/cobra/amazon/rqvae.gin \
+    --split "$split" --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+  python -m genrec.trainers.rqkmeans_trainer config/onerec/amazon/rqkmeans.gin \
+    --split "$split" --gin 'fit_rqkmeans.seed=42'
+done
+
+# 81 cells per protocol. Review first; remove --dry-run to train serially.
+for protocol in leave_one_out global_temporal; do
+  python scripts/run_matrix.py --preset amazon2014_20261022 \
+    --models sasrec hstu tiger lcrec cobra rpg notellm onerec_sft onerec_grpo \
+    --splits beauty sports toys --seeds 42 43 44 \
+    --evaluation-protocol "$protocol" \
+    --save-dir-root 'out/reproduce_20261022/{protocol}/{model}/{split}/seed{seed}' \
+    --dry-run
+done
+
+# Check published numbers without training dependencies or raw artifacts.
+python scripts/check_benchmarks.py
+```
+
+LCRec uses `rqvae_paper_recipe/checkpoint_best_health.pt`; TIGER and COBRA
+use their respective `rqvae/checkpoint_epoch_4999.pt`; OneRec uses
+`rqkmeans/rqkmeans.pt`. The runner checks these before starting each dependent
+cell. RPG prepares OPQ in its dataset adapter. The preset targets the main
+3-code OneRec rows; 4-code and sampled-softmax ablations remain separate.
+
+This reproduces the documented recipes, not identical scores across hardware
+or regenerated tokenizers. Checkpoints, cached embeddings, and raw result files
+are not bundled with Git; the CSV retains original result paths and SHA256s.
+OneRec/LCRec evaluation prompt sampling and the historical mixed source versions
+are documented in [BENCHMARKS.md](BENCHMARKS.md).
+
 ### Train Baseline Models
 
 ```bash
@@ -153,8 +215,8 @@ python genrec/trainers/hstu_trainer.py config/hstu/amazon2023.gin
 # For TIGER pipeline
 python genrec/trainers/rqvae_trainer.py config/tiger/amazon/rqvae.gin --split beauty
 
-# For LCRec pipeline
-python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae.gin --split beauty
+# For the matrix LCRec pipeline (four codebooks, USM)
+python genrec/trainers/rqvae_trainer.py config/lcrec/amazon/rqvae_paper_recipe.gin --split beauty
 
 # For COBRA pipeline
 python genrec/trainers/rqvae_trainer.py config/cobra/amazon/rqvae.gin --split beauty
@@ -170,8 +232,8 @@ python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin --split be
 ### Train LCRec (LLM-based)
 
 ```bash
-# Requires pretrained RQVAE checkpoint
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin --split beauty
+# Matrix recipe: Qwen3-4B, history 20, effective batch 128
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec_paper_recipe.gin --split beauty
 
 # On Amazon 2023
 python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
@@ -181,7 +243,7 @@ python genrec/trainers/lcrec_trainer.py config/lcrec/amazon2023/lcrec.gin
 
 ```bash
 # Requires pretrained RQVAE checkpoint
-python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra.gin --split beauty
+python genrec/trainers/cobra_trainer.py config/cobra/amazon/cobra_optimized.gin --split beauty
 ```
 
 ### Train RPG (Parallel Generation)
@@ -194,10 +256,15 @@ python -m genrec.trainers.rpg_trainer config/rpg/amazon.gin --split beauty
 bash scripts/train_rpg.sh beauty 4
 ```
 
-### Train OneRec (RQ-KMeans → SFT)
+### Train NoteLLM
 
-Trains the **OneRec-SFT (1.7B)** pipeline (RQ-KMeans K=256 → SFT). Benchmark numbers are
-withheld pending SID-collision correction (see the note under Benchmark Results).
+```bash
+python -m genrec.trainers.notellm_trainer config/notellm/amazon.gin --split beauty
+```
+
+### Train OneRec (RQ-KMeans → SFT → GRPO)
+
+Trains the main **OneRec SFT (3 SID)** recipe and its validation-selected GRPO stage.
 Requires `Qwen3-Embedding-8B` + `Qwen3-1.7B` in `./models_hub/`.
 
 ```bash
@@ -205,10 +272,11 @@ Requires `Qwen3-Embedding-8B` + `Qwen3-1.7B` in `./models_hub/`.
 # automatically from Qwen3-Embedding-8B on first run.
 python genrec/trainers/rqkmeans_trainer.py config/onerec/amazon/rqkmeans.gin --split beauty
 
-# Stage 2 — SFT (Qwen3-1.7B, full-param), 4-GPU. The v2b recipe (no label smoothing) is
-# the current best and produces the benchmark numbers above.
-accelerate launch --config_file config/accelerate_4gpu.yaml \
-    -m genrec.trainers.onerec_sft_trainer config/onerec/amazon/sft.gin --split beauty
+# Stage 2 — SFT (Qwen3-1.7B, full-param), one GPU.
+python -m genrec.trainers.onerec_sft_trainer config/onerec/amazon/sft.gin --split beauty
+
+# Stage 3 — GRPO; standalone defaults load the SFT checkpoint_best above.
+bash scripts/train_onerec_grpo.sh beauty 1
 ```
 
 > **Recipe** (`sft.gin`): `lr=8e-5, weight_decay=0.05,
@@ -248,9 +316,9 @@ python genrec/trainers/tiger_trainer.py config/tiger/amazon/tiger.gin \
     --gin "train.batch_size=128"
 
 # Custom model path for LCRec
-python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec.gin \
+python genrec/trainers/lcrec_trainer.py config/lcrec/amazon/lcrec_paper_recipe.gin \
     --split beauty \
-    --gin "MODEL_HUB_QWEN3_1_7B='/path/to/model'"
+    --gin "MODEL_HUB_QWEN3_4B='/path/to/model'"
 ```
 
 ## Project Structure

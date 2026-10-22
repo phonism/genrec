@@ -97,6 +97,12 @@ def main():
     args = ap.parse_args()
 
     readme = README_PATH.read_text()
+    if "results/matrix_20261022.csv" in readme:
+        ap.error(
+            "README now reports three-seed item-level matrix means. "
+            "This legacy single-log updater cannot update it; "
+            "use python scripts/check_benchmarks.py to audit the published CSV tables."
+        )
     changes = []
     for split, header in SECTIONS:
         glob_pat = getattr(args, split)

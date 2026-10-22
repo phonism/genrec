@@ -79,7 +79,7 @@ TIGER 不使用 Accelerate，只在 `cuda` 可用时选择一个 device；RQ-KMe
 | LCRec | AdamW + cosine warmup | causal LM CE | valid item Recall@10 | HF `checkpoint_best`/周期/最终目录；best 权重 one-shot test |
 | OneRec SFT | AdamW + cosine warmup | response causal LM；可手工 label smoothing | valid Recall@10 + patience | HF `checkpoint_best`/epoch/final，FSDP-aware |
 | OneRec CLM | AdamW + cosine warmup | flat stream causal LM | valid Recall@10 + patience | HF `checkpoint_best`/epoch/final，main-only 保存 |
-| OneRec GRPO | AdamW + cosine warmup | PPO clipped policy + k3 KL | 只记录 valid Recall@10 最优轮 | HF epoch/final；**不保存 best** |
+| OneRec GRPO | AdamW + cosine warmup | PPO clipped policy + k3 KL | valid item Recall@10，初始 SFT 也参与选择；best_state 在内存保留并用于最终 test | HF epoch/final；不单独落盘 best，`best_epoch=-1` 表示回选 SFT |
 | COBRA | AdamW + cosine warmup | weighted sparse cascade CE + dense InfoNCE | valid item Recall@10 | `best_model.pt` + 周期/最终 dict；best 权重 one-shot test |
 | RPG | AdamW + cosine warmup | C 个 parallel head 的 token contrastive loss | valid **NDCG@10** | 原始 `state_dict` |
 | NoteLLM | AdamW + cosine warmup | 对称 GCL + 可选 CSFT | valid Recall@10 + patience | trainable checkpoint + tokenizer + LoRA `adapter/` |

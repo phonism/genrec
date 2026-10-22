@@ -11,7 +11,10 @@
 > **口径更新（2026-08）：**本文 2026-06 的 `raw/A1` 数字是历史 SID-tuple
 > 口径，只用于展示碰撞膨胀；当前 TIGER/LCRec/OneRec trainer 的主指标、
 > 早停与结果文件均已切换为 training-only most-popular SID→item、排序去重后的
-> item-level Recall/NDCG。README 主表在 checkpoint 按新代码重评前不展示旧分数。
+> item-level Recall/NDCG。2026-10-22 的 item-level 主矩阵已完成，当前结论以
+> [BENCHMARKS](https://github.com/phonism/genrec/blob/main/BENCHMARKS.md) 为准。
+> 下文用历史 0.0925 与论文分数直接类比的论证不再作为有效比较；新矩阵也不能
+> 支持稳定的隔离 GRPO 收益（16/18 格回选 SFT，且评测模板未冻结）。
 
 ---
 

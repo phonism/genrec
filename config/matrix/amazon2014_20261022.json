@@ -1,0 +1,110 @@
+{
+  "snapshot": "20261022",
+  "results_csv": "results/matrix_20261022.csv",
+  "splits": [
+    "beauty",
+    "sports",
+    "toys"
+  ],
+  "protocols": [
+    "leave_one_out",
+    "global_temporal"
+  ],
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "models": {
+    "sasrec": {
+      "recipe": "ce",
+      "config": "config/sasrec/amazon.gin",
+      "bindings": [
+        "train.wandb_logging=False",
+        "train.save_every_epoch=999"
+      ],
+      "dependencies": []
+    },
+    "hstu": {
+      "recipe": "ce",
+      "config": "config/hstu/amazon.gin",
+      "bindings": [
+        "train.wandb_logging=False",
+        "train.save_every_epoch=999"
+      ],
+      "dependencies": []
+    },
+    "tiger": {
+      "recipe": "legacy_matrix_rqvae",
+      "config": "config/tiger/amazon/tiger.gin",
+      "bindings": [
+        "train.wandb_logging=False"
+      ],
+      "dependencies": [
+        "out/tiger/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+      ]
+    },
+    "lcrec": {
+      "recipe": "qwen3_4b_usm_gb128",
+      "config": "config/lcrec/amazon/lcrec_paper_recipe.gin",
+      "bindings": [
+        "train.wandb_logging=False",
+        "train.save_every_epoch=100"
+      ],
+      "dependencies": [
+        "out/lcrec/amazon/{split}/rqvae_paper_recipe/checkpoint_best_health.pt"
+      ]
+    },
+    "cobra": {
+      "recipe": "optimized_light",
+      "config": "config/cobra/amazon/cobra_optimized.gin",
+      "bindings": [
+        "train.wandb_logging=False"
+      ],
+      "dependencies": [
+        "out/cobra/amazon/{split}/rqvae/checkpoint_epoch_4999.pt"
+      ]
+    },
+    "rpg": {
+      "recipe": "direct_item_scoring",
+      "config": "config/rpg/amazon.gin",
+      "bindings": [
+        "train_rpg.wandb_logging=False"
+      ],
+      "dependencies": [],
+      "split_configs": {
+        "beauty": "config/rpg/amazon.gin",
+        "sports": "config/rpg/amazon_sports.gin",
+        "toys": "config/rpg/amazon_toys.gin"
+      }
+    },
+    "notellm": {
+      "recipe": "gcl_csft_category_fnmask",
+      "config": "config/notellm/amazon.gin",
+      "bindings": [
+        "train.wandb_logging=False"
+      ],
+      "dependencies": []
+    },
+    "onerec_sft": {
+      "recipe": "v2b_3sid",
+      "config": "config/onerec/amazon/sft.gin",
+      "bindings": [
+        "train_sft.wandb_logging=False"
+      ],
+      "dependencies": [
+        "out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+      ]
+    },
+    "onerec_grpo": {
+      "recipe": "v2b_3sid_validation_selected",
+      "config": "config/onerec/amazon/grpo.gin",
+      "bindings": [
+        "train_grpo.wandb_logging=False"
+      ],
+      "dependencies": [
+        "out/onerec/amazon/{split}/rqkmeans/rqkmeans.pt"
+      ]
+    }
+  }
+}

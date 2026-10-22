@@ -2,6 +2,10 @@
 
 本页是从仓库根目录运行 GenRec 的入口清单。命令、Gin selector、配置路径和依赖已按 **2026-08-31 的当前代码**核验；它回答“入口是否存在、要先准备什么”，不把“代码可启动”误写成“论文已复现”。模型的复现结论以[实现与复现状态](model-status.md)为准，参数与张量契约见[架构文档](../architecture/index.md)。
 
+!!! info "2026-10-22 已完成矩阵"
+
+    对应 README 数字的入口是 `python scripts/run_matrix.py --preset amazon2014_20261022 ... --dry-run`；完整准备命令见 [README](https://github.com/phonism/genrec/blob/main/README.md#reproduce-the-published-matrix)。下列通用入口还包含历史/其他配方，例如 LCRec 1.7B/五码；不能直接视作本次主矩阵配置。用 `python scripts/check_benchmarks.py` 核对表格数字。
+
 ## 状态约定
 
 | 状态 | 含义 |

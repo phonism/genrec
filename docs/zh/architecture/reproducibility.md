@@ -187,7 +187,7 @@ accelerate launch --config_file config/accelerate_4gpu.yaml \
 
 [`config/accelerate_4gpu.yaml`](https://github.com/phonism/genrec/blob/main/config/accelerate_4gpu.yaml) 当前写死物理 `gpu_ids: 3,4,5,6`。在共享主机必须让它与外层分配一致，或使用显式 `CUDA_VISIBLE_DEVICES`/匹配配置；不能因文件名叫 4gpu 就默认可用任意四张卡。
 
-仓库中的某些历史 shell 编排脚本引用已不存在的 `amazon2023/*.gin`、`accelerate_ddp.yaml` 或旧 `sft_k256_v2.gin` 名称。执行前必须检查脚本引用是否在当前 tree 存在；正式命令以当前 [`config/`](https://github.com/phonism/genrec/tree/main/config) 和 matrix registry 为准。
+`train_onerec_grpo.sh` 当前使用存在的 Amazon-2014 GRPO 配置；`train_rpg.sh` 按域选择配置。部分历史 `run_v2_*` / grid shell 编排脚本仍引用旧 `sft_k256_v2.gin` 名称。执行前必须检查脚本引用是否在当前 tree 存在；正式命令以当前 [`config/`](https://github.com/phonism/genrec/tree/main/config) 和 matrix registry 为准。
 
 ## 矩阵规划与运行
 
@@ -195,6 +195,7 @@ accelerate launch --config_file config/accelerate_4gpu.yaml \
 
 ```bash
 python scripts/run_matrix.py \
+  --preset amazon2014_20261022 \
   --models sasrec hstu \
   --splits beauty sports toys \
   --seeds 42 43 44 \
@@ -205,14 +206,16 @@ python scripts/run_matrix.py \
 实际运行去掉 `--dry-run`。runner：
 
 - 串行启动子进程；
-- 已有 `results.json` 时 skip，除非 `--force`；
+- 只有 item-level 元数据、model/split/protocol/seed 均匹配时才 skip；使用 preset 时还要求保存的命令及配置哈希一致；否则拒绝覆盖，须换目录或显式 `--force`；
 - 可 `--continue-on-error`；
 - 可用 `--log-dir` 重定向 cell stdout/stderr；
 - 给 seed/save dir/protocol 注入 Gin override；
 - 不创建 RQ-VAE/RQ-KMeans/OPQ prerequisite；
-- 只对 OneRec GRPO 显式检查匹配 SFT `checkpoint_best`。
+- preset 检查 TIGER/LCRec/COBRA/OneRec 的 tokenizer 路径，并检查 GRPO 匹配的 SFT `checkpoint_best`。
 
-RPG 根据 split 路由 Beauty/Sports/Toys 专用 config。若为模型提供 `--config model=path`，要重新审计跨阶段 artifact。
+`--preset amazon2014_20261022` 与已发布 CSV 配方绑定，使用 LCRec 4B/4-code/seq20 和 COBRA optimized-light，不能与 `--config` 混用。完整 tokenizer 准备及两个协议各 81 cell 的命令见 [README](https://github.com/phonism/genrec/blob/main/README.md#reproduce-the-published-matrix)。不指定 preset 的 runner 保留通用/历史默认配置，不等于本次矩阵配方。
+
+RPG 根据 split 路由 Beauty/Sports/Toys 专用 config。若使用通用模式的 `--config model=path`，要重新审计跨阶段 artifact。`python scripts/check_benchmarks.py` 检查逐种子 CSV、汇总 JSON、README、BENCHMARKS 和双语首页数字是否一致；它不启动训练。原始 checkpoint 与 embedding 缓存未随 Git 发布，随机评测模板等限制仍存在，因此重新训练不承诺逐位相同的数字。
 
 在 179 上“一个 MCP task 一个 cell”，不要把整个矩阵包装成一个不透明长任务。可用 dry-run 得到命令，再分别提交并用相同目录/命名规则。
 
@@ -305,6 +308,7 @@ GRPO 16/18 格选回 SFT，因此微小的 SFT→GRPO 分差不能视为隔离 R
 
 ```bash
 python scripts/validate_matrix_results.py out/matrix/leave_one_out \
+  --preset amazon2014_20261022 \
   --models sasrec hstu \
   --splits beauty sports toys \
   --protocols leave_one_out \

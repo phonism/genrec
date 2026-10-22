@@ -1,31 +1,20 @@
 #!/bin/bash
-# OneRec GRPO Training (Stage 3)
-# Usage: bash scripts/train_onerec_grpo.sh [SPLIT] [NUM_GPUS]
-#   SPLIT: dataset split name (default: Arts_Crafts_and_Sewing)
-#   NUM_GPUS: number of GPUs to use (default: 2)
-
-set -e
-
-SPLIT="${1:-Arts_Crafts_and_Sewing}"
-NUM_GPUS="${2:-2}"
-
-echo "=== OneRec GRPO Training ==="
-echo "Split: ${SPLIT}"
-echo "GPUs:  ${NUM_GPUS}"
-echo ""
-
-# Replace {split} placeholder in gin config
-GIN_CONFIG="config/onerec/amazon2023/grpo.gin"
-
+# Usage: bash scripts/train_onerec_grpo.sh [SPLIT=beauty] [NUM_GPUS=1] [trainer arguments...]
+# Published three-seed matrix: use scripts/run_matrix.py --preset amazon2014_20261022.
+set -euo pipefail
+SPLIT="${1:-beauty}"
+NUM_GPUS="${2:-1}"
+if [[ ! "${NUM_GPUS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "NUM_GPUS must be a positive integer" >&2
+    exit 2
+fi
+if [ "$#" -gt 0 ]; then shift; fi
+if [ "$#" -gt 0 ]; then shift; fi
+GIN_CONFIG="config/onerec/amazon/grpo.gin"
 if [ "${NUM_GPUS}" -gt 1 ]; then
-    accelerate launch \
-        --config_file config/accelerate_ddp.yaml \
-        --num_processes "${NUM_GPUS}" \
-        -m genrec.trainers.onerec_grpo_trainer \
-        "${GIN_CONFIG}" \
-        --split "${SPLIT}"
+    exec accelerate launch --multi_gpu --num_processes "${NUM_GPUS}" \
+        -m genrec.trainers.onerec_grpo_trainer "${GIN_CONFIG}" --split "${SPLIT}" "$@"
 else
-    python -m genrec.trainers.onerec_grpo_trainer \
-        "${GIN_CONFIG}" \
-        --split "${SPLIT}"
+    exec python -m genrec.trainers.onerec_grpo_trainer \
+        "${GIN_CONFIG}" --split "${SPLIT}" "$@"
 fi

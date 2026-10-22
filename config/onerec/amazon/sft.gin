@@ -1,6 +1,6 @@
 # OneRec SFT — best Amazon 2014 recipe (Qwen3-1.7B, full-param, K=256).
 # Regularization: weight_decay=0.05 + attention_dropout=0.1, no label smoothing,
-# early-stopping patience=2. Reproduces the README OneRec-SFT (1.7B) rows.
+# early-stopping patience=2. Main three-code item-level matrix SFT recipe.
 
 include "config/base.gin"
 

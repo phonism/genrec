@@ -11,6 +11,46 @@ Per-seed metrics, recipe labels, original artifact paths and SHA256 checksums:
 [supplemental CSV](results/ablations_20261022.csv), and
 [machine-readable summary](results/matrix_20261022.summary.json).
 
+## What the completed runs support
+
+- The matrix covers **eight recommender types and nine pipelines**: SASRec,
+  HSTU, TIGER, LCRec, COBRA, RPG, NoteLLM, and OneRec (SFT and GRPO).
+- SASRec has the highest LOO mean R@10 on Beauty/Sports and essentially ties
+  NoteLLM on Toys after rounding. NoteLLM's I2I query/candidate semantics differ;
+  the table is not evidence of a universally strongest model.
+- RPG is competitive on Toys (LOO N@10 0.0472 versus SASRec 0.0441). Larger
+  autoregressive models do not consistently beat the discriminative baseline.
+- Global-temporal R@10 is lower than LOO for every model/domain here. This
+  shows that conclusions depend on the split; it does not isolate the cause
+  of the gap or make the remaining transductive inputs disappear.
+- GRPO does not show a consistent isolated improvement: 16/18 selected policies
+  are SFT, and evaluation prompts vary between passes.
+- Beauty's four-code OneRec ablation improves R@10 from 0.0658 to 0.0727, but
+  only that domain/protocol was tested. The main recipe stays at three codes.
+  TIGER/COBRA paper audits use separate recipes and do not establish that every
+  original paper result was reproduced. No significance claim is made here.
+
+## Reproduction entry points
+
+Use `scripts/run_matrix.py --preset amazon2014_20261022` for this snapshot;
+[`config/matrix/amazon2014_20261022.json`](config/matrix/amazon2014_20261022.json)
+connects each CSV recipe to its config and prerequisite paths. The README has
+seed-42 tokenizer preparation commands and both 81-cell protocol dry-runs.
+Generic runner defaults and historical tuning scripts target other recipes.
+The preset uses LCRec's four-code/4B/history-20 recipe, COBRA optimized light,
+RPG's domain-specific configs, and OneRec's three-code SFT/GRPO paths.
+It reproduces the recipe, not bit-identical historical results: pretrained
+weights, tokenizer checkpoints, cached embeddings, and raw result files are
+not distributed in this Git tree; the source/prompt limitations below remain.
+
+Check all published table values without PyTorch:
+
+```bash
+python scripts/check_benchmarks.py
+# Optional: also verify a recovered primary/ + ablations/ raw-results mirror.
+python scripts/check_benchmarks.py --artifacts out/matrix_20261022
+```
+
 ## Protocol and interpretation
 
 - Amazon Reviews 2014, 5-core; seeds 42/43/44. Sequence history is 50 except
