@@ -18,7 +18,7 @@ def test_published_tables_match_per_seed_csv():
 
 @pytest.fixture
 def snapshot(tmp_path):
-    for name in ("README.md", "BENCHMARKS.md", "results", "config", "docs/en/index.md", "docs/zh/index.md"):
+    for name in ("README.md", "README.zh-CN.md", "BENCHMARKS.md", "results", "config", "docs/en/index.md", "docs/zh/index.md"):
         src, dst = ROOT / name, tmp_path / name
         dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
@@ -32,6 +32,12 @@ def test_audit_rejects_a_stale_readme_number(snapshot):
     readme = snapshot / "README.md"
     readme.write_text(readme.read_text().replace("0.0858", "0.9999", 1))
     assert "README row mismatch: sasrec/beauty" in check_snapshot(snapshot)
+
+
+def test_audit_rejects_a_stale_chinese_readme_number(snapshot):
+    readme = snapshot / "README.zh-CN.md"
+    readme.write_text(readme.read_text().replace("0.0858", "0.9999", 1))
+    assert "Chinese README row mismatch: sasrec/beauty" in check_snapshot(snapshot)
 
 
 def test_audit_rejects_mixing_the_four_code_recipe_into_main(snapshot):

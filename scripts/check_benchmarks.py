@@ -132,12 +132,15 @@ def check_snapshot(root, artifacts=None):
         errors.append("GRPO SFT-fallback count mismatch")
 
     readme = (root / "README.md").read_text()
+    chinese_readme = (root / "README.zh-CN.md").read_text()
     bench = (root / "BENCHMARKS.md").read_text()
     for (model, split, protocol), metrics in stats.items():
         if protocol == "leave_one_out":
             line = "| " + " | ".join([LABELS[model]] + [fmt(metrics, m, False) for m in METRICS[1:]]) + " |"
             if line not in section(readme, f"### Amazon 2014 {split.title()}").splitlines():
                 errors.append(f"README row mismatch: {model}/{split}")
+            if line not in section(chinese_readme, f"### Amazon 2014 {split.title()}").splitlines():
+                errors.append(f"Chinese README row mismatch: {model}/{split}")
         title = ("## Leave-one-out: 27 complete rows" if protocol == "leave_one_out"
                  else "## Global temporal: 27 complete rows")
         line = "| " + " | ".join([LABELS[model], split.title(), "3"] +
@@ -192,7 +195,7 @@ def main():
         for error in errors:
             print(f"FAIL: {error}")
         raise SystemExit(1)
-    print("PASS: 162 main + 6 supplemental cells; CSV, 54 summary rows, README, BENCHMARKS and en/zh index tables agree.")
+    print("PASS: 162 main + 6 supplemental cells; CSV, 54 summary rows, en/zh README, BENCHMARKS and en/zh index tables agree.")
     if args.artifacts:
         print("PASS: all 168 raw-result checksums, item-level metadata and metrics agree.")
 
