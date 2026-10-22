@@ -56,7 +56,7 @@ def stable_hash_bucket(value: str, num_buckets: int) -> int:
 
 
 # Amazon Review 2014 download URLs
-AMAZON_REVIEW_BASE_URL = "http://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
+AMAZON_REVIEW_BASE_URL = "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
 
 DATASET_CONFIGS = {
     # Amazon 2014 datasets

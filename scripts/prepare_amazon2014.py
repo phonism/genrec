@@ -21,7 +21,7 @@ import sys
 import urllib.request
 
 
-BASE_URL = "http://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
+BASE_URL = "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles"
 DATASETS = {
     "beauty": ("reviews_Beauty_5.json.gz", "meta_Beauty.json.gz"),
     "sports": (
