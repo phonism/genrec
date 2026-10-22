@@ -9,10 +9,17 @@
 | 物品表示 | 默认 3 层、每层 256 类的 RQ-KMeans code |
 | 训练阶段 | RQ-KMeans → instruction SFT → 可选 GRPO；另有实验性 CLM 路径 |
 | 主干 | 本地 Qwen3-1.7B 配置，代码兼容 Hugging Face causal LM |
-| 主评测 | constrained beam 后解析到 item，报告 item-level Recall/NDCG |
+| 主评测 | 位置 mask + catalog Trie beam 后解析到 item，报告 item-level Recall/NDCG |
 | 实现判断 | 独立研究适配，不是快手工业 OneRec/OpenOneRec 的完整复现 |
 
 实现完成度和可信 benchmark 以[模型实现状态](../reference/model-status.md)与根目录 [BENCHMARKS.md](https://github.com/phonism/genrec/blob/main/BENCHMARKS.md)为准。历史日志中的 SID-tuple 指标可能受碰撞影响，不应直接放进与 item-ID 模型的主对比表。
+
+2026-10-22 验收：3 码 SFT 与匹配 GRPO 各完成 18 格（Beauty/Sports/Toys、两种切分、
+seed 42/43/44）。GRPO 验证集选择包含初始 SFT 权重，18 格中有 16 格最终回退；
+只有 Toys LOO 的 seed42/43 选择了训练后的 epoch。当前评测仍在 `__getitem__`
+随机选 prompt 模板，同一权重两次评测可有小幅差异，因此这些差值不能归因于 RL。
+4 码 suffix 仅保留为 Beauty LOO 三种子消融，R@10 为 0.0727 ± 0.0013；
+3 码主行为 0.0658 ± 0.0016。
 
 ## 原始工作与本仓库范围
 
@@ -94,7 +101,7 @@ flowchart LR
     C --> J[PrefixTrie]
     J --> I
     I --> K[GRPO checkpoint]
-    H --> L[position-constrained beam]
+    H --> L[position and catalog Trie beam]
     K --> L
     L --> M[training-only SID→item resolver]
     M --> N[item-level Recall/NDCG]
@@ -109,7 +116,7 @@ RL 数据默认由三类 prompt 组成：`sidsft`、`title2sid` 和 title-histor
 | 层次 | 文件 / 符号 | 职责 |
 |---|---|---|
 | 模型 | [`OneRec`](https://github.com/phonism/genrec/blob/main/genrec/models/onerec.py) | 扩展 code token；封装 HF causal LM；checkpoint 兼容加载 |
-| 模型 | `generate_constrained_beam` | KV-cache beam；按 codebook 位置限制 token 范围 |
+| 模型 | `generate_constrained_beam` | KV-cache beam；位置 mask 与可选 catalog Trie，SFT trainer 已传入 Trie |
 | 模型 | `generate_for_grpo` / `compute_log_probs` | trie-constrained rollout 与可微 log-prob 重算 |
 | SFT 数据 | [`AmazonOneRecSFTDataset`](https://github.com/phonism/genrec/blob/main/genrec/data/amazon_onerec.py) | 四任务 prompt、滑窗与评测样本 |
 | RL 数据 | `AmazonOneRecRLDataset` | 三类 RL prompt 与 completion ground truth |
@@ -222,7 +229,7 @@ GRPO 当前不另存名为 `checkpoint_best` 的目录；它保存周期 checkpo
 | SFT | 官方框架有各自的数据/预训练配方 | 四个显式 instruction 任务 | 样本权重与任务比例不同 |
 | CLM | OpenOneRec 提供更完整训练范式 | 一用户一样本的 flat-stream 实验路径 | 只复现形式，不复现整个 recipe |
 | 偏好优化 | 论文/框架含更丰富 alignment 设计 | 三种手写 reward + PPO-clipped GRPO | 奖励尺度和稀疏性主导结果 |
-| 约束 | 官方实现依系统而异 | SFT eval 为位置约束；GRPO rollout 为 catalog trie | train/eval 可行集合并非完全一致 |
+| 约束 | 官方实现依系统而异 | SFT/GRPO eval 为位置 mask + catalog Trie；GRPO rollout 也使用 Trie | 两阶段使用匹配的 SID 目录 |
 | 评测 | 原工作各有协议 | 训练热门度 SID→item 的诚实 item-level 口径 | 数字不可脱离协议横向引用 |
 
 ## 已知限制与常见坑
@@ -232,7 +239,7 @@ GRPO 当前不另存名为 `checkpoint_best` 的目录；它保存周期 checkpo
 3. **设置 `task_sample_weights` 后任务比例不变** → 数据类保存了该字段，但当前样本构造没有消费它；这是尚未接线的扩展位。
 4. **GRPO 大量 step loss/advantage 为零** → 组内 reward 全相同，常见于 exact reward 或弱 SFT。可实验 `add_gt`、增大组或用 hierarchical reward；不要把全零组误判成代码崩溃。
 5. **hierarchical reward 被少数样本主导** → 1/10/100 是刻意的指数尺度。若要稳定尺度，应改奖励并重新验证，不能只调学习率掩盖。
-6. **SFT beam 生成不存在的 SID tuple** → 位置约束不是 catalog trie。若需要 strict valid-only eval，应把 `PrefixTrie` 接到 evaluator，并添加 item-level 回归测试。
+6. **SFT beam 生成不存在的 SID tuple** → 检查调用方是否漏传 `prefix_trie`；当前 SFT trainer 已接入 catalog Trie，仅位置 mask 的外部调用仍可能生成目录外 tuple。
 7. **训练指标很好、诚实 item 指标下降** → 检查 collision 与热门度解析，不要用 SID tuple metric 替代 item metric。
 8. **full-parameter GRPO OOM** → policy 与 frozen reference 同驻显存。降低 batch/length/group size，或评估 LoRA；group size 还会成倍增加 rollout 成本。
 9. **CLM 没有 `checkpoint_best`** → 最优值初始为 0；若所有验证 Recall 都为 0，严格 `>` 比较不会保存 best。周期和 final checkpoint 仍在。

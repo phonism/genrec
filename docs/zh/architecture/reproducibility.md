@@ -291,6 +291,16 @@ scripts/run-locked-179.sh --gpus none \
 
 ## 结果验收
 
+2026-10-22 已验收的快照包含 162 个主矩阵 cell 与 6 个独立补充 cell。
+逐 seed 指标、配方、源码基线、原始 artifact 路径和 SHA256 已提交到
+[`results/matrix_20261022.csv`](https://github.com/phonism/genrec/blob/main/results/matrix_20261022.csv)，
+汇总与源码补丁校验和见
+[`matrix_20261022.summary.json`](https://github.com/phonism/genrec/blob/main/results/matrix_20261022.summary.json)。
+162 格检查了完整的 9 管线 × 3 数据集 × 2 协议 × 3 seed 覆盖；4 码 OneRec
+与 HSTU sampled-softmax 消融各自单列，不能直接对整个历史 `out/` 聚合。
+结构校验通过不保证 prompt 确定性：OneRec/LCRec 当前仍随机选择评测模板，
+GRPO 16/18 格选回 SFT，因此微小的 SFT→GRPO 分差不能视为隔离 RL 收益。
+
 先严格验证：
 
 ```bash

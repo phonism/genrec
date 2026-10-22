@@ -8,72 +8,71 @@ A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
-The actively reproduced three-seed matrix, including leakage-resistant temporal
-splits and exact source provenance, is tracked in [BENCHMARKS.md](BENCHMARKS.md).
+The Amazon-2014 item-level matrix is complete: **162 cells, 54 three-seed rows**
+across Beauty/Sports/Toys and leave-one-out/global-temporal protocols.
+[BENCHMARKS.md](BENCHMARKS.md) reports mean ± population standard deviation,
+recipe boundaries and provenance; [per-seed CSV](results/matrix_20261022.csv)
+contains exact source artifact paths and checksums.
 
-### Evaluation Protocol
-
-Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/abs/2311.09049), and [OpenOneRec](https://arxiv.org/abs/2512.24762):
-
-- **Dataset**: Amazon 2014 with 5-core filtering (users and items with < 5 interactions removed)
-- **Split**: Leave-one-out by default. All Amazon benchmark datasets also support leakage-resistant `global_temporal` splitting (80% train / 10% validation / 10% test by global interaction time) via their `evaluation_protocol` gin binding.
-- **Candidate universe**: Full catalog with no sampled negatives. Discriminative models score the catalog directly; autoregressive models approximate top-K with constrained beam search and then evaluate resolved item IDs.
-- **Max sequence length**: 50 for all models
-- **Metrics**: Recall@K and NDCG@K (K=5, 10)
-- **HSTU**: The verified matrix currently reports full-vocabulary CE. The
-  sampled-softmax recipe uses 128 negatives, temperature 0.05 and L2 scoring;
-  after correcting Meta's `local` sampler to draw negatives independently per
-  positive, the clean Beauty three-seed rerun reaches item-level R@10
-  `0.0754 ± 0.0021`. Runs made with the old shared/in-batch interpretation of
-  `local` remain historical and are excluded.
-- **Honest generative evaluation**: TIGER, LCRec, OneRec-SFT/GRPO/CLM, and COBRA now use item-level Recall/NDCG as the headline; early stopping, checkpoint selection, and `results.json` use it wherever applicable. A generated SID is resolved to one most-popular item using training interactions only, and ranked items are deduplicated. The legacy pre-resolution SID metric is collision-prone and logged only as a diagnostic; because item deduplication can pull deeper beams into the final top-K, its value is not numerically comparable to the item metric. Legacy TIGER/LCRec/OneRec SID-level numbers are withheld until checkpoints are re-evaluated with the new protocol. See `docs/zh/reproduction-roadmap.md` (T0-3).
-- **NoteLLM evaluation**: the trainer combines symmetric GCL with optional CSFT,
-  masks repeated catalog items as false negatives, and uses exact full-catalog
-  item-level Recall/NDCG. The old `diagnostic_in_batch_recall@K` callback is not
-  a benchmark result.
-- **Temporal-split boundary**: `global_temporal` prevents future interactions from entering train histories, but item metadata/SID construction and 5-core filtering remain transductive over the catalog. It is leakage-resistant, not a fully inductive cold-item protocol.
-- **Note (COBRA)**: implemented but **not yet reproduced**. After fixing right-padding generation, aligning the RQ-VAE encoder, widening beam search, switching dense negatives to all-batch, and selecting epoch/fusion weights on validation only, the frozen three-seed Beauty item-level test reaches R@10=0.0460 ± 0.0013 and N@10=0.0239 ± 0.0009. Validation R@10 is 0.0644 ± 0.0008, so the remaining issue is a validation-to-test generalization gap rather than SID-tuple inflation or one lucky seed. See `docs/zh/cobra-paper-alignment-20260903.md`.
+- All headline metrics are item-level; SID models use training-only resolution
+  and item deduplication. Catalog/metadata filtering remains transductive.
+- Tables below are leave-one-out means over seeds 42/43/44. Sequence history
+  is 50 except LCRec's paper recipe (20); these are not length-matched runs.
+  Temporal rows and standard deviations are in BENCHMARKS.md.
+- OneRec uses 3×256 codes. Its 4-code Beauty ablation is reported separately.
+- OneRec + GRPO is validation-selected, including the SFT baseline: **16/18
+  cells fall back to SFT**. Random evaluation prompt templates also cause
+  baseline drift, so small table differences are not isolated RL gains.
+- NoteLLM is a GCL+CSFT I2I adaptation that excludes the query item. Completed
+  repository runs do not imply reproduction of every original paper setting.
+- Archived TIGER/COBRA paper-alignment audits, old SID metrics and legacy runs
+  are kept separate in BENCHMARKS.md.
 
 ### Amazon 2014 Beauty
 
-| Methods | R@5 | R@10 | N@5 | N@10 |
-|---------|-----|------|-----|------|
-| SASRec (CE, 3 seeds) | 0.0542 | 0.0858 | - | 0.0420 |
-| SASRec (BCE, legacy) | 0.0258 | 0.0503 | 0.0137 | 0.0216 |
-| HSTU (CE, 3 seeds) | 0.0461 | 0.0727 | - | 0.0392 |
-| HSTU (SS, corrected local sampler, 3 seeds) | 0.0465 | 0.0754 | 0.0260 | 0.0353 |
-| TIGER (paper-aligned, 3 seeds) | 0.0413 | 0.0655 | 0.0276 | 0.0354 |
-| LCRec † | - | - | - | - |
-| RPG (sentence-t5-xl, 3 seeds) | 0.0506 | 0.0732 | 0.0354 | 0.0427 |
-| RPG (paper, text-emb-3-large) | 0.0569 | 0.0809 | - | 0.0464 |
-| COBRA (paper-aligned, 3 seeds; not reproduced) | 0.0285 | 0.0460 | 0.0183 | 0.0239 |
-| COBRA (paper) | 0.0537 | 0.0725 | 0.0395 | 0.0456 |
-
-† LCRec still requires an honest item-level re-evaluation. Legacy SID-level numbers are not comparable and are intentionally omitted.
+| Method | R@5 | R@10 | N@5 | N@10 |
+| --- | --- | --- | --- | --- |
+| SASRec (CE) | 0.0542 | 0.0858 | 0.0317 | 0.0420 |
+| HSTU (CE) | 0.0461 | 0.0727 | 0.0306 | 0.0392 |
+| TIGER (matrix recipe) | 0.0361 | 0.0568 | 0.0234 | 0.0301 |
+| LCRec (4B, seq20, gb128) | 0.0509 | 0.0729 | 0.0360 | 0.0431 |
+| COBRA (optimized light) | 0.0290 | 0.0454 | 0.0187 | 0.0240 |
+| RPG (direct) | 0.0506 | 0.0732 | 0.0354 | 0.0427 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0502 | 0.0693 | 0.0362 | 0.0423 |
+| OneRec SFT (3 SID) | 0.0433 | 0.0658 | 0.0291 | 0.0364 |
+| OneRec + GRPO (selected) | 0.0437 | 0.0661 | 0.0293 | 0.0365 |
 
 ### Amazon 2014 Sports
 
-| Methods | R@5 | R@10 | N@5 | N@10 |
-|---------|-----|------|-----|------|
-| SASRec (CE, 3 seeds) | 0.0313 | 0.0497 | - | 0.0241 |
-| SASRec (BCE, legacy) | 0.0156 | 0.0291 | 0.0085 | 0.0128 |
-| HSTU (CE, 3 seeds) | 0.0234 | 0.0384 | - | 0.0200 |
-| HSTU (SS, corrected local sampler) | pending rerun | pending rerun | pending rerun | pending rerun |
-| TIGER (3 seeds) | 0.0207 | 0.0342 | - | 0.0174 |
-| LCRec † | - | - | - | - |
+| Method | R@5 | R@10 | N@5 | N@10 |
+| --- | --- | --- | --- | --- |
+| SASRec (CE) | 0.0313 | 0.0497 | 0.0182 | 0.0241 |
+| HSTU (CE) | 0.0234 | 0.0384 | 0.0152 | 0.0200 |
+| TIGER (matrix recipe) | 0.0207 | 0.0342 | 0.0131 | 0.0174 |
+| LCRec (4B, seq20, gb128) | 0.0260 | 0.0399 | 0.0178 | 0.0223 |
+| COBRA (optimized light) | 0.0179 | 0.0290 | 0.0117 | 0.0153 |
+| RPG (direct) | 0.0290 | 0.0426 | 0.0200 | 0.0244 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0237 | 0.0351 | 0.0161 | 0.0197 |
+| OneRec SFT (3 SID) | 0.0222 | 0.0341 | 0.0142 | 0.0180 |
+| OneRec + GRPO (selected) | 0.0220 | 0.0341 | 0.0141 | 0.0180 |
 
 ### Amazon 2014 Toys
 
-| Methods | R@5 | R@10 | N@5 | N@10 |
-|---------|-----|------|-----|------|
-| SASRec (CE, 3 seeds) | 0.0610 | 0.0917 | - | 0.0441 |
-| SASRec (BCE, legacy) | 0.0353 | 0.0594 | 0.0186 | 0.0264 |
-| HSTU (CE, 3 seeds) | 0.0438 | 0.0686 | - | 0.0366 |
-| HSTU (SS, corrected local sampler) | pending rerun | pending rerun | pending rerun | pending rerun |
-| TIGER (3 seeds) | 0.0288 | 0.0477 | - | 0.0242 |
-| LCRec † | - | - | - | - |
+| Method | R@5 | R@10 | N@5 | N@10 |
+| --- | --- | --- | --- | --- |
+| SASRec (CE) | 0.0610 | 0.0917 | 0.0342 | 0.0441 |
+| HSTU (CE) | 0.0438 | 0.0686 | 0.0287 | 0.0366 |
+| TIGER (matrix recipe) | 0.0288 | 0.0477 | 0.0181 | 0.0242 |
+| LCRec (4B, seq20, gb128) | 0.0504 | 0.0705 | 0.0356 | 0.0420 |
+| COBRA (optimized light) | 0.0252 | 0.0412 | 0.0151 | 0.0202 |
+| RPG (direct) | 0.0569 | 0.0820 | 0.0391 | 0.0472 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0674 | 0.0917 | 0.0460 | 0.0539 |
+| OneRec SFT (3 SID) | 0.0386 | 0.0591 | 0.0256 | 0.0321 |
+| OneRec + GRPO (selected) | 0.0393 | 0.0604 | 0.0255 | 0.0323 |
 
-### Amazon 2014 Home (legacy snapshot; pending current matrix)
+Supplemental Beauty LOO: HSTU corrected Meta-local sampled softmax R@10 0.0754 ± 0.0021; OneRec 4-code suffix ablation R@10 0.0727 ± 0.0013.
+
+### Amazon 2014 Home (legacy snapshot; outside this matrix)
 
 | Methods | R@5 | R@10 | N@5 | N@10 |
 |---------|-----|------|-----|------|
@@ -83,6 +82,8 @@ Following [TIGER](https://arxiv.org/abs/2305.05065), [LC-Rec](https://arxiv.org/
 | HSTU (SS) | 0.0123 | 0.0193 | 0.0079 | 0.0102 |
 | TIGER † | - | - | - | - |
 | LCRec † | - | - | - | - |
+
+† Home TIGER/LCRec remain outside the verified snapshot; no legacy SID headline is used.
 
 ## Features
 

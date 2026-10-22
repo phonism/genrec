@@ -25,15 +25,21 @@
 | [HSTU](../models/hstu.md) | 判别式序列基线 | 完整链路 | 单 item ID / 全目录 logits | item-level full catalog | 已复现基线；CE 与 sampled-softmax 分开报告 |
 | [RQ-VAE](../models/rqvae.md) | SID tokenizer | 组件 | 多层残差量化码 | 重构、码本健康、碰撞率 | 下游依赖，不单列推荐 Recall |
 | [RQ-KMeans](../models/rqkmeans.md) | SID tokenizer | 组件 | 多层 residual K-Means 码 | 码本健康、碰撞率 | OneRec 前置阶段 |
-| [TIGER](../models/tiger.md) | 自回归生成式检索 | 完整链路 | RQ-VAE SID / T5 普通 beam | item-level SID→item 解析与去重 | 历史 checkpoint 待重评；当前无硬 Trie |
-| [LCRec](../models/lcrec.md) | LLM + 协同语义 | 完整链路 | legacy 5 层；论文配方 4 层 RQ-VAE + USM / causal LM | item-level SID→item 解析与去重 | 历史 checkpoint 待重评；论文配方待干净重跑 |
-| [OneRec](../models/onerec.md) | LLM 生成式推荐 | 完整链路：RQ-KMeans、SFT、CLM、GRPO | 3 层 SID；SFT 位置约束，GRPO rollout 用 catalog Trie | item-level SID→item 解析与去重 | 历史 headline 待重评；RL 结论需保留同口径对照 |
-| [COBRA](../models/cobra.md) | 稀疏—稠密级联生成 | 完整链路 | RQ-VAE 码 + dense vector | item-level BeamFusion | 已实现、未复现论文结果 |
-| [RPG](../models/rpg.md) | 并行生成 | 完整链路 | OPQ tokens / 并行 heads 后直接 item 打分 | item-level direct full catalog | 有 Beauty 结果；graph metric 仅作 extra，不能覆盖 direct headline |
-| [NoteLLM](../models/notellm.md) | LLM 可检索表示 | 实验性完整链路 | `[EMB]` 前一个 token 的向量 / dense retrieval | exact full catalog I2I retrieval | 当前 trainer 为对称 GCL+CSFT，并屏蔽同物品伪负例；hard-negative 闭环仍未对齐 |
+| [TIGER](../models/tiger.md) | 自回归生成式检索 | 完整链路 | RQ-VAE SID / T5 beam | item-level SID→item 解析与去重 | 原矩阵配方 18/18 完成；Beauty 论文对齐行单独保留 |
+| [LCRec](../models/lcrec.md) | LLM + 协同语义 | 完整链路 | legacy 5 层；矩阵为 4 层 RQ-VAE + USM / Qwen3-4B | item-level SID→item 解析与去重 | Qwen3-4B、有效 batch 128 的 Amazon 适配 18/18 完成；不等于原论文设置 |
+| [OneRec](../models/onerec.md) | LLM 生成式推荐 | 完整链路：RQ-KMeans、SFT、CLM、GRPO | 主矩阵 3 层 SID；SFT/GRPO 评测与 RL rollout 使用 catalog Trie | item-level SID→item 解析与去重 | SFT、GRPO 各 18/18 完成；16 格 GRPO 选回 SFT；4 码仅 Beauty 消融 |
+| [COBRA](../models/cobra.md) | 稀疏—稠密级联生成 | 完整链路 | RQ-VAE 码 + dense vector | item-level BeamFusion | optimized light 18/18 完成；尚不能宣称复现论文结果 |
+| [RPG](../models/rpg.md) | 并行生成 | 完整链路 | OPQ tokens / 并行 heads 后直接 item 打分 | item-level direct full catalog | 18/18 完成；graph metric 仅作 extra，不能覆盖 direct headline |
+| [NoteLLM](../models/notellm.md) | LLM 可检索表示 | 实验性完整链路 | `[EMB]` 前一个 token 的向量 / dense retrieval | exact full catalog I2I retrieval | GCL+CSFT、同物品伪负例屏蔽的 Amazon I2I 适配 18/18 完成；非完整论文复现 |
 | [GRAM](../models/gram.md) | 多粒度生成式检索 | 实验性完整链路 | FiD 风格多 passage / Trie lexical-ID generation | lexical-ID exact match；唯一 item 语义尚未验证 | 缺上游 lexical-ID 预处理与唯一性检查，复现证据待补 |
 
 上表按“推荐器”计有 9 个（SASRec、HSTU、TIGER、LCRec、OneRec、COBRA、RPG、NoteLLM、GRAM）；RQ-VAE 与 RQ-KMeans 是 tokenizer / quantizer 组件。代码目录因此会看到 11 个模型文件，但不能把它们都当成同一层级的 recommender 排名。
+
+2026-10-22 验收的主矩阵是 **9 条训练/评测管线 × 3 数据集 × 2 协议 × 3 seed = 162 格**：
+它把 OneRec SFT 和 GRPO 分开计数，未包含 GRAM 或 OneRec CLM。所有主行均为
+item-level；代码版本与配方并非全表一致。OneRec/LCRec 评测 prompt 模板尚未冻结，
+特别是 GRPO 回退 SFT 后的微小测试分差不能解释为 RL 收益。完整边界见
+[BENCHMARKS.md](https://github.com/phonism/genrec/blob/main/BENCHMARKS.md)。
 
 ## 入口矩阵
 

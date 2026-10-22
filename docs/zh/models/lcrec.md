@@ -11,11 +11,19 @@
 | 解码 | 逐位置 codebook mask + KV-cache beam search |
 | 主评测 | training-only SID→item 解析、item 去重后的 item-level Recall/NDCG |
 | checkpoint | Hugging Face model/tokenizer 目录；不含 optimizer、scheduler 或 epoch |
-| 复现状态 | 完整代码链路；历史 SID-tuple 结果尚不能作为当前 item-level headline |
+| 复现状态 | Qwen3-4B + 四层 USM 的 Amazon 2014 适配已完成 18 格 item-level 矩阵；历史 SID-tuple 不作 headline |
 
 [`LCRec`](https://github.com/phonism/genrec/blob/main/genrec/models/lcrec.py) 本身并没有把模型写死为某个 Qwen 类：它通过 `AutoModelForCausalLM` / `AutoTokenizer` 加载任意兼容目录。运行时应以 Gin 为准。当前 [`config/lcrec/amazon/lcrec.gin`](https://github.com/phonism/genrec/blob/main/config/lcrec/amazon/lcrec.gin) 和 Amazon 2023 配置都绑定 `MODEL_HUB_QWEN3_1_7B`；Python 函数签名里的 `Qwen/Qwen2.5-1.5B` 只是未使用 Gin 时的旧回退值，模型文件 docstring 中的 Qwen2 描述也不是当前实验版本。
 
 ## 原始工作
+
+2026-10-22 矩阵验收采用 `lcrec_paper_recipe.gin`：Qwen3-4B、六任务、四层 USM、历史长度 20，
+micro-batch 4 × accumulation 32 = 有效 batch 128，四个 epoch，beam 20，
+eval batch 4。Beauty/Sports/Toys LOO 三种子 R@10 分别为 0.0729 ± 0.0004、
+0.0399 ± 0.0005、0.0705 ± 0.0041；时间切分单列在
+[BENCHMARKS.md](https://github.com/phonism/genrec/blob/main/BENCHMARKS.md)。
+这与下文 legacy 默认配置不同，也不是原论文数据与 LLaMA-7B 的完整复现。
+评测时 prompt 模板仍会随机选择，尚未实现跨评测的固定模板对照。
 
 - 论文：[Adapting Large Language Models by Integrating Collaborative Semantics for Recommendation](https://arxiv.org/abs/2311.09049)，ICDE 2024。
 - 仓库内保留的官方参考实现：[`reference/LC-Rec/`](https://github.com/phonism/genrec/blob/main/reference/LC-Rec/README.md)。

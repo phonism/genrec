@@ -98,6 +98,6 @@ Output contains `checkpoint_epoch_<zero-based epoch>/`, `checkpoint_best/`, `che
 
 ## Reproduction boundary
 
-The paper-alignment recipe matches four codebooks, USM, six tasks, history 20, four epochs, effective batch 16, learning rate `5e-5`, and beam 20. It still substitutes Sentence-T5-XL and Qwen3-4B for the release's LLaMA-derived embeddings/LLaMA-7B and runs Amazon-2014 Beauty rather than the paper datasets. Historical SID-tuple results are not current item-level headlines; publishable values must come from verified artifacts in `BENCHMARKS.md`.
+The October matrix recipe uses four codebooks, USM, six tasks, history 20, four epochs, micro-batch 4 × accumulation 32 (effective batch 128), learning rate `5e-5`, and beam 20. It substitutes Sentence-T5-XL and Qwen3-4B and uses Amazon-2014 Beauty/Sports/Toys, so it is an adaptation rather than the original paper setup. All 18 item-level cells are complete as of 2026-10-22: LOO R@10 is 0.0729 ± 0.0004 / 0.0399 ± 0.0005 / 0.0705 ± 0.0041. Temporal rows and provenance are in [BENCHMARKS.md](https://github.com/phonism/genrec/blob/main/BENCHMARKS.md). Evaluation prompt templates are still sampled rather than frozen across passes. Historical SID-tuple results remain excluded.
 
 See [RQ-VAE](rqvae.md), [trainer API](../api/trainers.md#semantic-id-recommenders), and [evaluation architecture](../architecture/evaluation-system.md).

@@ -1,78 +1,179 @@
 # GenRec Reproducibility Matrix
 
-Last updated: 2026-09-03. This file reports only results produced by the current
-honest, item-level evaluation path. Legacy SID-tuple metrics are excluded.
+Last updated: 2026-10-22. The completed snapshot contains **162 main cells**:
+9 training/evaluation pipelines × Beauty/Sports/Toys × 2 protocols × 3 seeds.
+The recovery queue finished **84/84 jobs** on 2026-10-21; it includes tokenizer
+and smoke jobs and is not the denominator of the full matrix. Workers and the
+remote monitor exited after completion.
 
-## Protocol
+Per-seed metrics, recipe labels, original artifact paths and SHA256 checksums:
+[main CSV](results/matrix_20261022.csv),
+[supplemental CSV](results/ablations_20261022.csv), and
+[machine-readable summary](results/matrix_20261022.summary.json).
 
-- Dataset: Amazon Reviews 2014, 5-core, full-catalog evaluation.
-- Splits: Beauty, Sports and Toys; maximum sequence length 50.
-- Seeds: 42, 43 and 44. Values are mean ± population standard deviation.
-- `leave_one_out`: the final interaction is test and the penultimate interaction
-  is validation for every retained user.
-- `global_temporal`: interactions are split at global 80%/90% time boundaries.
-  It prevents future interactions from entering train histories, but catalog
-  filtering and item metadata remain transductive.
-- Headline evaluation level: item IDs. LOO and temporal results are kept in
-  separate rows and must not be averaged together.
+## Protocol and interpretation
 
-## P1: Discriminative protocol baselines
+- Amazon Reviews 2014, 5-core; seeds 42/43/44. Sequence history is 50 except
+  **LCRec's paper recipe, which uses 20**. This is not a history-length-matched
+  matrix; per-run lengths are recorded in the CSV. Cells are mean ± **population**
+  standard deviation. Each main row has all three seeds, with no duplicate `(model, split, protocol, seed)`.
+- `leave_one_out`: final interaction is test, penultimate is validation.
+  `global_temporal`: global 80%/90% time boundaries; metadata, catalog filtering
+  and some SID construction remain transductive. Keep the protocols separate.
+- All headline metrics use item IDs and the full catalog, without sampled
+  negatives. SID models resolve predictions with training-only popularity and
+  deduplicate items; SID diagnostics and COBRA sparse-only diagnostics are not
+  headline metrics. Beam search approximates top-K for autoregressive models.
+- NoteLLM is the GCL+CSFT Amazon I2I adaptation: the query is the last history
+  item and its own catalog ID is excluded. Its candidate/query semantics differ
+  from sequence models. These are repository adaptations, not a claim that all
+  original paper results or settings have been reproduced.
+- GRAM, OneRec CLM, Home, and cross-dataset HSTU sampled-softmax are outside this
+  matrix. RQ-VAE/RQ-KMeans are tokenizer stages, not recommender rows.
 
-All 36 planned cells completed on host 179. Every row has three seeds and every
-`results.json` records `evaluation_level=item`, its protocol, and source bundle
-SHA256 `79876966435a89861d91d8c8e36ece31facec00a1c16a111d2da2664870f9abf`.
-The additional HSTU sampled-softmax row uses corrected Meta-local negatives and
-source bundle SHA256
-`2b3f2bdf21847671aa1f9f6215aadd04cfe36d0589e6d74af43fed77e2181c51`.
+## Leave-one-out: 27 complete rows
+
+| Model | Dataset | n | R@1 | R@5 | R@10 | N@10 |
+| --- | --- | --- | --- | --- | --- | --- |
+| SASRec (CE) | Beauty | 3 | 0.0081 ± 0.0006 | 0.0542 ± 0.0002 | 0.0858 ± 0.0002 | 0.0420 ± 0.0002 |
+| HSTU (CE) | Beauty | 3 | 0.0150 ± 0.0006 | 0.0461 ± 0.0008 | 0.0727 ± 0.0008 | 0.0392 ± 0.0004 |
+| TIGER (matrix recipe) | Beauty | 3 | — | 0.0361 ± 0.0010 | 0.0568 ± 0.0010 | 0.0301 ± 0.0009 |
+| LCRec (4B, seq20, gb128) | Beauty | 3 | 0.0205 ± 0.0001 | 0.0509 ± 0.0011 | 0.0729 ± 0.0004 | 0.0431 ± 0.0001 |
+| COBRA (optimized light) | Beauty | 3 | 0.0084 ± 0.0005 | 0.0290 ± 0.0012 | 0.0454 ± 0.0006 | 0.0240 ± 0.0005 |
+| RPG (direct) | Beauty | 3 | 0.0197 ± 0.0015 | 0.0506 ± 0.0006 | 0.0732 ± 0.0007 | 0.0427 ± 0.0006 |
+| NoteLLM (GCL+CSFT, I2I) | Beauty | 3 | 0.0213 ± 0.0006 | 0.0502 ± 0.0003 | 0.0693 ± 0.0004 | 0.0423 ± 0.0003 |
+| OneRec SFT (3 SID) | Beauty | 3 | 0.0147 ± 0.0009 | 0.0433 ± 0.0016 | 0.0658 ± 0.0016 | 0.0364 ± 0.0012 |
+| OneRec + GRPO (selected) | Beauty | 3 | 0.0145 ± 0.0007 | 0.0437 ± 0.0018 | 0.0661 ± 0.0024 | 0.0365 ± 0.0014 |
+| SASRec (CE) | Sports | 3 | 0.0046 ± 0.0004 | 0.0313 ± 0.0004 | 0.0497 ± 0.0005 | 0.0241 ± 0.0003 |
+| HSTU (CE) | Sports | 3 | 0.0070 ± 0.0006 | 0.0234 ± 0.0009 | 0.0384 ± 0.0011 | 0.0200 ± 0.0009 |
+| TIGER (matrix recipe) | Sports | 3 | — | 0.0207 ± 0.0012 | 0.0342 ± 0.0017 | 0.0174 ± 0.0010 |
+| LCRec (4B, seq20, gb128) | Sports | 3 | 0.0094 ± 0.0003 | 0.0260 ± 0.0007 | 0.0399 ± 0.0005 | 0.0223 ± 0.0004 |
+| COBRA (optimized light) | Sports | 3 | 0.0054 ± 0.0001 | 0.0179 ± 0.0006 | 0.0290 ± 0.0007 | 0.0153 ± 0.0004 |
+| RPG (direct) | Sports | 3 | 0.0108 ± 0.0004 | 0.0290 ± 0.0005 | 0.0426 ± 0.0007 | 0.0244 ± 0.0005 |
+| NoteLLM (GCL+CSFT, I2I) | Sports | 3 | 0.0082 ± 0.0002 | 0.0237 ± 0.0003 | 0.0351 ± 0.0003 | 0.0197 ± 0.0001 |
+| OneRec SFT (3 SID) | Sports | 3 | 0.0061 ± 0.0002 | 0.0222 ± 0.0002 | 0.0341 ± 0.0007 | 0.0180 ± 0.0002 |
+| OneRec + GRPO (selected) | Sports | 3 | 0.0062 ± 0.0002 | 0.0220 ± 0.0002 | 0.0341 ± 0.0005 | 0.0180 ± 0.0001 |
+| SASRec (CE) | Toys | 3 | 0.0058 ± 0.0005 | 0.0610 ± 0.0005 | 0.0917 ± 0.0007 | 0.0441 ± 0.0001 |
+| HSTU (CE) | Toys | 3 | 0.0134 ± 0.0006 | 0.0438 ± 0.0009 | 0.0686 ± 0.0007 | 0.0366 ± 0.0008 |
+| TIGER (matrix recipe) | Toys | 3 | — | 0.0288 ± 0.0009 | 0.0477 ± 0.0004 | 0.0242 ± 0.0003 |
+| LCRec (4B, seq20, gb128) | Toys | 3 | 0.0201 ± 0.0003 | 0.0504 ± 0.0024 | 0.0705 ± 0.0041 | 0.0420 ± 0.0019 |
+| COBRA (optimized light) | Toys | 3 | 0.0052 ± 0.0000 | 0.0252 ± 0.0006 | 0.0412 ± 0.0007 | 0.0202 ± 0.0005 |
+| RPG (direct) | Toys | 3 | 0.0206 ± 0.0003 | 0.0569 ± 0.0005 | 0.0820 ± 0.0003 | 0.0472 ± 0.0002 |
+| NoteLLM (GCL+CSFT, I2I) | Toys | 3 | 0.0233 ± 0.0006 | 0.0674 ± 0.0003 | 0.0917 ± 0.0005 | 0.0539 ± 0.0004 |
+| OneRec SFT (3 SID) | Toys | 3 | 0.0123 ± 0.0004 | 0.0386 ± 0.0008 | 0.0591 ± 0.0004 | 0.0321 ± 0.0006 |
+| OneRec + GRPO (selected) | Toys | 3 | 0.0116 ± 0.0003 | 0.0393 ± 0.0004 | 0.0604 ± 0.0013 | 0.0323 ± 0.0005 |
+
+## Global temporal: 27 complete rows
+
+| Model | Dataset | n | R@1 | R@5 | R@10 | N@10 |
+| --- | --- | --- | --- | --- | --- | --- |
+| SASRec (CE) | Beauty | 3 | 0.0005 ± 0.0003 | 0.0092 ± 0.0008 | 0.0166 ± 0.0010 | 0.0072 ± 0.0004 |
+| HSTU (CE) | Beauty | 3 | 0.0026 ± 0.0006 | 0.0090 ± 0.0001 | 0.0163 ± 0.0006 | 0.0080 ± 0.0003 |
+| TIGER (matrix recipe) | Beauty | 3 | — | 0.0121 ± 0.0001 | 0.0206 ± 0.0013 | 0.0101 ± 0.0006 |
+| LCRec (4B, seq20, gb128) | Beauty | 3 | 0.0036 ± 0.0006 | 0.0130 ± 0.0022 | 0.0208 ± 0.0025 | 0.0108 ± 0.0016 |
+| COBRA (optimized light) | Beauty | 3 | 0.0028 ± 0.0007 | 0.0096 ± 0.0007 | 0.0175 ± 0.0007 | 0.0088 ± 0.0005 |
+| RPG (direct) | Beauty | 3 | 0.0030 ± 0.0006 | 0.0105 ± 0.0003 | 0.0173 ± 0.0004 | 0.0088 ± 0.0003 |
+| NoteLLM (GCL+CSFT, I2I) | Beauty | 3 | 0.0060 ± 0.0005 | 0.0180 ± 0.0008 | 0.0266 ± 0.0013 | 0.0148 ± 0.0006 |
+| OneRec SFT (3 SID) | Beauty | 3 | 0.0042 ± 0.0004 | 0.0156 ± 0.0005 | 0.0239 ± 0.0014 | 0.0125 ± 0.0005 |
+| OneRec + GRPO (selected) | Beauty | 3 | 0.0045 ± 0.0001 | 0.0161 ± 0.0009 | 0.0245 ± 0.0018 | 0.0129 ± 0.0005 |
+| SASRec (CE) | Sports | 3 | 0.0013 ± 0.0009 | 0.0106 ± 0.0009 | 0.0189 ± 0.0008 | 0.0087 ± 0.0007 |
+| HSTU (CE) | Sports | 3 | 0.0033 ± 0.0006 | 0.0111 ± 0.0005 | 0.0192 ± 0.0007 | 0.0098 ± 0.0005 |
+| TIGER (matrix recipe) | Sports | 3 | — | 0.0119 ± 0.0008 | 0.0205 ± 0.0021 | 0.0106 ± 0.0007 |
+| LCRec (4B, seq20, gb128) | Sports | 3 | 0.0029 ± 0.0004 | 0.0125 ± 0.0009 | 0.0207 ± 0.0007 | 0.0105 ± 0.0003 |
+| COBRA (optimized light) | Sports | 3 | 0.0038 ± 0.0006 | 0.0133 ± 0.0009 | 0.0221 ± 0.0006 | 0.0113 ± 0.0003 |
+| RPG (direct) | Sports | 3 | 0.0035 ± 0.0005 | 0.0123 ± 0.0004 | 0.0182 ± 0.0002 | 0.0098 ± 0.0001 |
+| NoteLLM (GCL+CSFT, I2I) | Sports | 3 | 0.0032 ± 0.0001 | 0.0109 ± 0.0014 | 0.0192 ± 0.0005 | 0.0096 ± 0.0001 |
+| OneRec SFT (3 SID) | Sports | 3 | 0.0028 ± 0.0001 | 0.0136 ± 0.0011 | 0.0220 ± 0.0007 | 0.0109 ± 0.0004 |
+| OneRec + GRPO (selected) | Sports | 3 | 0.0029 ± 0.0003 | 0.0133 ± 0.0007 | 0.0223 ± 0.0004 | 0.0110 ± 0.0002 |
+| SASRec (CE) | Toys | 3 | 0.0008 ± 0.0003 | 0.0096 ± 0.0013 | 0.0179 ± 0.0005 | 0.0078 ± 0.0003 |
+| HSTU (CE) | Toys | 3 | 0.0021 ± 0.0003 | 0.0098 ± 0.0004 | 0.0165 ± 0.0005 | 0.0079 ± 0.0002 |
+| TIGER (matrix recipe) | Toys | 3 | — | 0.0115 ± 0.0004 | 0.0184 ± 0.0020 | 0.0096 ± 0.0004 |
+| LCRec (4B, seq20, gb128) | Toys | 3 | 0.0037 ± 0.0009 | 0.0125 ± 0.0014 | 0.0209 ± 0.0011 | 0.0108 ± 0.0009 |
+| COBRA (optimized light) | Toys | 3 | 0.0025 ± 0.0006 | 0.0113 ± 0.0006 | 0.0190 ± 0.0007 | 0.0093 ± 0.0003 |
+| RPG (direct) | Toys | 3 | 0.0027 ± 0.0004 | 0.0134 ± 0.0003 | 0.0226 ± 0.0004 | 0.0110 ± 0.0000 |
+| NoteLLM (GCL+CSFT, I2I) | Toys | 3 | 0.0042 ± 0.0003 | 0.0175 ± 0.0005 | 0.0263 ± 0.0009 | 0.0137 ± 0.0003 |
+| OneRec SFT (3 SID) | Toys | 3 | 0.0036 ± 0.0003 | 0.0131 ± 0.0008 | 0.0208 ± 0.0003 | 0.0107 ± 0.0004 |
+| OneRec + GRPO (selected) | Toys | 3 | 0.0034 ± 0.0002 | 0.0127 ± 0.0008 | 0.0208 ± 0.0005 | 0.0107 ± 0.0004 |
+
+## OneRec SFT → validation-selected GRPO pipeline
+
+The main OneRec recipe remains **3×256 RQ-KMeans codes**. The 4-code suffix
+variant is a separate Beauty LOO ablation. GRPO uses the matching SFT seed and
+protocol, group size 8, hierarchical reward, and includes the starting SFT
+weights in validation selection.
+
+**16 of 18 GRPO cells selected the original SFT policy (`best_epoch=-1`).**
+Only Toys LOO seeds 42/43 selected a trained GRPO epoch (0/1). Consequently the
+table measures the validation-selected pipeline; it does not establish a
+consistent isolated benefit from RL.
+
+OneRec/LCRec evaluation currently samples prompt templates in `__getitem__`.
+Evaluation prompts are not frozen across passes, so even a fallback to the
+same SFT weights can differ from the standalone SFT test. Do not attribute
+those differences to GRPO. Fixed prompts, matched baseline evaluation and
+validation re-selection are required before claiming a small RL effect.
+
+| Dataset | Protocol | SFT R@10 | Selected pipeline R@10 | RL epochs selected |
+| --- | --- | --- | --- | --- |
+| Beauty | leave_one_out | 0.0658 ± 0.0016 | 0.0661 ± 0.0024 | 0/3 |
+| Beauty | global_temporal | 0.0239 ± 0.0014 | 0.0245 ± 0.0018 | 0/3 |
+| Sports | leave_one_out | 0.0341 ± 0.0007 | 0.0341 ± 0.0005 | 0/3 |
+| Sports | global_temporal | 0.0220 ± 0.0007 | 0.0223 ± 0.0004 | 0/3 |
+| Toys | leave_one_out | 0.0591 ± 0.0004 | 0.0604 ± 0.0013 | 2/3 |
+| Toys | global_temporal | 0.0208 ± 0.0003 | 0.0208 ± 0.0005 | 0/3 |
+
+## Supplemental three-seed rows
 
 | Model | Dataset | Protocol | n | R@1 | R@5 | R@10 | N@10 |
-| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| HSTU | Beauty | global temporal | 3 | 0.0026 ± 0.0006 | 0.0090 ± 0.0001 | 0.0163 ± 0.0006 | 0.0080 ± 0.0003 |
-| HSTU | Beauty | leave one out | 3 | 0.0150 ± 0.0006 | 0.0461 ± 0.0008 | 0.0727 ± 0.0008 | 0.0392 ± 0.0004 |
-| HSTU (sampled softmax, corrected local sampler) | Beauty | leave one out | 3 | 0.0045 ± 0.0005 | 0.0465 ± 0.0011 | 0.0754 ± 0.0021 | 0.0353 ± 0.0011 |
-| HSTU | Sports | global temporal | 3 | 0.0033 ± 0.0006 | 0.0111 ± 0.0005 | 0.0192 ± 0.0007 | 0.0098 ± 0.0005 |
-| HSTU | Sports | leave one out | 3 | 0.0070 ± 0.0006 | 0.0234 ± 0.0009 | 0.0384 ± 0.0011 | 0.0200 ± 0.0009 |
-| HSTU | Toys | global temporal | 3 | 0.0021 ± 0.0003 | 0.0098 ± 0.0004 | 0.0165 ± 0.0005 | 0.0079 ± 0.0002 |
-| HSTU | Toys | leave one out | 3 | 0.0134 ± 0.0006 | 0.0438 ± 0.0009 | 0.0686 ± 0.0007 | 0.0366 ± 0.0008 |
-| SASRec | Beauty | global temporal | 3 | 0.0005 ± 0.0003 | 0.0092 ± 0.0008 | 0.0166 ± 0.0010 | 0.0072 ± 0.0004 |
-| SASRec | Beauty | leave one out | 3 | 0.0081 ± 0.0006 | 0.0542 ± 0.0002 | 0.0858 ± 0.0002 | 0.0420 ± 0.0002 |
-| SASRec | Sports | global temporal | 3 | 0.0013 ± 0.0009 | 0.0106 ± 0.0009 | 0.0189 ± 0.0008 | 0.0087 ± 0.0007 |
-| SASRec | Sports | leave one out | 3 | 0.0046 ± 0.0004 | 0.0313 ± 0.0004 | 0.0497 ± 0.0005 | 0.0241 ± 0.0003 |
-| SASRec | Toys | global temporal | 3 | 0.0008 ± 0.0003 | 0.0096 ± 0.0013 | 0.0179 ± 0.0005 | 0.0078 ± 0.0003 |
-| SASRec | Toys | leave one out | 3 | 0.0058 ± 0.0005 | 0.0610 ± 0.0005 | 0.0917 ± 0.0007 | 0.0441 ± 0.0001 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| HSTU (corrected Meta-local sampled softmax) | Beauty | leave_one_out | 3 | 0.0045 ± 0.0005 | 0.0465 ± 0.0011 | 0.0754 ± 0.0021 | 0.0353 ± 0.0011 |
+| OneRec SFT (4-code suffix ablation) | Beauty | leave_one_out | 3 | 0.0168 ± 0.0002 | 0.0483 ± 0.0009 | 0.0727 ± 0.0013 | 0.0405 ± 0.0005 |
 
-## P2: Verified generative rows
+The 4-code row is kept separate from 3-code SFT/GRPO. It changes the learned
+representation and cannot be treated as an evaluation-only correction.
 
-The table below contains only complete three-seed rows. All 36 finished cells
-pass the strict artifact validator and record item-level evaluation. TIGER/RPG
-use source bundle SHA256
-`099208d1fffd786610acdcadb37750f791a7ab93c8422c4cb168137f70167d87`.
-The legacy COBRA checkpoints were trained with SHA256
-`59421f3488c9b6bd8f58b6619f5fe8e9144ad050b4467801bb958d8b707d0df4`
-and re-evaluated at `max_seq_len=50`, beam 64, without catalog-prefix
-constraints, using the corrected generation path in SHA256
-`c17f9d715e4d1f3909007c7c96b3db53a01b5f1762cdc960560fb84eb8523748`.
-The optimized COBRA rows were also trained and evaluated with that corrected
-bundle, using the paper's one-layer light encoder and a two-layer decoder.
-The final COBRA paper-alignment and strict RPG re-evaluations use source bundle
-SHA256 `2f68e0eef7dde005e28d6bf26125fa9d969152504991eaa6ece60b76a366b486`.
+## Source provenance and recipe boundaries
+
+The snapshot mixes base Git versions `fb4bd1a`, `e52cc02`, and `6da9328`.
+Exact base bundle/Git fields are retained per seed in the CSV. October runs
+restored the recovery bundle with SHA256
+`8bfb3b9ec036b99d08dbffff53a1d0b70154e4de5fde20cdd3bd21f64ed4b412`.
+Those fields do not encode subsequent uncommitted patches: the summary records
+the verified source-file hashes; source commit `c621411` preserves
+the LCRec decoder/optimizer fixes, effective batch 128 recipe, GPU-lock fix and
+GRPO `defaultdict` import fix. Do not describe this as one identical code bundle.
+
+- LCRec uses four-level USM, Qwen3-4B, Sentence-T5-XL, six tasks, four epochs,
+  history 20, micro-batch 4 × accumulation 32 = effective batch 128, beam 20,
+  eval batch 4.
+  This is the Amazon-2014 adaptation, distinct from the old 1.7B/five-code seed.
+- TIGER main rows use the original matrix recipe. Beauty LOO R@10 is 0.0568;
+  the archived paper-aligned Beauty row below is a different recipe and is not
+  substituted into this matrix.
+- COBRA uses optimized light across all three domains. Its separate Beauty
+  paper-alignment audit remains below; old pre-fix matrix rows are excluded.
+- RPG main metrics and validation checkpoint selection use direct item scores.
+  Sports/Toys LOO seeds have different graph-only `num_beams/n_edges/steps`;
+  their graph diagnostics are not aggregated as a common recipe.
+- NoteLLM Beauty LOO seed42 is the earlier GCL+CSFT recovery run; seeds43/44
+  are October runs with matching training settings. Old GCL-only rows are excluded.
+- Raw `results.json` metadata and checksums pass the strict validator; that is
+  a structural/protocol check, not proof of paper parity or deterministic prompts.
+  Full CPU regression suite after recovery: **97 passed**;
+  `mkdocs build --strict` also passes.
+
+## Archived September audits (outside the 162-cell snapshot)
+
+The following rows retain their previously published provenance and scope.
+They were not re-run as part of the October completion and are not pooled with
+the main matrix. Their source paths and interpretation are preserved below.
 
 | Model | Dataset | Protocol | n | R@5 | R@10 | N@10 |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
 | COBRA (corrected legacy ckpt) | Beauty | global temporal | 3 | 0.0094 ± 0.0005 | 0.0159 ± 0.0012 | 0.0082 ± 0.0004 |
 | COBRA (corrected legacy ckpt) | Beauty | leave one out | 3 | 0.0202 ± 0.0008 | 0.0350 ± 0.0008 | 0.0173 ± 0.0005 |
-| COBRA (optimized light) | Beauty | global temporal | 3 | 0.0096 ± 0.0007 | 0.0175 ± 0.0007 | 0.0088 ± 0.0005 |
-| COBRA (optimized light) | Beauty | leave one out | 3 | 0.0290 ± 0.0012 | 0.0454 ± 0.0006 | 0.0240 ± 0.0005 |
 | COBRA (paper-aligned, validation-selected) | Beauty | leave one out | 3 | 0.0285 ± 0.0013 | 0.0460 ± 0.0013 | 0.0239 ± 0.0009 |
-| RPG | Beauty | global temporal | 3 | 0.0105 ± 0.0003 | 0.0173 ± 0.0004 | 0.0088 ± 0.0003 |
-| RPG | Beauty | leave one out | 3 | 0.0506 ± 0.0006 | 0.0732 ± 0.0007 | 0.0427 ± 0.0006 |
-| RPG | Sports | global temporal | 3 | 0.0123 ± 0.0004 | 0.0182 ± 0.0002 | 0.0098 ± 0.0001 |
-| TIGER | Beauty | global temporal | 3 | 0.0121 ± 0.0001 | 0.0206 ± 0.0013 | 0.0101 ± 0.0006 |
 | TIGER (paper-aligned) | Beauty | leave one out | 3 | 0.0413 ± 0.0017 | 0.0655 ± 0.0014 | 0.0354 ± 0.0012 |
-| TIGER | Sports | global temporal | 3 | 0.0119 ± 0.0008 | 0.0205 ± 0.0021 | 0.0106 ± 0.0007 |
-| TIGER | Sports | leave one out | 3 | 0.0207 ± 0.0012 | 0.0342 ± 0.0017 | 0.0174 ± 0.0010 |
-| TIGER | Toys | global temporal | 3 | 0.0115 ± 0.0004 | 0.0184 ± 0.0020 | 0.0096 ± 0.0004 |
-| TIGER | Toys | leave one out | 3 | 0.0288 ± 0.0009 | 0.0477 ± 0.0004 | 0.0242 ± 0.0003 |
 
 The pre-fix COBRA rows were LOO R@10 `0.0098 ± 0.0008` and temporal R@10
 `0.0056 ± 0.0010`. They are retained only as historical A/B baselines: the
@@ -92,40 +193,3 @@ were also selected against direct decoding on validation. They reduced all
 three seeds, so direct decoding remains the headline. The strict re-evaluation
 reproduced R@10 `0.0732 ± 0.0007` and N@10 `0.0427 ± 0.0006`; see
 `docs/zh/rpg-paper-alignment-20260903.md`.
-
-## Remaining matrix
-
-- P2: TIGER is complete (18/18), including the Beauty paper-aligned LOO row.
-  COBRA Beauty has corrected, optimized-light, and validation-selected
-  paper-alignment rows. RPG Beauty LOO has a strict validation/test graph audit.
-  COBRA Sports/Toys and unfinished RPG cells remain paused.
-- P3: unfinished LCRec, OneRec-SFT and GRPO matrix work remains paused.
-- LCRec Beauty LOO currently has one legacy adaptation seed (Qwen3-1.7B, five ordinary
-  RQ codebooks): item R@10 `0.0654`, versus the collision-prone SID diagnostic
-  `0.0673`. Its raw SID collision rate is 0.49%. This is not a paper row: the
-  paper uses four index levels, uniform semantic mapping, a 7B LLaMA backbone,
-  max sequence length 20, and different Amazon subsets. The new four-level USM
-  recipe is pending a clean rerun after matching the reference's first-batch
-  K-Means, Xavier-normal MLP initialization, and mean-reduced reconstruction/VQ
-  losses; both pre-fix attempts are excluded.
-- No OneRec recommender checkpoint/result artifact is present on host 179;
-  only the Beauty/Sports/Toys RQ-KMeans tokenizer artifacts are present. The
-  May-2026 Beauty v2b number therefore remains an archived experiment note,
-  not a completed current matrix cell.
-- NoteLLM has an exact full-catalog item evaluator that excludes each I2I query
-  item from its candidate pool. The historical Amazon run is explicitly labeled
-  `gcl_only_lora_amazon_adaptation`; the current trainer adds symmetric GCL,
-  CSFT, and exact-item false-negative masking, so that old seed is not evidence
-  for the corrected recipe.
-  Beauty currently has one seed: LOO R@10 `0.0777`, temporal R@10 `0.0281`;
-  incomplete rows remain outside the numeric table.
-
-- HSTU's clean Meta-local sampled-softmax rerun is complete for seeds 42/43/44.
-  Validation-only checkpoint selection followed by one-shot item-level test
-  gives R@5 `0.0465 ± 0.0011`, R@10 `0.0754 ± 0.0021`, and N@10
-  `0.0353 ± 0.0011`. All earlier runs with the incorrectly shared/in-batch
-  `local` sampler stay excluded.
-
-RQ-VAE and RQ-KMeans are tokenizer stages, not recommender benchmark rows. Their
-codebook utilization, collision rate, seed and artifact checksum are recorded
-as dependencies of downstream results.

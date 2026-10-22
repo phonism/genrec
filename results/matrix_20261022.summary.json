@@ -1,0 +1,2222 @@
+{
+  "snapshot_date": "2026-10-22",
+  "queue_completed_at": "2026-10-21T07:42:36.602750+00:00",
+  "queue_successful_jobs": 84,
+  "main_cells": 162,
+  "main_rows": 54,
+  "extra_cells": 6,
+  "standard_deviation": "population",
+  "evaluation_level": "item",
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "models": [
+    "sasrec",
+    "hstu",
+    "tiger",
+    "lcrec",
+    "cobra",
+    "rpg",
+    "notellm",
+    "onerec_sft",
+    "onerec_grpo"
+  ],
+  "splits": [
+    "beauty",
+    "sports",
+    "toys"
+  ],
+  "protocols": [
+    "leave_one_out",
+    "global_temporal"
+  ],
+  "grpo_sft_fallback_cells": 16,
+  "source_file_sha256": {
+    "genrec/models/lcrec.py": "2fceb1b2aad43e25c9feaaa344ecff7b8edf31294a0a7121fe4bd2d08902c41c",
+    "genrec/trainers/lcrec_trainer.py": "4c4a015c1efaf8f8f5fbea502d28045addb0db0ec97c1c9b46c1e5c30176c57a",
+    "genrec/trainers/onerec_grpo_trainer.py": "96f7d0dd138a3ec942ededffa2f86a49813c9b94eddd06edacbd5a8cc7716210",
+    "config/lcrec/amazon/lcrec_paper_recipe.gin": "d4556e4f037224208a1fb6752b5ec03e010218485efd435cf6eab7240e1ea658",
+    "scripts/run-locked-179.sh": "eee6e03a26a48d5a1cdf10e713da9c5a44e5f924f1d6507208e0bd6ba1c6b3fa"
+  },
+  "limitations": [
+    "LCRec uses history 20 while the other sequence models use 50; the matrix is not history-length matched.",
+    "Source bundle/Git fields describe the base; the listed source-file hashes capture uncommitted recovery fixes.",
+    "OneRec and LCRec sample evaluation prompt templates at item access time; prompts are not frozen across evaluations.",
+    "16/18 GRPO-selected policies are the original SFT weights. Test differences from the standalone SFT evaluation are not attributable RL gains.",
+    "TIGER uses the legacy matrix recipe, distinct from the archived paper-aligned Beauty audit.",
+    "NoteLLM evaluates last-history-item I2I retrieval and excludes the query item.",
+    "RPG graph-only settings differ for Sports/Toys LOO seeds; main metrics and validation selection use direct item scoring."
+  ],
+  "rows": [
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0028397075705395443,
+          "std": 0.0006994040784720093
+        },
+        "Recall@5": {
+          "mean": 0.009606670291825268,
+          "std": 0.0006782050728247137
+        },
+        "Recall@10": {
+          "mean": 0.0175215999033291,
+          "std": 0.0006835664611796725
+        },
+        "NDCG@5": {
+          "mean": 0.0062348608538201405,
+          "std": 0.0005955708877702255
+        },
+        "NDCG@10": {
+          "mean": 0.0087621176136951,
+          "std": 0.0005446695714953392
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/beauty/optimized_light_seq50/global_temporal/seed42/results.json",
+        "out/recovery/cobra/beauty/optimized_light_seq50/global_temporal/seed43/results.json",
+        "out/recovery/cobra/beauty/optimized_light_seq50/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0084216488545067,
+          "std": 0.0005063508995949569
+        },
+        "Recall@5": {
+          "mean": 0.029036056581555846,
+          "std": 0.0011605307373680764
+        },
+        "Recall@10": {
+          "mean": 0.045447092667948545,
+          "std": 0.0006047329003294389
+        },
+        "NDCG@5": {
+          "mean": 0.018689073287617475,
+          "std": 0.0007270000131909235
+        },
+        "NDCG@10": {
+          "mean": 0.023968991400415866,
+          "std": 0.00047018674088699605
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/beauty/optimized_light_seq50/leave_one_out/seed42/results.json",
+        "out/recovery/cobra/beauty/optimized_light_seq50/leave_one_out/seed43/results.json",
+        "out/recovery/cobra/beauty/optimized_light_seq50/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0038107563991947083,
+          "std": 0.0006247536380853742
+        },
+        "Recall@5": {
+          "mean": 0.013337647397181478,
+          "std": 0.0008908190748751705
+        },
+        "Recall@10": {
+          "mean": 0.02214552775381076,
+          "std": 0.0006247536380853737
+        },
+        "NDCG@5": {
+          "mean": 0.008517245571607142,
+          "std": 0.0006974820581023187
+        },
+        "NDCG@10": {
+          "mean": 0.011314828196304229,
+          "std": 0.0002854139297999741
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/sports/optimized_light_seq50/global_temporal/seed42/results.json",
+        "out/recovery/cobra/sports/optimized_light_seq50/global_temporal/seed43/results.json",
+        "out/recovery/cobra/sports/optimized_light_seq50/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.00543101672378598,
+          "std": 7.37308076672079e-05
+        },
+        "Recall@5": {
+          "mean": 0.0178568084349308,
+          "std": 0.0005831188073090346
+        },
+        "Recall@10": {
+          "mean": 0.02902784800644231,
+          "std": 0.0007286954869503422
+        },
+        "NDCG@5": {
+          "mean": 0.011664274777111775,
+          "std": 0.00038717756869507253
+        },
+        "NDCG@10": {
+          "mean": 0.015257500851156782,
+          "std": 0.0004329964988792095
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/sports/optimized_light_seq50/leave_one_out/seed42/results.json",
+        "out/recovery/cobra/sports/optimized_light_seq50/leave_one_out/seed43/results.json",
+        "out/recovery/cobra/sports/optimized_light_seq50/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.002545040519724064,
+          "std": 0.0006210982851447126
+        },
+        "Recall@5": {
+          "mean": 0.011251758087201124,
+          "std": 0.0005915049806662552
+        },
+        "Recall@10": {
+          "mean": 0.019020829147411426,
+          "std": 0.0006630162036442078
+        },
+        "NDCG@5": {
+          "mean": 0.006807183175051526,
+          "std": 0.00036423073680873474
+        },
+        "NDCG@10": {
+          "mean": 0.009295673509602505,
+          "std": 0.000253445054760066
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/toys/optimized_light_seq50/global_temporal/seed42/results.json",
+        "out/recovery/cobra/toys/optimized_light_seq50/global_temporal/seed43/results.json",
+        "out/recovery/cobra/toys/optimized_light_seq50/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0052201387457929795,
+          "std": 4.8568361919537715e-05
+        },
+        "Recall@5": {
+          "mean": 0.025156260732193143,
+          "std": 0.0006129050174316487
+        },
+        "Recall@10": {
+          "mean": 0.04119445016828079,
+          "std": 0.0006851410585637755
+        },
+        "NDCG@5": {
+          "mean": 0.015119612221043471,
+          "std": 0.0003791370221691315
+        },
+        "NDCG@10": {
+          "mean": 0.020247641709555193,
+          "std": 0.0004614305309685955
+        }
+      },
+      "result_paths": [
+        "out/recovery/cobra/toys/optimized_light_seq50/leave_one_out/seed42/results.json",
+        "out/recovery/cobra/toys/optimized_light_seq50/leave_one_out/seed43/results.json",
+        "out/recovery/cobra/toys/optimized_light_seq50/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.002598030330493626,
+          "std": 0.0005603056308075467
+        },
+        "Recall@5": {
+          "mean": 0.00900247719171047,
+          "std": 8.544580764745906e-05
+        },
+        "Recall@10": {
+          "mean": 0.016252794393088032,
+          "std": 0.0005981206535322127
+        },
+        "NDCG@5": {
+          "mean": 0.005700178055898365,
+          "std": 0.000271055333155908
+        },
+        "NDCG@10": {
+          "mean": 0.007992642169689874,
+          "std": 0.00032095965623821676
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/hstu/beauty/seed42/results.json",
+        "out/matrix/global_temporal/hstu/beauty/seed43/results.json",
+        "out/matrix/global_temporal/hstu/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.014965195486592439,
+          "std": 0.000557715480447456
+        },
+        "Recall@5": {
+          "mean": 0.04613274903486414,
+          "std": 0.0008296394371700707
+        },
+        "Recall@10": {
+          "mean": 0.07269448046624634,
+          "std": 0.0007935030573838433
+        },
+        "NDCG@5": {
+          "mean": 0.03062549160006903,
+          "std": 0.0005235473023482021
+        },
+        "NDCG@10": {
+          "mean": 0.03916230110958018,
+          "std": 0.00043101228342217715
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/hstu/beauty/seed42/results.json",
+        "out/matrix/leave_one_out/hstu/beauty/seed43/results.json",
+        "out/matrix/leave_one_out/hstu/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.003307448950244464,
+          "std": 0.0005661495451547175
+        },
+        "Recall@5": {
+          "mean": 0.01107276387690538,
+          "std": 0.0005380582954808663
+        },
+        "Recall@10": {
+          "mean": 0.019161633592177162,
+          "std": 0.0007489454506758573
+        },
+        "NDCG@5": {
+          "mean": 0.007172687800409879,
+          "std": 0.00042504468550415227
+        },
+        "NDCG@10": {
+          "mean": 0.009788007409811911,
+          "std": 0.0005208657723404343
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/hstu/sports/seed42/results.json",
+        "out/matrix/global_temporal/hstu/sports/seed43/results.json",
+        "out/matrix/global_temporal/hstu/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.006985411165421278,
+          "std": 0.0006130264735222171
+        },
+        "Recall@5": {
+          "mean": 0.02337209955615484,
+          "std": 0.0008542146241774245
+        },
+        "Recall@10": {
+          "mean": 0.03841039758787947,
+          "std": 0.0010714929424774343
+        },
+        "NDCG@5": {
+          "mean": 0.015213488773417603,
+          "std": 0.0007822901279202286
+        },
+        "NDCG@10": {
+          "mean": 0.02003256824598497,
+          "std": 0.0008512347862404386
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/hstu/sports/seed42/results.json",
+        "out/matrix/leave_one_out/hstu/sports/seed43/results.json",
+        "out/matrix/leave_one_out/hstu/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0020762172660906838,
+          "std": 0.0003415055598146664
+        },
+        "Recall@5": {
+          "mean": 0.009778313575781931,
+          "std": 0.0004128600899450127
+        },
+        "Recall@10": {
+          "mean": 0.016542763378206416,
+          "std": 0.0004735830026030053
+        },
+        "NDCG@5": {
+          "mean": 0.005746651475040394,
+          "std": 0.00012069940339773055
+        },
+        "NDCG@10": {
+          "mean": 0.00790724276250832,
+          "std": 0.0001897725456367258
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/hstu/toys/seed42/results.json",
+        "out/matrix/global_temporal/hstu/toys/seed43/results.json",
+        "out/matrix/global_temporal/hstu/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.013445291572223366,
+          "std": 0.000630921528637744
+        },
+        "Recall@5": {
+          "mean": 0.04377017652311285,
+          "std": 0.0009237569651976619
+        },
+        "Recall@10": {
+          "mean": 0.06856583556562951,
+          "std": 0.0007297386276830755
+        },
+        "NDCG@5": {
+          "mean": 0.02866593523416572,
+          "std": 0.0008467032919861143
+        },
+        "NDCG@10": {
+          "mean": 0.03662077408995027,
+          "std": 0.0008142341150537782
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/hstu/toys/seed42/results.json",
+        "out/matrix/leave_one_out/hstu/toys/seed43/results.json",
+        "out/matrix/leave_one_out/hstu/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.00362515860068878,
+          "std": 0.0006451017009263069
+        },
+        "Recall@5": {
+          "mean": 0.012990151652468128,
+          "std": 0.0022461035943980544
+        },
+        "Recall@10": {
+          "mean": 0.020784242643949007,
+          "std": 0.0025217372671994705
+        },
+        "NDCG@5": {
+          "mean": 0.0082878620773923,
+          "std": 0.001539934085574431
+        },
+        "NDCG@10": {
+          "mean": 0.010788499044944179,
+          "std": 0.0015867019481459069
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed42/results.json",
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed43/results.json",
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.020510068714692423,
+          "std": 7.600380857655975e-05
+        },
+        "Recall@5": {
+          "mean": 0.050902532456885634,
+          "std": 0.0010596594128501674
+        },
+        "Recall@10": {
+          "mean": 0.07294787521054123,
+          "std": 0.0003546148326363602
+        },
+        "NDCG@5": {
+          "mean": 0.036000770264417885,
+          "std": 0.0004854550561945539
+        },
+        "NDCG@10": {
+          "mean": 0.043074750241400415,
+          "std": 5.40709539841363e-05
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed42/results.json",
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed43/results.json",
+        "out/recovery/lcrec/beauty/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0029479436295657174,
+          "std": 0.00036662492907627166
+        },
+        "Recall@5": {
+          "mean": 0.012474834627552488,
+          "std": 0.0009416020170915153
+        },
+        "Recall@10": {
+          "mean": 0.020743457003163646,
+          "std": 0.0007332498581525442
+        },
+        "NDCG@5": {
+          "mean": 0.007819607438182639,
+          "std": 0.0003744429361000282
+        },
+        "NDCG@10": {
+          "mean": 0.010482225261750766,
+          "std": 0.000274745070531738
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed42/results.json",
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed43/results.json",
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.009410641047249846,
+          "std": 0.0003378770071852111
+        },
+        "Recall@5": {
+          "mean": 0.025965878232859525,
+          "std": 0.0007022242170628562
+        },
+        "Recall@10": {
+          "mean": 0.039908609097889396,
+          "std": 0.0005282058833331637
+        },
+        "NDCG@5": {
+          "mean": 0.017774100008690796,
+          "std": 0.0005154013998631213
+        },
+        "NDCG@10": {
+          "mean": 0.022263950325253818,
+          "std": 0.00038546746911052426
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed42/results.json",
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed43/results.json",
+        "out/recovery/lcrec/sports/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.003683611278547987,
+          "std": 0.0009035387826155007
+        },
+        "Recall@5": {
+          "mean": 0.012524278347063156,
+          "std": 0.0014333222529658227
+        },
+        "Recall@10": {
+          "mean": 0.020896122161944947,
+          "std": 0.0011483777509532023
+        },
+        "NDCG@5": {
+          "mean": 0.008118990524544414,
+          "std": 0.0011659630271904865
+        },
+        "NDCG@10": {
+          "mean": 0.010816794710911076,
+          "std": 0.0009146559346755349
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed42/results.json",
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed43/results.json",
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.020107837076722302,
+          "std": 0.00028630627104425194
+        },
+        "Recall@5": {
+          "mean": 0.05043272202761179,
+          "std": 0.0023945483099395443
+        },
+        "Recall@10": {
+          "mean": 0.07054055910433409,
+          "std": 0.0040563306119923885
+        },
+        "NDCG@5": {
+          "mean": 0.03557256372004913,
+          "std": 0.001402498278484258
+        },
+        "NDCG@10": {
+          "mean": 0.042026482307040536,
+          "std": 0.0018993686203306983
+        }
+      },
+      "result_paths": [
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed42/results.json",
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed43/results.json",
+        "out/recovery/lcrec/toys/paper_recipe_qwen3_4b_allitems_gb128_20261013/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0060419310011479675,
+          "std": 0.0004757421227727515
+        },
+        "Recall@5": {
+          "mean": 0.01800495438342094,
+          "std": 0.0008151010551164305
+        },
+        "Recall@10": {
+          "mean": 0.02664491571506254,
+          "std": 0.0012644824806027641
+        },
+        "NDCG@5": {
+          "mean": 0.012010554454599032,
+          "std": 0.0005869638091504359
+        },
+        "NDCG@10": {
+          "mean": 0.014812326031173148,
+          "std": 0.0006400255110914867
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed42/results.json",
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed43/results.json",
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.02131496966715855,
+          "std": 0.0006431888688277185
+        },
+        "Recall@5": {
+          "mean": 0.05023178166316386,
+          "std": 0.0002740356289533346
+        },
+        "Recall@10": {
+          "mean": 0.06932582092444366,
+          "std": 0.00037472029960132166
+        },
+        "NDCG@5": {
+          "mean": 0.03616784845518077,
+          "std": 0.00026537462642945326
+        },
+        "NDCG@10": {
+          "mean": 0.04231663109281077,
+          "std": 0.00033840202807105147
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_resume_20260903/leave_one_out/seed42/results.json",
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/notellm/beauty/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.003163646821972965,
+          "std": 5.084173002491711e-05
+        },
+        "Recall@5": {
+          "mean": 0.010857060684498132,
+          "std": 0.0013988407001972764
+        },
+        "Recall@10": {
+          "mean": 0.019161633592177162,
+          "std": 0.00045189118097413455
+        },
+        "NDCG@5": {
+          "mean": 0.006903057918488242,
+          "std": 0.0005904311518257891
+        },
+        "NDCG@10": {
+          "mean": 0.009639164615558556,
+          "std": 7.529222121487599e-05
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed42/results.json",
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed43/results.json",
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.008165252729554094,
+          "std": 0.0001527193141028529
+        },
+        "Recall@5": {
+          "mean": 0.023727924789782195,
+          "std": 0.00029934953954614997
+        },
+        "Recall@10": {
+          "mean": 0.035086240800044945,
+          "std": 0.00028184948486417646
+        },
+        "NDCG@5": {
+          "mean": 0.01607772951198923,
+          "std": 0.00018976895935765863
+        },
+        "NDCG@10": {
+          "mean": 0.01972597482423357,
+          "std": 9.15583615279118e-05
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/notellm/sports/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004219409282700422,
+          "std": 0.0003281079288437717
+        },
+        "Recall@5": {
+          "mean": 0.017480409885473176,
+          "std": 0.0004921618932656585
+        },
+        "Recall@10": {
+          "mean": 0.026321076953988345,
+          "std": 0.0008680919829090974
+        },
+        "NDCG@5": {
+          "mean": 0.010781022961991892,
+          "std": 0.00027774775142131233
+        },
+        "NDCG@10": {
+          "mean": 0.013671162155434449,
+          "std": 0.00034093381383476447
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed42/results.json",
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed43/results.json",
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.023267394738649635,
+          "std": 0.0005953340141273338
+        },
+        "Recall@5": {
+          "mean": 0.0674325159695034,
+          "std": 0.0003033093229729981
+        },
+        "Recall@10": {
+          "mean": 0.09173020125008585,
+          "std": 0.0004911171662227854
+        },
+        "NDCG@5": {
+          "mean": 0.0460274325112727,
+          "std": 0.00013340298543412584
+        },
+        "NDCG@10": {
+          "mean": 0.05385785656272076,
+          "std": 0.00035820762130450067
+        }
+      },
+      "result_paths": [
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/notellm/toys/gcl_csft_fnmask_paperlen_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004531448250860975,
+          "std": 0.00014799648013915642
+        },
+        "Recall@5": {
+          "mean": 0.01613195577306507,
+          "std": 0.0008879788808349379
+        },
+        "Recall@10": {
+          "mean": 0.024530239864660745,
+          "std": 0.001808546860865901
+        },
+        "NDCG@5": {
+          "mean": 0.010218557321256788,
+          "std": 0.0002523378338436775
+        },
+        "NDCG@10": {
+          "mean": 0.01292235924321628,
+          "std": 0.00047813496429216593
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.01453293386397174,
+          "std": 0.0007293076255556098
+        },
+        "Recall@5": {
+          "mean": 0.043732951750659575,
+          "std": 0.0017800774457065818
+        },
+        "Recall@10": {
+          "mean": 0.06613602826096678,
+          "std": 0.002358003262259016
+        },
+        "NDCG@5": {
+          "mean": 0.0292984952896642,
+          "std": 0.0012126766359883598
+        },
+        "NDCG@10": {
+          "mean": 0.03653286847741433,
+          "std": 0.0013522295752543452
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec_grpo/beauty/grpo_v2b_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.002911993097497843,
+          "std": 0.0003050503801495028
+        },
+        "Recall@5": {
+          "mean": 0.013337647397181478,
+          "std": 0.0007117842203488402
+        },
+        "Recall@10": {
+          "mean": 0.022289329882082255,
+          "std": 0.00044322792658678265
+        },
+        "NDCG@5": {
+          "mean": 0.008090759509933862,
+          "std": 0.0003021015181628823
+        },
+        "NDCG@10": {
+          "mean": 0.010982123674727872,
+          "std": 0.00020140041697312198
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0061613948349158185,
+          "std": 0.0002068535876020613
+        },
+        "Recall@5": {
+          "mean": 0.021986253909395657,
+          "std": 0.00019507338105136723
+        },
+        "Recall@10": {
+          "mean": 0.03409367567466337,
+          "std": 0.000450826942233111
+        },
+        "NDCG@5": {
+          "mean": 0.014142537359454884,
+          "std": 8.358084746817514e-05
+        },
+        "NDCG@10": {
+          "mean": 0.018039232077535078,
+          "std": 9.707909958258996e-05
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec_grpo/sports/grpo_v2b_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0034157122764717704,
+          "std": 0.00016405396442188577
+        },
+        "Recall@5": {
+          "mean": 0.01272520259862032,
+          "std": 0.0007577328041648091
+        },
+        "Recall@10": {
+          "mean": 0.020829147411425893,
+          "std": 0.0005011931400139237
+        },
+        "NDCG@5": {
+          "mean": 0.008124656235251167,
+          "std": 0.0004228095393158942
+        },
+        "NDCG@10": {
+          "mean": 0.010740050339553484,
+          "std": 0.00039932862267869453
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        -1,
+        -1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.011573597087712066,
+          "std": 0.0003100396676500411
+        },
+        "Recall@5": {
+          "mean": 0.03928841266570506,
+          "std": 0.0004128310763160698
+        },
+        "Recall@10": {
+          "mean": 0.060426540284360196,
+          "std": 0.001347936115584201
+        },
+        "NDCG@5": {
+          "mean": 0.02553588429096022,
+          "std": 0.000277504954393396
+        },
+        "NDCG@10": {
+          "mean": 0.03231847262479126,
+          "std": 0.0005478542535187395
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec_grpo/toys/grpo_v2b_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": [
+        0,
+        1,
+        -1
+      ]
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004229351700803577,
+          "std": 0.00037244964068448876
+        },
+        "Recall@5": {
+          "mean": 0.015588181982961755,
+          "std": 0.0005126748458847536
+        },
+        "Recall@10": {
+          "mean": 0.02386562745453447,
+          "std": 0.001367132922359345
+        },
+        "NDCG@5": {
+          "mean": 0.009872004831818956,
+          "std": 0.00037479903540124204
+        },
+        "NDCG@10": {
+          "mean": 0.012540322993429873,
+          "std": 0.0004741943987001011
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.014681989595909911,
+          "std": 0.0008673455574521096
+        },
+        "Recall@5": {
+          "mean": 0.04328578455484505,
+          "std": 0.0015520416904404736
+        },
+        "Recall@10": {
+          "mean": 0.06580810565070279,
+          "std": 0.0015974713847657675
+        },
+        "NDCG@5": {
+          "mean": 0.029085869799003003,
+          "std": 0.001209877308483939
+        },
+        "NDCG@10": {
+          "mean": 0.03636565840507805,
+          "std": 0.001225823848182456
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec/beauty/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0028041415012942193,
+          "std": 8.806045954785651e-05
+        },
+        "Recall@5": {
+          "mean": 0.013625251653724475,
+          "std": 0.001132299090309435
+        },
+        "Recall@10": {
+          "mean": 0.02203767615760713,
+          "std": 0.0006609424903239224
+        },
+        "NDCG@5": {
+          "mean": 0.008156191113010918,
+          "std": 0.0005769556615263722
+        },
+        "NDCG@10": {
+          "mean": 0.010855543088871822,
+          "std": 0.0004213447517159162
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.006086484259415323,
+          "std": 0.00019235760982989805
+        },
+        "Recall@5": {
+          "mean": 0.02223907710170983,
+          "std": 0.00021678815107197384
+        },
+        "Recall@10": {
+          "mean": 0.03414985860628874,
+          "std": 0.0007232605396305992
+        },
+        "NDCG@5": {
+          "mean": 0.014219264804458525,
+          "std": 8.823229263284508e-05
+        },
+        "NDCG@10": {
+          "mean": 0.018047786052323867,
+          "std": 0.00015847315939804908
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec/sports/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0036166365280289325,
+          "std": 0.0002841498015618032
+        },
+        "Recall@5": {
+          "mean": 0.013060076351215593,
+          "std": 0.0007517897100208843
+        },
+        "Recall@10": {
+          "mean": 0.02076217266090684,
+          "std": 0.0002505965700069604
+        },
+        "NDCG@5": {
+          "mean": 0.008293920364568944,
+          "std": 0.00040497451797067574
+        },
+        "NDCG@10": {
+          "mean": 0.010744553067074036,
+          "std": 0.0003616826617029396
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/global_temporal/seed42/results.json",
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/global_temporal/seed43/results.json",
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/global_temporal/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.012294800467065046,
+          "std": 0.00044974932528706675
+        },
+        "Recall@5": {
+          "mean": 0.038618723813448726,
+          "std": 0.0008468183258422961
+        },
+        "Recall@10": {
+          "mean": 0.05908716257984752,
+          "std": 0.00040124051945696483
+        },
+        "NDCG@5": {
+          "mean": 0.025564529499646372,
+          "std": 0.00076761295526505
+        },
+        "NDCG@10": {
+          "mean": 0.03213975540728136,
+          "std": 0.0005922710130696849
+        }
+      },
+      "result_paths": [
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed42/results.json",
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed43/results.json",
+        "out/recovery/onerec/toys/sft_k256_v2b_itemlevel_20261012/leave_one_out/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0029605461905625034,
+          "std": 0.0005981206535322136
+        },
+        "Recall@5": {
+          "mean": 0.010452540631985982,
+          "std": 0.0003080792407463467
+        },
+        "Recall@10": {
+          "mean": 0.017340341973294662,
+          "std": 0.0003724496406844889
+        },
+        "NDCG@5": {
+          "mean": 0.00660317090045836,
+          "std": 0.00038498197341090495
+        },
+        "NDCG@10": {
+          "mean": 0.0088091339706892,
+          "std": 0.0003011345206681326
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/rpg/beauty/seed42/results.json",
+        "out/matrix/global_temporal/rpg/beauty/seed43/results.json",
+        "out/matrix/global_temporal/rpg/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.01973497890861393,
+          "std": 0.001457853452735179
+        },
+        "Recall@5": {
+          "mean": 0.050574609846621654,
+          "std": 0.0005691509216723089
+        },
+        "Recall@10": {
+          "mean": 0.07320126995483611,
+          "std": 0.0006937099243226187
+        },
+        "NDCG@5": {
+          "mean": 0.03539156136548791,
+          "std": 0.0007890380356778219
+        },
+        "NDCG@10": {
+          "mean": 0.042684437836306995,
+          "std": 0.0006384798151218799
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/rpg/beauty/seed42/results.json",
+        "out/matrix/leave_one_out/rpg/beauty/seed43/results.json",
+        "out/matrix/leave_one_out/rpg/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.003487201610583837,
+          "std": 0.0005159872050045774
+        },
+        "Recall@5": {
+          "mean": 0.01225913143514524,
+          "std": 0.00036662492907627134
+        },
+        "Recall@10": {
+          "mean": 0.018155018694276676,
+          "std": 0.00022161396329339132
+        },
+        "NDCG@5": {
+          "mean": 0.007938620891247394,
+          "std": 6.594258847232209e-05
+        },
+        "NDCG@10": {
+          "mean": 0.009821475152143775,
+          "std": 0.00014575172920502485
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/rpg/sports/seed42/results.json",
+        "out/matrix/global_temporal/rpg/sports/seed43/results.json",
+        "out/matrix/global_temporal/rpg/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.010833941981759276,
+          "std": 0.00042685062157205424
+        },
+        "Recall@5": {
+          "mean": 0.028971665074816938,
+          "std": 0.0005078956354222375
+        },
+        "Recall@10": {
+          "mean": 0.042558570706219455,
+          "std": 0.0007110341594684953
+        },
+        "NDCG@5": {
+          "mean": 0.020030270726198042,
+          "std": 0.00048643725838285075
+        },
+        "NDCG@10": {
+          "mean": 0.024379636852147887,
+          "std": 0.0005454001993920684
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/rpg/sports/seed42/results.json",
+        "out/matrix/leave_one_out/rpg/sports/seed43/results.json",
+        "out/matrix/leave_one_out/rpg/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0026789900207621724,
+          "std": 0.0004128600899450123
+        },
+        "Recall@5": {
+          "mean": 0.013394950103810864,
+          "std": 0.00025059657000696124
+        },
+        "Recall@10": {
+          "mean": 0.022637465675440355,
+          "std": 0.0004128600899450133
+        },
+        "NDCG@5": {
+          "mean": 0.007983562767637382,
+          "std": 5.236718399204188e-05
+        },
+        "NDCG@10": {
+          "mean": 0.010969616373419944,
+          "std": 4.133101769361527e-05
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/rpg/toys/seed42/results.json",
+        "out/matrix/global_temporal/rpg/toys/seed43/results.json",
+        "out/matrix/global_temporal/rpg/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.020622982347688713,
+          "std": 0.00025353429253783654
+        },
+        "Recall@5": {
+          "mean": 0.05687203791469195,
+          "std": 0.00046837632038552963
+        },
+        "Recall@10": {
+          "mean": 0.08195961261075622,
+          "std": 0.0002758152758467103
+        },
+        "NDCG@5": {
+          "mean": 0.0391396020039956,
+          "std": 0.00022247195831746354
+        },
+        "NDCG@10": {
+          "mean": 0.0471990828871424,
+          "std": 0.00019087678552017593
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/rpg/toys/seed42/results.json",
+        "out/matrix/leave_one_out/rpg/toys/seed43/results.json",
+        "out/matrix/leave_one_out/rpg/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0005437737901033171,
+          "std": 0.00025633742294237723
+        },
+        "Recall@5": {
+          "mean": 0.00924415443175639,
+          "std": 0.0008240095279430768
+        },
+        "Recall@10": {
+          "mean": 0.016615310253156906,
+          "std": 0.000951484245545503
+        },
+        "NDCG@5": {
+          "mean": 0.004835181910137015,
+          "std": 0.0003971533832089323
+        },
+        "NDCG@10": {
+          "mean": 0.007202163418789484,
+          "std": 0.0003943527900213723
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/sasrec/beauty/seed42/results.json",
+        "out/matrix/global_temporal/sasrec/beauty/seed43/results.json",
+        "out/matrix/global_temporal/sasrec/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.00810863181743654,
+          "std": 0.0006003079660034368
+        },
+        "Recall@5": {
+          "mean": 0.05421156970591304,
+          "std": 0.00018376824823649132
+        },
+        "Recall@10": {
+          "mean": 0.08584119602319307,
+          "std": 0.00020761061093747306
+        },
+        "NDCG@5": {
+          "mean": 0.03172959027461423,
+          "std": 0.00013382567492802768
+        },
+        "NDCG@10": {
+          "mean": 0.041960677824245125,
+          "std": 0.00024641845224999183
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/sasrec/beauty/seed42/results.json",
+        "out/matrix/leave_one_out/sasrec/beauty/seed43/results.json",
+        "out/matrix/leave_one_out/sasrec/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0013301696865113605,
+          "std": 0.0008552902828135115
+        },
+        "Recall@5": {
+          "mean": 0.01064135749209088,
+          "std": 0.000882071048776625
+        },
+        "Recall@10": {
+          "mean": 0.018874029335634167,
+          "std": 0.0008492243177320758
+        },
+        "NDCG@5": {
+          "mean": 0.006083315118894449,
+          "std": 0.0007928314498865303
+        },
+        "NDCG@10": {
+          "mean": 0.008740114075444297,
+          "std": 0.0007357561299896986
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/sasrec/sports/seed42/results.json",
+        "out/matrix/global_temporal/sasrec/sports/seed43/results.json",
+        "out/matrix/global_temporal/sasrec/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004578908927467836,
+          "std": 0.0004018814490303749
+        },
+        "Recall@5": {
+          "mean": 0.031312620559207444,
+          "std": 0.00043053219965813135
+        },
+        "Recall@10": {
+          "mean": 0.04965634773489147,
+          "std": 0.0004823958976118985
+        },
+        "NDCG@5": {
+          "mean": 0.018230550893762174,
+          "std": 0.0003278936225529677
+        },
+        "NDCG@10": {
+          "mean": 0.024141091430808087,
+          "std": 0.0003364465908704069
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/sasrec/sports/seed42/results.json",
+        "out/matrix/leave_one_out/sasrec/sports/seed43/results.json",
+        "out/matrix/leave_one_out/sasrec/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0008036970062286517,
+          "std": 0.0002841498015618033
+        },
+        "Recall@5": {
+          "mean": 0.009577389324224765,
+          "std": 0.001336142076435604
+        },
+        "Recall@10": {
+          "mean": 0.017949233139106558,
+          "std": 0.0005011931400139225
+        },
+        "NDCG@5": {
+          "mean": 0.005135630149705899,
+          "std": 0.0005594200878849208
+        },
+        "NDCG@10": {
+          "mean": 0.007848469189554503,
+          "std": 0.00030650711516915836
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/sasrec/toys/seed42/results.json",
+        "out/matrix/global_temporal/sasrec/toys/seed43/results.json",
+        "out/matrix/global_temporal/sasrec/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.005821141561920461,
+          "std": 0.00046837632038552974
+        },
+        "Recall@5": {
+          "mean": 0.06104471460951988,
+          "std": 0.0005370044567316407
+        },
+        "Recall@10": {
+          "mean": 0.091661515213957,
+          "std": 0.0007166919690469549
+        },
+        "NDCG@5": {
+          "mean": 0.03420460526289312,
+          "std": 0.000218798537192483
+        },
+        "NDCG@10": {
+          "mean": 0.04410558061634449,
+          "std": 0.00011804763386342353
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/sasrec/toys/seed42/results.json",
+        "out/matrix/leave_one_out/sasrec/toys/seed43/results.json",
+        "out/matrix/leave_one_out/sasrec/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "beauty",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.012144281312307414,
+          "std": 0.00014799648013915642
+        },
+        "Recall@10": {
+          "mean": 0.020602984713914568,
+          "std": 0.001342886277016065
+        },
+        "NDCG@5": {
+          "mean": 0.007354334789952816,
+          "std": 0.00010629154220735246
+        },
+        "NDCG@10": {
+          "mean": 0.01007119364936102,
+          "std": 0.0005537276910657648
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/tiger/beauty/seed42/results.json",
+        "out/matrix/global_temporal/tiger/beauty/seed43/results.json",
+        "out/matrix/global_temporal/tiger/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "beauty",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.03607148712903755,
+          "std": 0.0010329035245164122
+        },
+        "Recall@10": {
+          "mean": 0.056820045014831046,
+          "std": 0.0009866994090497907
+        },
+        "NDCG@5": {
+          "mean": 0.02341020515952329,
+          "std": 0.0009208315602560189
+        },
+        "NDCG@10": {
+          "mean": 0.030063399601121976,
+          "std": 0.0008613900753411665
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/tiger/beauty/seed42/results.json",
+        "out/matrix/leave_one_out/tiger/beauty/seed43/results.json",
+        "out/matrix/leave_one_out/tiger/beauty/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "sports",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.01186367558239862,
+          "std": 0.0008400432445749149
+        },
+        "Recall@10": {
+          "mean": 0.020491803278688523,
+          "std": 0.0020708255426969617
+        },
+        "NDCG@5": {
+          "mean": 0.007831128262174105,
+          "std": 0.00041930618304470796
+        },
+        "NDCG@10": {
+          "mean": 0.010599933516449512,
+          "std": 0.0007042051222761825
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/tiger/sports/seed42/results.json",
+        "out/matrix/global_temporal/tiger/sports/seed43/results.json",
+        "out/matrix/global_temporal/tiger/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "sports",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.020694046482012098,
+          "std": 0.0012424630881708104
+        },
+        "Recall@10": {
+          "mean": 0.03422476918178924,
+          "std": 0.0016948776374127704
+        },
+        "NDCG@5": {
+          "mean": 0.013069745596132469,
+          "std": 0.0008841216833939829
+        },
+        "NDCG@10": {
+          "mean": 0.017398850096074205,
+          "std": 0.0010263041518350806
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/tiger/sports/seed42/results.json",
+        "out/matrix/leave_one_out/tiger/sports/seed43/results.json",
+        "out/matrix/leave_one_out/tiger/sports/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "toys",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.01145268233875829,
+          "std": 0.00043404599145454816
+        },
+        "Recall@10": {
+          "mean": 0.018351081642220882,
+          "std": 0.001977740681834225
+        },
+        "NDCG@5": {
+          "mean": 0.0074389558748297994,
+          "std": 0.0001894595500694422
+        },
+        "NDCG@10": {
+          "mean": 0.00964126194060731,
+          "std": 0.0004038452099547575
+        }
+      },
+      "result_paths": [
+        "out/matrix/global_temporal/tiger/toys/seed42/results.json",
+        "out/matrix/global_temporal/tiger/toys/seed43/results.json",
+        "out/matrix/global_temporal/tiger/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "toys",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.028813792156054674,
+          "std": 0.0008582319527165186
+        },
+        "Recall@10": {
+          "mean": 0.04771962360052201,
+          "std": 0.0004234091629211451
+        },
+        "NDCG@5": {
+          "mean": 0.018101553767008626,
+          "std": 0.0004519174444146306
+        },
+        "NDCG@10": {
+          "mean": 0.024184491880684816,
+          "std": 0.00030958144657692883
+        }
+      },
+      "result_paths": [
+        "out/matrix/leave_one_out/tiger/toys/seed42/results.json",
+        "out/matrix/leave_one_out/tiger/toys/seed43/results.json",
+        "out/matrix/leave_one_out/tiger/toys/seed44/results.json"
+      ],
+      "selected_grpo_epochs": null
+    }
+  ],
+  "recovery_source_commit": "c621411bfd20c4067858bf13351ca547d84935ed",
+  "verification": {
+    "primary_unique_item_cells": 162,
+    "supplemental_unique_item_cells": 6,
+    "remote_cpu_pytest_passed": 97,
+    "mkdocs_build_strict": "passed",
+    "per_seed_sha256_mean_population_std_check": "passed"
+  }
+}
