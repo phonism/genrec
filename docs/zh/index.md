@@ -115,6 +115,27 @@ OneRec 主结果保持 3 码，4 码只作 Beauty 消融。GRPO 行允许验证�
 NoteLLM 是排除 query item 的 I2I 评测。这些结果证明本仓库适配链路已完成，
 不代表所有模型均复现原论文设置或分数。
 
+### Home extension
+
+Home 扩展已于 2026-10-31 完成 **54/54 格、18 条三种子行**，加上原三域后共
+**216 格、72 条汇总行**。下表沿用 item-level 与总体标准差口径。
+
+| Model | LOO R@10 | Global temporal R@10 |
+| --- | --- | --- |
+| SASRec (CE) | 0.0280 ± 0.0002 | 0.0098 ± 0.0006 |
+| HSTU (CE) | 0.0197 ± 0.0001 | 0.0107 ± 0.0008 |
+| TIGER (matrix recipe) | 0.0194 ± 0.0004 | 0.0123 ± 0.0001 |
+| LCRec (4B, seq20, gb128) | 0.0270 ± 0.0005 | 0.0102 ± 0.0008 |
+| COBRA (optimized light) | 0.0152 ± 0.0003 | 0.0089 ± 0.0003 |
+| RPG (direct) | 0.0061 ± 0.0007 | 0.0075 ± 0.0014 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0272 ± 0.0002 | 0.0083 ± 0.0001 |
+| OneRec SFT (3 SID) | 0.0211 ± 0.0001 | 0.0094 ± 0.0005 |
+| OneRec + GRPO (selected) | 0.0210 ± 0.0003 | 0.0098 ± 0.0004 |
+
+Home 的 6 个 GRPO 实验全部选回 SFT。RPG 直接迁移 Beauty 配方；未做四码 Home 消融。
+原始路径、命令与源码/配置校验和见
+[Home 来源记录](https://github.com/phonism/genrec/blob/main/results/home_20261022.provenance.json)。
+
 ## 阅读结果时的底线
 
 - 生成的 SID tuple 不等于唯一 item。存在碰撞时，必须先做训练集可见的 SID→item 解析，再进行 item 去重和指标计算。

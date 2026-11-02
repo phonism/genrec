@@ -10,8 +10,9 @@ A Model Zoo for Generative Recommendation.
 
 ## Benchmark Results
 
-The Amazon-2014 item-level matrix is complete: **162 cells, 54 three-seed rows**
-across Beauty/Sports/Toys and leave-one-out/global-temporal protocols.
+The Amazon-2014 item-level results cover **216 cells, 72 three-seed rows**
+across Beauty/Sports/Toys/Home and leave-one-out/global-temporal protocols:
+the original 162-cell snapshot plus the completed 54-cell Home extension.
 [BENCHMARKS.md](BENCHMARKS.md) reports mean ± population standard deviation,
 recipe boundaries and provenance; [per-seed CSV](results/matrix_20261022.csv)
 contains exact source artifact paths and checksums.
@@ -22,8 +23,8 @@ contains exact source artifact paths and checksums.
   is 50 except LCRec's paper recipe (20); these are not length-matched runs.
   Temporal rows and standard deviations are in BENCHMARKS.md.
 - OneRec uses 3×256 codes. Its 4-code Beauty ablation is reported separately.
-- OneRec + GRPO is validation-selected, including the SFT baseline: **16/18
-  cells fall back to SFT**. Random evaluation prompt templates also cause
+- OneRec + GRPO is validation-selected, including the SFT baseline: **22/24
+  cells fall back to SFT** (16/18 original + 6/6 Home). Random evaluation prompts cause
   baseline drift, so small table differences are not isolated RL gains.
 - NoteLLM is a GCL+CSFT I2I adaptation that excludes the query item. Completed
   repository runs do not imply reproduction of every original paper setting.
@@ -74,28 +75,34 @@ contains exact source artifact paths and checksums.
 
 Supplemental Beauty LOO: HSTU corrected Meta-local sampled softmax R@10 0.0754 ± 0.0021; OneRec 4-code suffix ablation R@10 0.0727 ± 0.0013.
 
-### Amazon 2014 Home (legacy snapshot; outside this matrix)
+### Amazon 2014 Home
 
-A separate **54-cell Home extension** (same nine pipelines, two protocols and
-three seeds) is being prepared with the [Home preset](config/matrix/amazon2014_home_20261022.json).
-The values below remain historical until the new item-level runs are complete.
-RPG transfers the Beauty recipe without Home-specific test tuning.
+The **54-cell Home extension completed on 2026-10-31**. These are new item-level
+runs using the [Home preset](config/matrix/amazon2014_home_20261022.json);
+[per-seed CSV](results/home_20261022.csv), [summary](results/home_20261022.summary.json)
+and [command/config provenance](results/home_20261022.provenance.json) preserve
+the result-to-recipe mapping. RPG transfers the Beauty recipe without Home test tuning.
 
-| Methods | R@5 | R@10 | N@5 | N@10 |
-|---------|-----|------|-----|------|
-| SASRec (CE) | 0.0177 | 0.0277 | 0.0106 | 0.0138 |
-| SASRec (BCE) | 0.0081 | 0.0143 | 0.0046 | 0.0066 |
-| HSTU (CE) | 0.0129 | 0.0208 | 0.0084 | 0.0109 |
-| HSTU (SS) | 0.0123 | 0.0193 | 0.0079 | 0.0102 |
-| TIGER † | - | - | - | - |
-| LCRec † | - | - | - | - |
+| Method | R@5 | R@10 | N@5 | N@10 |
+| --- | --- | --- | --- | --- |
+| SASRec (CE) | 0.0180 | 0.0280 | 0.0108 | 0.0140 |
+| HSTU (CE) | 0.0123 | 0.0197 | 0.0079 | 0.0103 |
+| TIGER (matrix recipe) | 0.0117 | 0.0194 | 0.0075 | 0.0100 |
+| LCRec (4B, seq20, gb128) | 0.0190 | 0.0270 | 0.0134 | 0.0160 |
+| COBRA (optimized light) | 0.0094 | 0.0152 | 0.0060 | 0.0079 |
+| RPG (direct) | 0.0039 | 0.0061 | 0.0025 | 0.0032 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0192 | 0.0272 | 0.0132 | 0.0157 |
+| OneRec SFT (3 SID) | 0.0137 | 0.0211 | 0.0090 | 0.0114 |
+| OneRec + GRPO (selected) | 0.0136 | 0.0210 | 0.0090 | 0.0114 |
 
-† Home TIGER/LCRec remain outside the verified snapshot; no legacy SID headline is used.
+SASRec has the highest Home LOO mean R@10 (0.0280); TIGER leads Home global
+temporal R@10 (0.0123). All six Home GRPO selections retain SFT weights.
+NoteLLM uses different I2I query/candidate semantics; no significance claim is made.
 
 ## Features
 
 - **Multiple Models**: 9 recommenders: SASRec, HSTU, TIGER, LCRec, COBRA, RPG, NoteLLM, OneRec, and GRAM; RQ-VAE/RQ-KMeans tokenizer components
-- **Multiple Datasets**: Amazon 2014 (Beauty, Sports, Toys, Clothing) and Amazon 2023 (32 categories)
+- **Multiple Datasets**: Amazon 2014 (Beauty, Sports, Toys, Home, Clothing) and Amazon 2023 (32 categories)
 - **Modular Design**: Clean separation of models, data, and training logic
 - **Flexible Configuration**: Gin-config based experiment management
 - **Easy Extension**: Add custom datasets and models with minimal code
@@ -199,6 +206,38 @@ or regenerated tokenizers. Checkpoints, cached embeddings, and raw result files
 are not bundled with Git; the CSV retains original result paths and SHA256s.
 OneRec/LCRec evaluation prompt sampling and the historical mixed source versions
 are documented in [BENCHMARKS.md](BENCHMARKS.md).
+
+### Reproduce Home
+
+After the installation, model-hub and source-archive setup above, prepare one
+seed-42 tokenizer per pipeline, shared by recommender seeds 42/43/44:
+
+```bash
+python scripts/prepare_amazon2014.py --splits home
+python -m genrec.trainers.rqvae_trainer config/tiger/amazon/rqvae.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqvae_trainer config/lcrec/amazon/rqvae_paper_recipe.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqvae_trainer config/cobra/amazon/rqvae.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqkmeans_trainer config/onerec/amazon/rqkmeans.gin \
+  --split home --gin 'fit_rqkmeans.seed=42'
+
+# 27 cells per protocol; remove --dry-run to train.
+for protocol in leave_one_out global_temporal; do
+  python scripts/run_matrix.py --preset amazon2014_home_20261022 \
+    --models sasrec hstu tiger lcrec cobra rpg notellm onerec_sft onerec_grpo \
+    --splits home --seeds 42 43 44 \
+    --evaluation-protocol "$protocol" \
+    --save-dir-root 'out/reproduce_home_20261022/{protocol}/{model}/{split}/seed{seed}' \
+    --dry-run
+done
+```
+
+To audit a recovered Home raw-results mirror, including the recorded commands
+and config hashes, run `python scripts/check_benchmarks.py --home-artifacts out/home_extension_20261022`.
+The published snapshot used source commit `45acaa29`; rebuilt tokenizers,
+hardware and sampled prompts can change exact scores.
 
 ### Train Baseline Models
 

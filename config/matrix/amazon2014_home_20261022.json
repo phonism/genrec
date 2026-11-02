@@ -103,10 +103,13 @@
       ]
     }
   },
-  "status": "planned",
+  "status": "complete",
   "notes": [
-    "Home is a separate 54-cell extension; no legacy values are used to fill missing cells.",
+    "Home is a completed 54-cell extension; all metrics come from new item-level runs, with no legacy values used.",
     "RPG transfers the Beauty training recipe unchanged; this is not an original-paper Home configuration.",
     "Main OneRec uses three codes; no four-code Home ablation is included."
-  ]
+  ],
+  "completed_at": "2026-10-31T01:30:47.123181+00:00",
+  "summary_json": "results/home_20261022.summary.json",
+  "provenance_json": "results/home_20261022.provenance.json"
 }

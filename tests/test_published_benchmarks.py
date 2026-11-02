@@ -46,6 +46,51 @@ def test_audit_rejects_mixing_the_four_code_recipe_into_main(snapshot):
     assert "CSV/preset recipe mismatch: onerec_sft" in check_snapshot(snapshot)
 
 
+def test_audit_rejects_a_stale_home_readme_number(snapshot):
+    readme = snapshot / "README.md"
+    before, title, home = readme.read_text().partition("### Amazon 2014 Home")
+    readme.write_text(before + title + home.replace("0.0280", "0.9999", 1))
+    assert "README.md Home row mismatch: sasrec" in check_snapshot(snapshot)
+
+
+def test_audit_rejects_a_duplicate_home_protocol_cell(snapshot):
+    path = snapshot / "results/home_20261022.csv"
+    path.write_text(path.read_text().replace(
+        "home,global_temporal,42", "home,leave_one_out,42", 1))
+    assert ("Home CSV must contain exactly the 54 unique expected cells"
+            in check_snapshot(snapshot))
+
+
+def test_audit_rejects_home_grpo_loading_a_different_sft_seed(snapshot):
+    path = snapshot / "results/home_20261022.provenance.json"
+    provenance = json.loads(path.read_text())
+    receipt = next(r for r in provenance["cells"]
+                   if (r["model"], r["protocol"], r["seed"]) ==
+                   ("onerec_grpo", "leave_one_out", 42))
+    command = receipt["command"]
+    index = next(i for i, value in enumerate(command)
+                 if value.startswith("train_grpo.sft_checkpoint_path="))
+    command[index] = command[index].replace("seed42", "seed43")
+    path.write_text(json.dumps(provenance))
+    assert any("Home command/preset mismatch:" in e for e in check_snapshot(snapshot))
+
+
+def test_audit_rejects_a_changed_home_summary_std(snapshot):
+    path = snapshot / "results/home_20261022.summary.json"
+    summary = json.loads(path.read_text())
+    summary["rows"][0]["metrics"]["Recall@10"]["std"] += 0.1
+    path.write_text(json.dumps(summary))
+    assert any("Home summary" in e and "std mismatch" in e
+               for e in check_snapshot(snapshot))
+
+
+def test_audit_rejects_home_rpg_include_config_drift(snapshot):
+    path = snapshot / "config/rpg/amazon.gin"
+    path.write_text(path.read_text() + "\n# changed included recipe\n")
+    assert ("Home source config checksum mismatch: config/rpg/amazon.gin"
+            in check_snapshot(snapshot))
+
+
 def test_published_preset_prepares_the_matching_recipes_and_dependencies():
     cells = build_cells(
         ["onerec_grpo", "cobra", "lcrec", "onerec_sft"], ["sports"], [43],

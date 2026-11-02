@@ -6,7 +6,7 @@
 
 ## 复现结果
 
-当前已完成 Amazon Reviews 2014 的 **Beauty、Sports、Toys** 主矩阵：**8 种推荐器、9 条训练流水线 × 3 个数据集 × 2 种切分协议 × 3 个种子，共 162 个实验、54 条三种子汇总行**。OneRec 的 SFT 与 GRPO 分别算一条流水线。
+当前已完成 Amazon Reviews 2014 的 **Beauty、Sports、Toys、Home**：**8 种推荐器、9 条训练流水线 × 4 个数据集 × 2 种切分协议 × 3 个种子，共 216 个实验、72 条三种子汇总行**。其中原三域快照为 162 格，Home 扩展为 54 格；OneRec 的 SFT 与 GRPO 分别算一条流水线。
 
 完整指标、均值 ± 总体标准差、配方边界与来源见 [BENCHMARKS.md](BENCHMARKS.md)；[逐种子 CSV](results/matrix_20261022.csv) 保留了原始结果路径和 SHA256，[汇总 JSON](results/matrix_20261022.summary.json) 可供程序读取。
 
@@ -15,7 +15,7 @@
 - 主指标都是 **item-level** Recall/NDCG，评测覆盖完整商品目录，不使用抽样负例。SID 模型先按训练集流行度解析到确定的 item，再去重；不会把同一 SID 下的全部商品都算作命中。自回归模型的 top-K 由 beam search 近似获得。
 - 下表为 **leave-one-out 测试集**上 seed 42/43/44 的均值，按 validation 选择模型；全局时间切分和标准差见 BENCHMARKS。历史长度通常为 50，LCRec 的论文适配配方为 20，因此并非严格等历史长度对照。
 - `global_temporal` 使用全局 80%/90% 时间边界；商品目录、元数据过滤和部分 SID 构建仍使用全量信息，不能称为完全无泄漏的归纳式评测。
-- OneRec 主结果使用 **3×256 码本**，四码 Beauty 消融单独报告。GRPO 把初始 SFT 也纳入 validation 选择，**18 个实验中有 16 个回选 SFT**。OneRec/LCRec 的评测模板仍随机采样，细小差异不能当作隔离的 RL 收益。
+- OneRec 主结果使用 **3×256 码本**，四码 Beauty 消融单独报告。GRPO 把初始 SFT 也纳入 validation 选择，**24 个实验中有 22 个回选 SFT**（原三域 16/18，Home 6/6）。OneRec/LCRec 的评测模板仍随机采样，细小差异不能当作隔离的 RL 收益。
 - NoteLLM 是 GCL+CSFT 的 **I2I 适配**：取历史末项作为查询，并排除查询商品自身。它的查询和候选语义与序列推荐不同。
 - 本次矩阵验证的是仓库中的适配实现。TIGER/COBRA 的独立论文对齐实验与历史 SID 指标分开保留，不代表所有原论文效果都已复现。
 
@@ -65,11 +65,31 @@ Beauty 的补充实验：修正后的 HSTU Meta-local sampled softmax，R@10 = 0
 
 ### Amazon 2014 Home
 
-Home 的完整复现正在准备，目标沿用主矩阵的 9 条流水线、两种切分协议和三个种子，共 54 个实验，使用独立的 [Home 配方清单](config/matrix/amazon2014_home_20261022.json)。RPG 直接迁移 Beauty 配方，不以 Home test 调参。英文 README 中的 Home 表仍是历史快照，尚未纳入这次核验的 162 个实验；在新结果完成前，不用旧 SID 数字补表。
+Home 的 **54 个实验已于 2026-10-31 完成**，全部使用新训练的 item-level 结果，
+覆盖相同的 9 条流水线、两种协议和三个种子。对应
+[Home 配方](config/matrix/amazon2014_home_20261022.json)、
+[逐种子 CSV](results/home_20261022.csv)、
+[汇总 JSON](results/home_20261022.summary.json) 和
+[命令/配置校验和](results/home_20261022.provenance.json)。RPG 直接迁移 Beauty 配方，没有用 Home test 调参。
+
+| 方法 | R@5 | R@10 | N@5 | N@10 |
+| --- | --- | --- | --- | --- |
+| SASRec (CE) | 0.0180 | 0.0280 | 0.0108 | 0.0140 |
+| HSTU (CE) | 0.0123 | 0.0197 | 0.0079 | 0.0103 |
+| TIGER (matrix recipe) | 0.0117 | 0.0194 | 0.0075 | 0.0100 |
+| LCRec (4B, seq20, gb128) | 0.0190 | 0.0270 | 0.0134 | 0.0160 |
+| COBRA (optimized light) | 0.0094 | 0.0152 | 0.0060 | 0.0079 |
+| RPG (direct) | 0.0039 | 0.0061 | 0.0025 | 0.0032 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0192 | 0.0272 | 0.0132 | 0.0157 |
+| OneRec SFT (3 SID) | 0.0137 | 0.0211 | 0.0090 | 0.0114 |
+| OneRec + GRPO (selected) | 0.0136 | 0.0210 | 0.0090 | 0.0114 |
+
+Home 的 LOO R@10 均值以 SASRec 最高（0.0280），时间切分以 TIGER 最高（0.0123）。
+6 个 GRPO 实验全部选回 SFT 起点。NoteLLM 的 I2I 口径不同，本次不作显著性结论。
 
 ### 当前结论
 
-SASRec 在 LOO 的 R@10 上仍是强基线，生成模型没有在各数据集上全面胜出。RPG 在 Toys 上有竞争力；NoteLLM 的 I2I 结果需结合任务差异理解。所有模型在全局时间切分下的 R@10 都低于对应 LOO 结果，结论依赖数据协议。GRPO 尚未显示稳定的隔离收益；OneRec 四码在 Beauty 的改善也不能直接推广到其他域。本次没有做显著性结论。
+SASRec 在 LOO 的 R@10 上仍是强基线，生成模型没有在各数据集上全面胜出。RPG 在 Toys 上有竞争力；Home 的 RPG 直接迁移 Beauty 配方，LOO R@10 为 0.0061，未显示同样优势。NoteLLM 的 I2I 结果需结合任务差异理解。切分协议会改变指标和模型排序，Home 的 RPG 时间切分结果（0.0075）高于 LOO，因此不能概括为所有时间切分结果都更低。GRPO 尚未显示稳定的隔离收益；OneRec 四码在 Beauty 的改善也不能直接推广到其他域。本次没有做显著性结论。
 
 ## 模型与组件
 
@@ -154,6 +174,34 @@ runner 会固定 LCRec 的 4B/四码/seq20 配方、COBRA optimized-light 和 RP
 
 这些命令用于复现配方，不保证不同硬件或重新训练 tokenizer 后的数字逐位相同。模型权重、embedding 缓存、tokenizer checkpoint 和原始结果文件未随 Git 发布；CSV 保留原始结果路径与校验和。历史源码版本混用和随机评测模板等限制见 BENCHMARKS。
 
+### 复现 Home
+
+先完成上面的依赖、模型 hub 与源码 archive 设置，再准备每条流水线各自的 seed-42 tokenizer。推荐器的三个种子共享该 tokenizer；每种协议各 27 格，共 54 格：
+
+```bash
+python scripts/prepare_amazon2014.py --splits home
+python -m genrec.trainers.rqvae_trainer config/tiger/amazon/rqvae.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqvae_trainer config/lcrec/amazon/rqvae_paper_recipe.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqvae_trainer config/cobra/amazon/rqvae.gin \
+  --split home --gin 'train.seed=42' --gin 'train.wandb_logging=False'
+python -m genrec.trainers.rqkmeans_trainer config/onerec/amazon/rqkmeans.gin \
+  --split home --gin 'fit_rqkmeans.seed=42'
+
+# 每种协议 27 格；去掉 --dry-run 后才会训练。
+for protocol in leave_one_out global_temporal; do
+  python scripts/run_matrix.py --preset amazon2014_home_20261022 \
+    --models sasrec hstu tiger lcrec cobra rpg notellm onerec_sft onerec_grpo \
+    --splits home --seeds 42 43 44 \
+    --evaluation-protocol "$protocol" \
+    --save-dir-root 'out/reproduce_home_20261022/{protocol}/{model}/{split}/seed{seed}' \
+    --dry-run
+done
+```
+
+这组已发布结果使用 `45acaa29` 源码；重新生成 tokenizer、硬件变化和随机评测模板可能影响精确分数。Home 的 RPG 配方由 Beauty 直接迁移，没有四码 Home 消融。
+
 ### 检查数字一致性
 
 无需导入 PyTorch 即可核对中英文 README、BENCHMARKS、双语文档首页与 CSV/汇总 JSON：
@@ -163,6 +211,9 @@ python scripts/check_benchmarks.py
 
 # 如已恢复 primary/ 与 ablations/ 原始结果目录，可进一步核对 JSON 与 SHA256。
 python scripts/check_benchmarks.py --artifacts out/matrix_20261022
+
+# Home 镜像按 protocol/model/home/seed*/ 保存 results.json 与 matrix_cell.json。
+python scripts/check_benchmarks.py --home-artifacts out/home_extension_20261022
 ```
 
 ### 单模型起步

@@ -1,0 +1,742 @@
+{
+  "snapshot_date": "2026-11-02",
+  "snapshot": "home_extension_20261022",
+  "queue_completed_at": "2026-10-31T01:30:47.123181+00:00",
+  "queue_successful_jobs": 68,
+  "main_cells": 54,
+  "main_rows": 18,
+  "standard_deviation": "population",
+  "evaluation_level": "item",
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "models": [
+    "sasrec",
+    "hstu",
+    "tiger",
+    "lcrec",
+    "cobra",
+    "rpg",
+    "notellm",
+    "onerec_sft",
+    "onerec_grpo"
+  ],
+  "splits": [
+    "home"
+  ],
+  "protocols": [
+    "leave_one_out",
+    "global_temporal"
+  ],
+  "grpo_sft_fallback_cells": 6,
+  "git_sha": "45acaa29fc8cadd1f29dc9c58c8f715035c8ecee",
+  "source_bundle": "genrec-source-45acaa29fc8cadd1f29dc9c58c8f715035c8ecee.tar.gz",
+  "source_bundle_sha256": "17f7f0c66a39677526e69cc977c4fda9d871d304a1a3a9bd35cf781cc077941a",
+  "limitations": [
+    "LCRec history is 20; other sequence models use 50.",
+    "OneRec/LCRec evaluation prompt templates are sampled independently between passes.",
+    "All 6 selected GRPO policies are initial SFT weights; small test differences are evaluation drift.",
+    "RPG transfers the Beauty recipe without Home test tuning.",
+    "NoteLLM is last-history-item I2I retrieval excluding the query item.",
+    "OneRec main results keep 3 SID codes; no Home 4-code ablation was run.",
+    "Catalog/metadata filtering and some SID construction remain transductive."
+  ],
+  "rows": [
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0012211902304781561,
+          "std": 8.770243401432376e-05
+        },
+        "Recall@5": {
+          "mean": 0.005263157894736842,
+          "std": 4.213088652877838e-05
+        },
+        "Recall@10": {
+          "mean": 0.008926728586171311,
+          "std": 0.000294916205701449
+        },
+        "NDCG@5": {
+          "mean": 0.003201720687504031,
+          "std": 6.156077754955518e-05
+        },
+        "NDCG@10": {
+          "mean": 0.004379001875943977,
+          "std": 9.32328153718592e-05
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/cobra/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/cobra/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/cobra/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "cobra",
+      "recipe": "optimized_light",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.00264586058118733,
+          "std": 8.851366643443076e-05
+        },
+        "Recall@5": {
+          "mean": 0.009385789523795207,
+          "std": 0.00014746602694530567
+        },
+        "Recall@10": {
+          "mean": 0.015173609545142491,
+          "std": 0.000288997546671802
+        },
+        "NDCG@5": {
+          "mean": 0.006029621327793798,
+          "std": 6.09909829883694e-05
+        },
+        "NDCG@10": {
+          "mean": 0.007886885650446207,
+          "std": 9.819597211074946e-05
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/cobra/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/cobra/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/cobra/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0017027863777089784,
+          "std": 0.0004557152149807971
+        },
+        "Recall@5": {
+          "mean": 0.006209150326797385,
+          "std": 0.00021205414526897037
+        },
+        "Recall@10": {
+          "mean": 0.010698314413484691,
+          "std": 0.000765732001704577
+        },
+        "NDCG@5": {
+          "mean": 0.0038870581491402757,
+          "std": 0.0003050113244865384
+        },
+        "NDCG@10": {
+          "mean": 0.005310009778222556,
+          "std": 0.0004798551685491417
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/hstu/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/hstu/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/hstu/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "hstu",
+      "recipe": "ce",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0034125588177813856,
+          "std": 0.00017702733286886155
+        },
+        "Recall@5": {
+          "mean": 0.01230726058218955,
+          "std": 1.87498177802529e-05
+        },
+        "Recall@10": {
+          "mean": 0.01973371016802217,
+          "std": 6.760342941230969e-05
+        },
+        "NDCG@5": {
+          "mean": 0.007872573400717354,
+          "std": 0.00013476715104998892
+        },
+        "NDCG@10": {
+          "mean": 0.010257786915987662,
+          "std": 0.00015062330043901287
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/hstu/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/hstu/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/hstu/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0015995872033023736,
+          "std": 0.0004019030425025086
+        },
+        "Recall@5": {
+          "mean": 0.006329549363605092,
+          "std": 0.0006324312456432828
+        },
+        "Recall@10": {
+          "mean": 0.010165118679050568,
+          "std": 0.0007802749378888029
+        },
+        "NDCG@5": {
+          "mean": 0.003934133639235574,
+          "std": 0.0005313388226938377
+        },
+        "NDCG@10": {
+          "mean": 0.005171176449802269,
+          "std": 0.0005992309018927107
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/lcrec/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/lcrec/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/lcrec/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "lcrec",
+      "recipe": "qwen3_4b_usm_gb128",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 20,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.007661971266354976,
+          "std": 0.00045421685808564585
+        },
+        "Recall@5": {
+          "mean": 0.018987056329770442,
+          "std": 0.0004358792571141604
+        },
+        "Recall@10": {
+          "mean": 0.027034882264215236,
+          "std": 0.00046616694897428734
+        },
+        "NDCG@5": {
+          "mean": 0.013421697443626696,
+          "std": 0.0004481158062670654
+        },
+        "NDCG@10": {
+          "mean": 0.016012392498211663,
+          "std": 0.00044595709771229136
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/lcrec/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/lcrec/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/lcrec/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.001651186790505676,
+          "std": 0.00021065443264389215
+        },
+        "Recall@5": {
+          "mean": 0.00545235638114895,
+          "std": 0.00023203882977695275
+        },
+        "Recall@10": {
+          "mean": 0.008273133814929482,
+          "std": 9.72971147143511e-05
+        },
+        "NDCG@5": {
+          "mean": 0.0035538393374895125,
+          "std": 0.00010545910832615224
+        },
+        "NDCG@10": {
+          "mean": 0.004456501109394209,
+          "std": 7.20652061868555e-05
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/notellm/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/notellm/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/notellm/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "notellm",
+      "recipe": "gcl_csft_category_fnmask",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.006810084336806025,
+          "std": 0.0002028102882369254
+        },
+        "Recall@5": {
+          "mean": 0.019187500313193724,
+          "std": 0.00024590155487174596
+        },
+        "Recall@10": {
+          "mean": 0.027205259650125026,
+          "std": 0.00017631666226450868
+        },
+        "NDCG@5": {
+          "mean": 0.013160164575633604,
+          "std": 0.00018027819944165684
+        },
+        "NDCG@10": {
+          "mean": 0.01574402748906703,
+          "std": 0.0001217048861045722
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/notellm/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/notellm/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/notellm/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0012211902304781561,
+          "std": 0.00010602707263448528
+        },
+        "Recall@5": {
+          "mean": 0.005761953904368765,
+          "std": 0.00019910280190557655
+        },
+        "Recall@10": {
+          "mean": 0.009769521843825249,
+          "std": 0.0003982056038111531
+        },
+        "NDCG@5": {
+          "mean": 0.00349743347377928,
+          "std": 0.00014548636888334974
+        },
+        "NDCG@10": {
+          "mean": 0.004785516330127171,
+          "std": 0.0001997409392192773
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/onerec_grpo/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/onerec_grpo/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/onerec_grpo/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "onerec_grpo",
+      "recipe": "v2b_3sid_validation_selected",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004284490145672665,
+          "std": 0.00010909936036860255
+        },
+        "Recall@5": {
+          "mean": 0.01364522417153996,
+          "std": 0.00023938164860157606
+        },
+        "Recall@10": {
+          "mean": 0.02102156276151676,
+          "std": 0.00026019142371847887
+        },
+        "NDCG@5": {
+          "mean": 0.008979068017984053,
+          "std": 0.00021037956484995605
+        },
+        "NDCG@10": {
+          "mean": 0.011352160416181216,
+          "std": 0.00020470593734423954
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/onerec_grpo/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/onerec_grpo/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/onerec_grpo/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0011695906432748538,
+          "std": 8.770243401432376e-05
+        },
+        "Recall@5": {
+          "mean": 0.005813553491572068,
+          "std": 0.0003799573793322073
+        },
+        "Recall@10": {
+          "mean": 0.009425524595803232,
+          "std": 0.0005498578384295077
+        },
+        "NDCG@5": {
+          "mean": 0.003495157581036715,
+          "std": 0.0002416813308089718
+        },
+        "NDCG@10": {
+          "mean": 0.004655842211880469,
+          "std": 0.00029423160214161564
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/onerec_sft/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/onerec_sft/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/onerec_sft/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "onerec_sft",
+      "recipe": "v2b_3sid",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.004284490145672665,
+          "std": 0.0001567120749571491
+        },
+        "Recall@5": {
+          "mean": 0.013735423964080439,
+          "std": 0.0002459015548717468
+        },
+        "Recall@10": {
+          "mean": 0.021076684856958162,
+          "std": 5.350390240398118e-05
+        },
+        "NDCG@5": {
+          "mean": 0.008998367357818662,
+          "std": 0.00024133358076223156
+        },
+        "NDCG@10": {
+          "mean": 0.011361415535410936,
+          "std": 0.00018400384177035778
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/onerec_sft/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/onerec_sft/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/onerec_sft/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0011695906432748538,
+          "std": 0.0003431361772146543
+        },
+        "Recall@5": {
+          "mean": 0.004626762985896113,
+          "std": 0.00029890174057417893
+        },
+        "Recall@10": {
+          "mean": 0.007533539731682147,
+          "std": 0.0013864838846795052
+        },
+        "NDCG@5": {
+          "mean": 0.0028392876387872685,
+          "std": 0.0003704470420232138
+        },
+        "NDCG@10": {
+          "mean": 0.0037776956207201903,
+          "std": 0.0002879120673381541
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/rpg/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/rpg/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/rpg/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "rpg",
+      "recipe": "direct_item_scoring",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0010372976142154875,
+          "std": 0.00024518568274177444
+        },
+        "Recall@5": {
+          "mean": 0.0039036465771684283,
+          "std": 0.0002552219481801558
+        },
+        "Recall@10": {
+          "mean": 0.006073452697725462,
+          "std": 0.0006638524982582303
+        },
+        "NDCG@5": {
+          "mean": 0.002516490239870571,
+          "std": 0.0002631917628529693
+        },
+        "NDCG@10": {
+          "mean": 0.003215120377745104,
+          "std": 0.00039092998600566707
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/rpg/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/rpg/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/rpg/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0006879944960440316,
+          "std": 0.0001060270726344853
+        },
+        "Recall@5": {
+          "mean": 0.005503955968352253,
+          "std": 8.770243401432373e-05
+        },
+        "Recall@10": {
+          "mean": 0.00980392156862745,
+          "std": 0.0006485967538687577
+        },
+        "NDCG@5": {
+          "mean": 0.0031449580053139847,
+          "std": 4.706633239893806e-05
+        },
+        "NDCG@10": {
+          "mean": 0.004520533180827327,
+          "std": 0.00015902628361223295
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/sasrec/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/sasrec/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/sasrec/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "sasrec",
+      "recipe": "ce",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@1": {
+          "mean": 0.0031469705397455363,
+          "std": 0.0002237667790332197
+        },
+        "Recall@5": {
+          "mean": 0.017974814213482865,
+          "std": 0.00019028986751702638
+        },
+        "Recall@10": {
+          "mean": 0.027951913488376754,
+          "std": 0.00019728718797165176
+        },
+        "NDCG@5": {
+          "mean": 0.010798077592942587,
+          "std": 0.000187286131936603
+        },
+        "NDCG@10": {
+          "mean": 0.014015564739570023,
+          "std": 0.00010085171647512055
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/sasrec/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/sasrec/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/sasrec/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "home",
+      "protocol": "global_temporal",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.007447540419676642,
+          "std": 0.0001595049620828295
+        },
+        "Recall@10": {
+          "mean": 0.012332301341589268,
+          "std": 8.426177305755676e-05
+        },
+        "NDCG@5": {
+          "mean": 0.004550935476146943,
+          "std": 0.00021268504626289355
+        },
+        "NDCG@10": {
+          "mean": 0.006120543456647583,
+          "std": 0.00019868719259712024
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/global_temporal/tiger/home/seed42/results.json",
+        "out/home_extension_20261022/global_temporal/tiger/home/seed43/results.json",
+        "out/home_extension_20261022/global_temporal/tiger/home/seed44/results.json"
+      ]
+    },
+    {
+      "model": "tiger",
+      "recipe": "legacy_matrix_rqvae",
+      "split": "home",
+      "protocol": "leave_one_out",
+      "max_seq_len": 50,
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "metrics": {
+        "Recall@5": {
+          "mean": 0.01167586203440621,
+          "std": 0.0003763999650869462
+        },
+        "Recall@10": {
+          "mean": 0.019402977595373752,
+          "std": 0.00040827393781363037
+        },
+        "NDCG@5": {
+          "mean": 0.00752148270882382,
+          "std": 0.00032704618013632675
+        },
+        "NDCG@10": {
+          "mean": 0.009999763135591469,
+          "std": 0.0003312221143111583
+        }
+      },
+      "result_paths": [
+        "out/home_extension_20261022/leave_one_out/tiger/home/seed42/results.json",
+        "out/home_extension_20261022/leave_one_out/tiger/home/seed43/results.json",
+        "out/home_extension_20261022/leave_one_out/tiger/home/seed44/results.json"
+      ]
+    }
+  ]
+}

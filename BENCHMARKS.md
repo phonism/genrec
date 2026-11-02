@@ -1,15 +1,22 @@
 # GenRec Reproducibility Matrix
 
-Last updated: 2026-10-22. The completed snapshot contains **162 main cells**:
-9 training/evaluation pipelines × Beauty/Sports/Toys × 2 protocols × 3 seeds.
-The recovery queue finished **84/84 jobs** on 2026-10-21; it includes tokenizer
-and smoke jobs and is not the denominator of the full matrix. Workers and the
-remote monitor exited after completion.
+Last updated: 2026-11-02. Published results contain **216 main cells / 72
+three-seed rows**: the original Beauty/Sports/Toys snapshot (162 cells) plus
+the completed Home extension (54 cells), each with nine pipelines, two protocols
+and seeds 42/43/44.
+
+The original recovery queue finished **84/84 jobs** on 2026-10-21; the Home
+queue finished **68/68 jobs** on 2026-10-31. Queue counts include tokenizer,
+health and smoke jobs, so they are not the denominator of either result matrix.
+All Home workers and both monitors exited after successful completion.
 
 Per-seed metrics, recipe labels, original artifact paths and SHA256 checksums:
 [main CSV](results/matrix_20261022.csv),
 [supplemental CSV](results/ablations_20261022.csv), and
 [machine-readable summary](results/matrix_20261022.summary.json).
+Home: [per-seed CSV](results/home_20261022.csv),
+[summary](results/home_20261022.summary.json), and
+[recorded commands/config hashes](results/home_20261022.provenance.json).
 
 ## What the completed runs support
 
@@ -20,11 +27,11 @@ Per-seed metrics, recipe labels, original artifact paths and SHA256 checksums:
   the table is not evidence of a universally strongest model.
 - RPG is competitive on Toys (LOO N@10 0.0472 versus SASRec 0.0441). Larger
   autoregressive models do not consistently beat the discriminative baseline.
-- Global-temporal R@10 is lower than LOO for every model/domain here. This
+- Global-temporal R@10 is lower than LOO for every Beauty/Sports/Toys row. This
   shows that conclusions depend on the split; it does not isolate the cause
   of the gap or make the remaining transductive inputs disappear.
-- GRPO does not show a consistent isolated improvement: 16/18 selected policies
-  are SFT, and evaluation prompts vary between passes.
+- GRPO does not show a consistent isolated improvement: 22/24 selected policies
+  across both snapshots are SFT, and evaluation prompts vary between passes.
 - Beauty's four-code OneRec ablation improves R@10 from 0.0658 to 0.0727, but
   only that domain/protocol was tested. The main recipe stays at three codes.
   TIGER/COBRA paper audits use separate recipes and do not establish that every
@@ -49,6 +56,8 @@ Check all published table values without PyTorch:
 python scripts/check_benchmarks.py
 # Optional: also verify a recovered primary/ + ablations/ raw-results mirror.
 python scripts/check_benchmarks.py --artifacts out/matrix_20261022
+# Optional: also verify the separate Home raw-results/command-receipt mirror.
+python scripts/check_benchmarks.py --home-artifacts out/home_extension_20261022
 ```
 
 ## Protocol and interpretation
@@ -68,8 +77,8 @@ python scripts/check_benchmarks.py --artifacts out/matrix_20261022
   item and its own catalog ID is excluded. Its candidate/query semantics differ
   from sequence models. These are repository adaptations, not a claim that all
   original paper results or settings have been reproduced.
-- GRAM, OneRec CLM, Home, and cross-dataset HSTU sampled-softmax are outside this
-  matrix. RQ-VAE/RQ-KMeans are tokenizer stages, not recommender rows.
+- GRAM, OneRec CLM and cross-dataset HSTU sampled-softmax are outside these
+  completed matrices. RQ-VAE/RQ-KMeans are tokenizer stages, not recommender rows.
 
 ## Leave-one-out: 27 complete rows
 
@@ -135,7 +144,82 @@ python scripts/check_benchmarks.py --artifacts out/matrix_20261022
 | OneRec SFT (3 SID) | Toys | 3 | 0.0036 ± 0.0003 | 0.0131 ± 0.0008 | 0.0208 ± 0.0003 | 0.0107 ± 0.0004 |
 | OneRec + GRPO (selected) | Toys | 3 | 0.0034 ± 0.0002 | 0.0127 ± 0.0008 | 0.0208 ± 0.0005 | 0.0107 ± 0.0004 |
 
+## Home extension: 54 complete cells
+
+The Home extension completed on **2026-10-31**: nine pipelines × two protocols ×
+three seeds, with **54/54 validated item-level results**. The 68-job execution
+queue also includes tokenizer, health and smoke stages. Seed-42 tokenizers are
+shared by recommender seeds 42/43/44; tokenizer randomness was not repeated.
+
+The dated entry point is `--preset amazon2014_home_20261022` and
+[its recipe manifest](config/matrix/amazon2014_home_20261022.json). Follow the
+README Home preparation commands after setting up the source archive. Use
+`python scripts/check_benchmarks.py --home-artifacts out/home_extension_20261022`
+to check recovered raw results and command receipts against the public CSV,
+summary, preset and Markdown. The original 162-cell audit remains independent.
+
+### Leave-one-out
+
+| Model | n | R@1 | R@5 | R@10 | N@10 |
+| --- | --- | --- | --- | --- | --- |
+| SASRec (CE) | 3 | 0.0031 ± 0.0002 | 0.0180 ± 0.0002 | 0.0280 ± 0.0002 | 0.0140 ± 0.0001 |
+| HSTU (CE) | 3 | 0.0034 ± 0.0002 | 0.0123 ± 0.0000 | 0.0197 ± 0.0001 | 0.0103 ± 0.0002 |
+| TIGER (matrix recipe) | 3 | — | 0.0117 ± 0.0004 | 0.0194 ± 0.0004 | 0.0100 ± 0.0003 |
+| LCRec (4B, seq20, gb128) | 3 | 0.0077 ± 0.0005 | 0.0190 ± 0.0004 | 0.0270 ± 0.0005 | 0.0160 ± 0.0004 |
+| COBRA (optimized light) | 3 | 0.0026 ± 0.0001 | 0.0094 ± 0.0001 | 0.0152 ± 0.0003 | 0.0079 ± 0.0001 |
+| RPG (direct) | 3 | 0.0010 ± 0.0002 | 0.0039 ± 0.0003 | 0.0061 ± 0.0007 | 0.0032 ± 0.0004 |
+| NoteLLM (GCL+CSFT, I2I) | 3 | 0.0068 ± 0.0002 | 0.0192 ± 0.0002 | 0.0272 ± 0.0002 | 0.0157 ± 0.0001 |
+| OneRec SFT (3 SID) | 3 | 0.0043 ± 0.0002 | 0.0137 ± 0.0002 | 0.0211 ± 0.0001 | 0.0114 ± 0.0002 |
+| OneRec + GRPO (selected) | 3 | 0.0043 ± 0.0001 | 0.0136 ± 0.0002 | 0.0210 ± 0.0003 | 0.0114 ± 0.0002 |
+
+### Global temporal
+
+| Model | n | R@1 | R@5 | R@10 | N@10 |
+| --- | --- | --- | --- | --- | --- |
+| SASRec (CE) | 3 | 0.0007 ± 0.0001 | 0.0055 ± 0.0001 | 0.0098 ± 0.0006 | 0.0045 ± 0.0002 |
+| HSTU (CE) | 3 | 0.0017 ± 0.0005 | 0.0062 ± 0.0002 | 0.0107 ± 0.0008 | 0.0053 ± 0.0005 |
+| TIGER (matrix recipe) | 3 | — | 0.0074 ± 0.0002 | 0.0123 ± 0.0001 | 0.0061 ± 0.0002 |
+| LCRec (4B, seq20, gb128) | 3 | 0.0016 ± 0.0004 | 0.0063 ± 0.0006 | 0.0102 ± 0.0008 | 0.0052 ± 0.0006 |
+| COBRA (optimized light) | 3 | 0.0012 ± 0.0001 | 0.0053 ± 0.0000 | 0.0089 ± 0.0003 | 0.0044 ± 0.0001 |
+| RPG (direct) | 3 | 0.0012 ± 0.0003 | 0.0046 ± 0.0003 | 0.0075 ± 0.0014 | 0.0038 ± 0.0003 |
+| NoteLLM (GCL+CSFT, I2I) | 3 | 0.0017 ± 0.0002 | 0.0055 ± 0.0002 | 0.0083 ± 0.0001 | 0.0045 ± 0.0001 |
+| OneRec SFT (3 SID) | 3 | 0.0012 ± 0.0001 | 0.0058 ± 0.0004 | 0.0094 ± 0.0005 | 0.0047 ± 0.0003 |
+| OneRec + GRPO (selected) | 3 | 0.0012 ± 0.0001 | 0.0058 ± 0.0002 | 0.0098 ± 0.0004 | 0.0048 ± 0.0002 |
+
+SASRec has the highest Home LOO mean R@10 (0.0280), followed by NoteLLM I2I
+(0.0272) and LCRec (0.0270). TIGER has the highest global-temporal mean R@10
+(0.0123). NoteLLM's query/candidate semantics differ and LCRec uses history 20;
+this is not a significance claim or a strict task/history-matched ranking.
+
+RPG transfers the Beauty training recipe unchanged and scores 0.0061 LOO /
+0.0075 temporal R@10. Home was not tuned on test. This is a completed
+repository recipe, not an original-paper Home reproduction claim.
+
+**All 6/6 Home GRPO cells selected initial SFT weights (`best_epoch=-1`).**
+The mean R@10 differences below are independent evaluation passes with sampled
+prompt templates; they do not establish RL gains.
+
+| Protocol | SFT R@10 | Selected pipeline R@10 | RL epochs selected |
+| --- | --- | --- | --- |
+| leave_one_out | 0.0211 ± 0.0001 | 0.0210 ± 0.0003 | 0/3 |
+| global_temporal | 0.0094 ± 0.0005 | 0.0098 ± 0.0004 | 0/3 |
+
+Across both published snapshots, **22/24** GRPO selections retain SFT.
+Main OneRec keeps three codes; there was no Home four-code ablation. The old
+Home single-run CE/BCE/SS table is superseded and is not pooled into these rows.
+
+All 54 Home results record one source commit,
+`45acaa29fc8cadd1f29dc9c58c8f715035c8ecee`, and source archive SHA256
+`17f7f0c66a39677526e69cc977c4fda9d871d304a1a3a9bd35cf781cc077941a`.
+The [provenance JSON](results/home_20261022.provenance.json) retains all 54
+commands, config hashes, receipt hashes and raw-result hashes, plus recursive
+Gin include hashes. Pretrained models, tokenizers, embedding caches and raw
+result files remain external artifacts; recipes do not promise identical scores
+after those artifacts or hardware change.
+
 ## OneRec SFT → validation-selected GRPO pipeline
+
+This section describes the original Beauty/Sports/Toys snapshot; Home is reported above.
 
 The main OneRec recipe remains **3×256 RQ-KMeans codes**. The 4-code suffix
 variant is a separate Beauty LOO ablation. GRPO uses the matching SFT seed and
@@ -174,7 +258,8 @@ representation and cannot be treated as an evaluation-only correction.
 
 ## Source provenance and recipe boundaries
 
-The snapshot mixes base Git versions `fb4bd1a`, `e52cc02`, and `6da9328`.
+The original Beauty/Sports/Toys snapshot mixes base Git versions `fb4bd1a`,
+`e52cc02`, and `6da9328`.
 Exact base bundle/Git fields are retained per seed in the CSV. October runs
 restored the recovery bundle with SHA256
 `8bfb3b9ec036b99d08dbffff53a1d0b70154e4de5fde20cdd3bd21f64ed4b412`.
@@ -190,7 +275,7 @@ GRPO `defaultdict` import fix. Do not describe this as one identical code bundle
 - TIGER main rows use the original matrix recipe. Beauty LOO R@10 is 0.0568;
   the archived paper-aligned Beauty row below is a different recipe and is not
   substituted into this matrix.
-- COBRA uses optimized light across all three domains. Its separate Beauty
+- COBRA uses optimized light across all four domains. Its separate Beauty
   paper-alignment audit remains below; old pre-fix matrix rows are excluded.
 - RPG main metrics and validation checkpoint selection use direct item scores.
   Sports/Toys LOO seeds have different graph-only `num_beams/n_edges/steps`;

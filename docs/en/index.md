@@ -114,6 +114,28 @@ prompt templates are not frozen, so small SFT/GRPO differences are not evidence
 of RL gains. NoteLLM is I2I retrieval with the query item excluded. These rows
 verify repository adaptations, not parity with every original paper.
 
+### Home extension
+
+The separate Home extension finished on 2026-10-31: **54/54 cells** and
+18 three-seed rows, bringing published coverage to **216 cells / 72 rows**.
+The table uses the same item-level and population-standard-deviation convention.
+
+| Model | LOO R@10 | Global temporal R@10 |
+| --- | --- | --- |
+| SASRec (CE) | 0.0280 ± 0.0002 | 0.0098 ± 0.0006 |
+| HSTU (CE) | 0.0197 ± 0.0001 | 0.0107 ± 0.0008 |
+| TIGER (matrix recipe) | 0.0194 ± 0.0004 | 0.0123 ± 0.0001 |
+| LCRec (4B, seq20, gb128) | 0.0270 ± 0.0005 | 0.0102 ± 0.0008 |
+| COBRA (optimized light) | 0.0152 ± 0.0003 | 0.0089 ± 0.0003 |
+| RPG (direct) | 0.0061 ± 0.0007 | 0.0075 ± 0.0014 |
+| NoteLLM (GCL+CSFT, I2I) | 0.0272 ± 0.0002 | 0.0083 ± 0.0001 |
+| OneRec SFT (3 SID) | 0.0211 ± 0.0001 | 0.0094 ± 0.0005 |
+| OneRec + GRPO (selected) | 0.0210 ± 0.0003 | 0.0098 ± 0.0004 |
+
+All six Home GRPO selections retain SFT. RPG transfers the Beauty recipe; no
+Home four-code ablation was run. Raw paths, commands and source/config hashes:
+[Home evidence](https://github.com/phonism/genrec/blob/main/results/home_20261022.provenance.json).
+
 ## Rules for reading results
 
 - A generated SID tuple is not necessarily a unique item. Resolve collisions using **training-only** SID→item statistics, deduplicate items, then compute headline metrics.
