@@ -1,9 +1,12 @@
 # GenRec Reproducibility Matrix
 
-Last updated: 2026-11-02. Published results contain **216 main cells / 72
+The Amazon matrix was updated on 2026-11-02. Published results contain **216 main cells / 72
 three-seed rows**: the original Beauty/Sports/Toys snapshot (162 cells) plus
 the completed Home extension (54 cells), each with nine pipelines, two protocols
 and seeds 42/43/44.
+
+The [MovieLens-1M and Criteo_x1 experiments](#movielens-1m-and-criteo_x1-experiments)
+use separate sequence-ranking and click-prediction protocols.
 
 The original recovery queue finished **84/84 jobs** on 2026-10-21; the Home
 queue finished **68/68 jobs** on 2026-10-31. Queue counts include tokenizer,
@@ -318,3 +321,43 @@ were also selected against direct decoding on validation. They reduced all
 three seeds, so direct decoding remains the headline. The strict re-evaluation
 reproduced R@10 `0.0732 ± 0.0007` and N@10 `0.0427 ± 0.0006`; see
 `docs/zh/rpg-paper-alignment-20260903.md`.
+
+## MovieLens-1M and Criteo_x1 experiments
+
+The November 13 FuXi runs use the same MovieLens-1M catalogue and interaction
+sequences, a padded length of 211, and the checkpoint at epoch index 100.
+Values below are test means and sample standard deviations across seeds 42, 43
+and 44. FuXi-γ uses the released dense causal variant.
+[FuXi results](results/expansion_20261113_aligned/aggregate-completed.json) ·
+[Checkpoint verification](results/expansion_20261113_aligned/final-reverification.json)
+
+| MovieLens-1M model | Recall@10 | NDCG@10 |
+| --- | ---: | ---: |
+| FuXi-α | 0.31849 ± 0.00210 | 0.18399 ± 0.00271 |
+| FuXi-β | 0.30784 ± 0.00091 | 0.17618 ± 0.00119 |
+| FuXi-γ | 0.31595 ± 0.00843 | 0.18012 ± 0.00286 |
+
+On Criteo_x1, all four models below used Adam and FP32 with the same encoded
+inputs. Validation log loss selected the checkpoint for each test run.
+RankMixer and RankElastor use seeds 42, 43 and 44. Wukong and TokenMixer-Large
+each have one seed, so their run-to-run variation is unknown. The per-seed
+records also include three Adagrad/BF16 control runs.
+[CTR results, recipes and per-seed files](results/expansion_20261113/ctr-summary.json)
+
+| Criteo_x1 model | Seeds | Test AUC | Test log loss |
+| --- | ---: | ---: | ---: |
+| RankElastor | 3 | 0.81482 ± 0.00006 | 0.43717 |
+| RankMixer | 3 | 0.81386 ± 0.00008 | 0.43814 |
+| Wukong | 1 | 0.81280 | 0.43897 |
+| TokenMixer-Large (dense) | 1 | 0.81184 | 0.44054 |
+
+To run the example configs from the repository root, place the processed
+sequence and catalogue CSVs at `dataset/ml-1m/{sasrec_format,movies}.csv`.
+The CTR adapter reads `feature_map.json` and `{train,valid,test}.parquet` from
+the directory bound to `train.dataset_folder` in the Gin config.
+
+```bash
+python -m pip install -e '.[ranking]'
+python -m genrec.trainers.fuxi_alpha_trainer config/fuxi_alpha/ml1m.gin
+python -m genrec.trainers.ranking_trainer config/rankelastor/criteo_x1.gin
+```

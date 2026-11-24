@@ -1,0 +1,70 @@
+{
+  "verified_utc": "2026-11-13T07:49:09.951011+00:00",
+  "source_bundle_sha256": "d8dab71b654af4d1c0037239425d30502694566b90107760b324cb5d5e81027f",
+  "verified_count": 9,
+  "cells": [
+    {
+      "model": "fuxi_alpha",
+      "seed": 42,
+      "result_sha256": "6290596a4dcb9a5b56d0d91c82e85cc85b4e38f526984fe3aa0dc7f07b2e6a33",
+      "checkpoint_sha256": "73160696ae75ff58aebaddca42adbe7fcf6763f30d3916080958f22d69aa1692",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_alpha",
+      "seed": 43,
+      "result_sha256": "19e80983aa045655c9cdcc2632b4340f74a6fdf24415f1224ae652f7932483f4",
+      "checkpoint_sha256": "b475c49d51832e7fd8cbcc435d8bc9a2bafb3291155faa910b84e8148fb56694",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_alpha",
+      "seed": 44,
+      "result_sha256": "70c4231eb9960337fb1edd5dede11cead6321729d5d188aa49846b7b00e064ec",
+      "checkpoint_sha256": "d8b42d54455bd23f2332dcb19c2670335c384bc7d8513ba4b28813342ce367b3",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_beta",
+      "seed": 42,
+      "result_sha256": "190b28b7dd795b92cbea5e8c576ec2bf87aa47215537bef6742d09726221d0c4",
+      "checkpoint_sha256": "bdc902e1112c7edbcc893f20c0b0d967e913de9e8383d2dea3213053c73ee360",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_beta",
+      "seed": 43,
+      "result_sha256": "bf6e920892a402e0dcfdf4638d87195e01543a2af9f155e6f5b059cb149c1237",
+      "checkpoint_sha256": "742d4460b3f0ade5c72de4bccfa7ef2e8ee7b7c38e83ee4e6a69a49f1b3e3fee",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_beta",
+      "seed": 44,
+      "result_sha256": "94dd0a7356fb5ea5cd68478bb4d4670f0cf3bbb1e0bb730217cd33c0ef92800c",
+      "checkpoint_sha256": "d6a41fb29d4083023621b5a399292ebe9fd900c2a97225f2ef8bc9797eca8fc2",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_gamma",
+      "seed": 42,
+      "result_sha256": "acb5a248865945be64dbe0d500b5ffa4df8c724a99cce8783099bfe046113848",
+      "checkpoint_sha256": "70d38fffb4c850efb7198e860423fee6fb3129796bc3bb39d6e8af792e5a4075",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_gamma",
+      "seed": 43,
+      "result_sha256": "c923aac659bedc8b313f431c9852e7e0dd6153cfbef653b49f18fcfa89ae68e0",
+      "checkpoint_sha256": "ca19759a35a7b28df2939e25eac659d740fe741e263706ebeede697c93dfec97",
+      "checkpoint_verified": true
+    },
+    {
+      "model": "fuxi_gamma",
+      "seed": 44,
+      "result_sha256": "475c9c874b730ebfbebc1e8c3eb3dc18d9039bd6b1c8f7d11ab3550ada94603f",
+      "checkpoint_sha256": "418b3f325b7a00334af3dd724bb2482f5a306b0ed3d990dcd67d0c2bb20d0bed",
+      "checkpoint_verified": true
+    }
+  ]
+}

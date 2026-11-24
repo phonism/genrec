@@ -1,0 +1,93 @@
+{
+  "config": {
+    "amp": true,
+    "batch_size": 4096,
+    "dataset_folder": "/root/workspace/code/genrec/out/native_reproduction_20261102/data/criteo_x1/processed/criteo_x1_7b681156",
+    "embedding_dim": 20,
+    "embedding_learning_rate": 0.05,
+    "embedding_regularizer": 1e-05,
+    "epochs": 100,
+    "eval_batch_size": 4096,
+    "evaluation_protocol": "criteo_x1_validation_logloss",
+    "expansion_rate": 3,
+    "ffn_hidden": 30,
+    "implementation": "genrec.models.tokenmixer_large",
+    "learning_rate": 0.01,
+    "log_interval": 100,
+    "max_eval_rows": null,
+    "max_gradient_norm": 10.0,
+    "max_train_rows": null,
+    "min_delta": 1e-06,
+    "mixed_precision_type": "bf16",
+    "model_name": "tokenmixer_large",
+    "num_blocks": 4,
+    "num_workers": 3,
+    "optimizer_name": "adagrad",
+    "patience": 2,
+    "reduce_lr_on_plateau": false,
+    "save_dir_root": "/root/workspace/code/genrec/out/paper_only_20261112/runs/tokenmixer_large_sparse_v2/criteo_x1/seed42",
+    "seed": 42,
+    "token_dim": 32,
+    "token_num": 16,
+    "tokenizer_dropout": 0.0,
+    "tokenizer_hidden": 128,
+    "tokenmixer_params": {
+      "aux_loss_weight": 0.1,
+      "down_init_gain": 0.01,
+      "gate_scale": 2.0,
+      "hidden_multiplier": 4,
+      "inter_residual_gap": 2,
+      "num_experts": 4,
+      "num_heads": 8,
+      "router_normalization": "selected",
+      "top_k": 2
+    },
+    "train_samples": 33003326,
+    "valid_samples": 8250124
+  },
+  "execution": {
+    "cell_id": "tokenmixer_large_sparse_v2.criteox1.paper.s42.train",
+    "physical_gpus": "1"
+  },
+  "extra": {
+    "best_epoch": 4,
+    "best_valid_logloss": 0.44178967237280475,
+    "checkpoint_sha256": "b839a7d5e9f41d05d52100c70cb95ae125d691b6e4db036991941de142058a9b",
+    "code_origin": "paper_based_backbone_with_framework_feature_adapter",
+    "data_sha256": {
+      "/root/workspace/code/genrec/out/native_reproduction_20261102/data/criteo_x1/processed/criteo_x1_7b681156/feature_map.json": "f3c501a594cad778ce24f888afb97a1a0c75f429c23a2273809052b76c69ae99",
+      "/root/workspace/code/genrec/out/native_reproduction_20261102/data/criteo_x1/processed/criteo_x1_7b681156/test.parquet": "685fd852cfdd63ee096bbf6803b265341edbb08273366b90805dbcf5d2277876",
+      "/root/workspace/code/genrec/out/native_reproduction_20261102/data/criteo_x1/processed/criteo_x1_7b681156/train.parquet": "fdeb7a660ca2c1651dfeeac0811244504aaa68262b2f4a4cc043c77cbb6c274b",
+      "/root/workspace/code/genrec/out/native_reproduction_20261102/data/criteo_x1/processed/criteo_x1_7b681156/valid.parquet": "eb267ee4259fef2d79790e2131a87a96f150eba27fbb841a47ea5437a7236eb3"
+    },
+    "elapsed_seconds": 23154.140036821365,
+    "evaluation_level": "exposure",
+    "implementation": "genrec.models.tokenmixer_large",
+    "model_info": {
+      "parameters_active_non_embedding_per_example_training": 1457764,
+      "parameters_embedding": 41726580,
+      "parameters_non_embedding": 2637412,
+      "parameters_total": 44363992
+    },
+    "optimizer": "adagrad",
+    "paper_reference": "https://arxiv.org/abs/2602.06563v2",
+    "paper_scope": "independent_paper_public_CTR_adaptation",
+    "peak_cuda_memory_bytes": 1394498560,
+    "smoke": false,
+    "task": "binary_CTR",
+    "trainer": "genrec.trainers.ranking_trainer",
+    "upstream_network_imported": false,
+    "upstream_reference": null
+  },
+  "git_sha": "2676b5b",
+  "metrics": {
+    "AUC": 0.8104460308503123,
+    "logloss": 0.44129936218601823
+  },
+  "model": "tokenmixer_large",
+  "seed": 42,
+  "source_bundle": "genrec-code-20261112T120010Z-2676b5b-dirty-38786.tar.gz",
+  "source_bundle_sha256": "18f17747545282034c28341abb241a64baa70b018e4d030e2233df3e194f95fe",
+  "split": "criteo_x1",
+  "timestamp": "2026-11-12T18:29:25+00:00"
+}

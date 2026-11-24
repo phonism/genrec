@@ -1,0 +1,571 @@
+{
+  "aggregated_utc": "2026-11-13T07:58:28.126542+00:00",
+  "summarizer_sha256": "3ed0ebcbc6ece1e0934ab65abaf5553f0649a06237eb26eb8c1f1db57ad2ce38",
+  "standard_deviation": "sample, ddof=1; null for one seed",
+  "sources": {
+    "framework_20261112": "6266861d7f036e896b93bb5436e631aec8d35d6304cffe7f8984eeb503805f54",
+    "expansion_20261113": "59a0dece9627e2c11d7520991976383624a84ae7a542ee997e9148eea5cf6705",
+    "paper_only_20261112": "18f17747545282034c28341abb241a64baa70b018e4d030e2233df3e194f95fe"
+  },
+  "shared_data_sha256": {
+    "feature_map.json": "f3c501a594cad778ce24f888afb97a1a0c75f429c23a2273809052b76c69ae99",
+    "test.parquet": "685fd852cfdd63ee096bbf6803b265341edbb08273366b90805dbcf5d2277876",
+    "train.parquet": "fdeb7a660ca2c1651dfeeac0811244504aaa68262b2f4a4cc043c77cbb6c274b",
+    "valid.parquet": "eb267ee4259fef2d79790e2131a87a96f150eba27fbb841a47ea5437a7236eb3"
+  },
+  "groups": [
+    {
+      "case": "rankmixer_adam_fp32",
+      "model": "rankmixer",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "planned_seeds": [
+        42,
+        43,
+        44
+      ],
+      "completed": true,
+      "scope": "three_seed",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8138639123439839,
+          "std": 8.411348868949504e-05
+        },
+        "logloss": {
+          "mean": 0.43814036187515576,
+          "std": 7.535544602986417e-05
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.001,
+        "embedding_dim": 20,
+        "token_num": 15,
+        "token_dim": 30,
+        "num_blocks": 2,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 500,
+        "tokenizer_dropout": 0.1,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": true,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": false,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adam",
+        "embedding_learning_rate": null,
+        "tokenmixer_params": null,
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8137694099394238,
+            "logloss": 0.4382239378771843
+          },
+          "phase": "framework_20261112",
+          "result_path": "framework_20261112/runs/rankmixer/criteo_x1/seed42/results.json",
+          "result_sha256": "09e49f708dc492ef5dbdc2eb8c3a30c52b28e44f50d1e989ece50afcce04b5b0",
+          "checkpoint_sha256": "71745fa11b448b7b22d8262ba305aa5ef7d4ea8e0623b3a4d108eaef7fbae7da",
+          "selected_epoch": 10
+        },
+        {
+          "seed": 43,
+          "metrics": {
+            "AUC": 0.813891745754711,
+            "logloss": 0.4381195436657488
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/rankmixer/criteo_x1/seed43/results.json",
+          "result_sha256": "2232bd85a6a5de919a5ca50a3280c8b46a20692b9e5301844f9ec213766a7d72",
+          "checkpoint_sha256": "425248c8c589a82c7cef107474c78d87e968a650a5d6bb854437419d73da9018",
+          "selected_epoch": 14
+        },
+        {
+          "seed": 44,
+          "metrics": {
+            "AUC": 0.8139305813378168,
+            "logloss": 0.43807760408253416
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/rankmixer/criteo_x1/seed44/results.json",
+          "result_sha256": "e76c9ca130b439370e4fc6ae46ec91c57ef3afd99dc53a18bcb33b3e642cc19a",
+          "checkpoint_sha256": "e425bf897a25b2238c0d9c264a35c3834800d1c4d078e71578ed579fa1f8a278",
+          "selected_epoch": 12
+        }
+      ]
+    },
+    {
+      "case": "rankelastor_adam_fp32",
+      "model": "rankelastor",
+      "seeds": [
+        42,
+        43,
+        44
+      ],
+      "planned_seeds": [
+        42,
+        43,
+        44
+      ],
+      "completed": true,
+      "scope": "three_seed",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8148198140158637,
+          "std": 5.9122304457036046e-05
+        },
+        "logloss": {
+          "mean": 0.437168425806944,
+          "std": 8.811180195827137e-05
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.001,
+        "embedding_dim": 20,
+        "token_num": 15,
+        "token_dim": 30,
+        "num_blocks": 2,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 500,
+        "tokenizer_dropout": 0.1,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": true,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": false,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adam",
+        "embedding_learning_rate": null,
+        "tokenmixer_params": null,
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.81480505852486,
+            "logloss": 0.4372604622455191
+          },
+          "phase": "framework_20261112",
+          "result_path": "framework_20261112/runs/rankelastor/criteo_x1/seed42/results.json",
+          "result_sha256": "5e2f0db90b5cf957b847b2dd1fa3dffb46a1006cb2b2fe17cadcd5a4f2c9476f",
+          "checkpoint_sha256": "f4084e0f70981ee32b696e24a3bfc9e44535612ef6c82734c7a79e4ed5b3a5cc",
+          "selected_epoch": 15
+        },
+        {
+          "seed": 43,
+          "metrics": {
+            "AUC": 0.8147694669530224,
+            "logloss": 0.4371599663432952
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/rankelastor/criteo_x1/seed43/results.json",
+          "result_sha256": "6cf12e1e4f8dc34ded2a0a857250a42d7d7e9f00223771eb94901d91746b54ee",
+          "checkpoint_sha256": "8d582018f42c792b6a95ab920d80c09559e338dc45f26f9730267be620718135",
+          "selected_epoch": 11
+        },
+        {
+          "seed": 44,
+          "metrics": {
+            "AUC": 0.8148849165697085,
+            "logloss": 0.4370848488320176
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/rankelastor/criteo_x1/seed44/results.json",
+          "result_sha256": "9c69228b5039d0f4095d5f6637d47b621a1f89a8913dfe9204b8d57999bd7654",
+          "checkpoint_sha256": "cc43b1203266cbf722eecac7cc7619949c381358d917e53136aa941f9c01791d",
+          "selected_epoch": 13
+        }
+      ]
+    },
+    {
+      "case": "wukong_adam_fp32",
+      "model": "wukong",
+      "seeds": [
+        42
+      ],
+      "planned_seeds": [
+        42
+      ],
+      "completed": true,
+      "scope": "single_seed_pilot",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8127999240861954,
+          "std": null
+        },
+        "logloss": {
+          "mean": 0.4389671642445335,
+          "std": null
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.001,
+        "embedding_dim": 20,
+        "token_num": 15,
+        "token_dim": 30,
+        "num_blocks": 3,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 500,
+        "tokenizer_dropout": 0.1,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": true,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": false,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adam",
+        "embedding_learning_rate": null,
+        "tokenmixer_params": null,
+        "wukong_params": {
+          "fmb_tokens": 16,
+          "lcb_tokens": 16,
+          "rank": 24,
+          "fmb_hidden": [
+            512,
+            512
+          ],
+          "head_hidden": [
+            512,
+            512
+          ],
+          "projection": "attentive",
+          "projection_tokens": 4,
+          "projection_hidden": 128
+        }
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8127999240861954,
+            "logloss": 0.4389671642445335
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/wukong/criteo_x1/seed42/results.json",
+          "result_sha256": "644e730dcf472aaf1b1c2121017da0d0216bdc4aff541ff929fd4e8a1f311dd2",
+          "checkpoint_sha256": "9295d667fb7a1d286897244f3ed3b4fb9b24650f577b0e855dc36025f63759f0",
+          "selected_epoch": 7
+        }
+      ]
+    },
+    {
+      "case": "tokenmixer_large_adam_fp32",
+      "model": "tokenmixer_large",
+      "seeds": [
+        42
+      ],
+      "planned_seeds": [
+        42
+      ],
+      "completed": true,
+      "scope": "single_seed_pilot",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8118358315346234,
+          "std": null
+        },
+        "logloss": {
+          "mean": 0.44053938587217345,
+          "std": null
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.001,
+        "embedding_dim": 20,
+        "token_num": 16,
+        "token_dim": 32,
+        "num_blocks": 4,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 128,
+        "tokenizer_dropout": 0.0,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": true,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": false,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adam",
+        "embedding_learning_rate": null,
+        "tokenmixer_params": {
+          "num_heads": 8,
+          "hidden_multiplier": 4,
+          "num_experts": 0,
+          "inter_residual_gap": 2,
+          "aux_loss_weight": 0.1,
+          "down_init_gain": 0.01
+        },
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8118358315346234,
+            "logloss": 0.44053938587217345
+          },
+          "phase": "expansion_20261113",
+          "result_path": "expansion_20261113/runs/tokenmixer_large_adam/criteo_x1/seed42/results.json",
+          "result_sha256": "03ecb9a1ee8d800e268721283eb0947b79ceac51b77643081d602253d619a436",
+          "checkpoint_sha256": "8e3fb272203e9acedb49a883e55081f3cf4169792b4b15e9823d6758a3f01e06",
+          "selected_epoch": 9
+        }
+      ]
+    },
+    {
+      "case": "rankmixer_adagrad_bf16",
+      "model": "rankmixer",
+      "seeds": [
+        42
+      ],
+      "planned_seeds": [
+        42
+      ],
+      "completed": true,
+      "scope": "single_seed_pilot",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8099984874274347,
+          "std": null
+        },
+        "logloss": {
+          "mean": 0.44167226339064547,
+          "std": null
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.01,
+        "embedding_dim": 20,
+        "token_num": 15,
+        "token_dim": 30,
+        "num_blocks": 2,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 500,
+        "tokenizer_dropout": 0.1,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": false,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": true,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adagrad",
+        "embedding_learning_rate": 0.05,
+        "tokenmixer_params": null,
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8099984874274347,
+            "logloss": 0.44167226339064547
+          },
+          "phase": "paper_only_20261112",
+          "result_path": "paper_only_20261112/runs/rankmixer_adagrad_control/criteo_x1/seed42/results.json",
+          "result_sha256": "dcb108beae4effb2eaa97cd1659b1093c02d183e7ee3be28eb523c44af295e04",
+          "checkpoint_sha256": "9cbe89f1db8c4ec5b67fc32bd3d9a57db047dbc20eee8e5511c161fb7d4096b2",
+          "selected_epoch": 7
+        }
+      ]
+    },
+    {
+      "case": "tokenmixer_large_dense_adagrad_bf16",
+      "model": "tokenmixer_large",
+      "seeds": [
+        42
+      ],
+      "planned_seeds": [
+        42
+      ],
+      "completed": true,
+      "scope": "single_seed_pilot",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8105539052847359,
+          "std": null
+        },
+        "logloss": {
+          "mean": 0.4410467849256499,
+          "std": null
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.01,
+        "embedding_dim": 20,
+        "token_num": 16,
+        "token_dim": 32,
+        "num_blocks": 4,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 128,
+        "tokenizer_dropout": 0.0,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": false,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": true,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adagrad",
+        "embedding_learning_rate": 0.05,
+        "tokenmixer_params": {
+          "num_heads": 8,
+          "hidden_multiplier": 4,
+          "num_experts": 0,
+          "inter_residual_gap": 2,
+          "aux_loss_weight": 0.1,
+          "down_init_gain": 0.01
+        },
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8105539052847359,
+            "logloss": 0.4410467849256499
+          },
+          "phase": "paper_only_20261112",
+          "result_path": "paper_only_20261112/runs/tokenmixer_large_dense/criteo_x1/seed42/results.json",
+          "result_sha256": "4a07b3315f85a2ca2f0443b66dd2dcbca3f26e331c774ca0b319948ef1fe7d3e",
+          "checkpoint_sha256": "b9a6636cac67dfd27daf830074cf5a3b56b9b44bc4d9274231353988b6910346",
+          "selected_epoch": 4
+        }
+      ]
+    },
+    {
+      "case": "tokenmixer_large_sparse_v2_adagrad_bf16",
+      "model": "tokenmixer_large",
+      "seeds": [
+        42
+      ],
+      "planned_seeds": [
+        42
+      ],
+      "completed": true,
+      "scope": "single_seed_pilot",
+      "metrics": {
+        "AUC": {
+          "mean": 0.8104460308503123,
+          "std": null
+        },
+        "logloss": {
+          "mean": 0.44129936218601823,
+          "std": null
+        }
+      },
+      "recipe": {
+        "epochs": 100,
+        "batch_size": 4096,
+        "eval_batch_size": 4096,
+        "learning_rate": 0.01,
+        "embedding_dim": 20,
+        "token_num": 16,
+        "token_dim": 32,
+        "num_blocks": 4,
+        "ffn_hidden": 30,
+        "tokenizer_hidden": 128,
+        "tokenizer_dropout": 0.0,
+        "expansion_rate": 3,
+        "embedding_regularizer": 1e-05,
+        "patience": 2,
+        "min_delta": 1e-06,
+        "reduce_lr_on_plateau": false,
+        "max_gradient_norm": 10.0,
+        "num_workers": 3,
+        "amp": true,
+        "mixed_precision_type": "bf16",
+        "evaluation_protocol": "criteo_x1_validation_logloss",
+        "train_samples": 33003326,
+        "valid_samples": 8250124,
+        "optimizer_name": "adagrad",
+        "embedding_learning_rate": 0.05,
+        "tokenmixer_params": {
+          "num_heads": 8,
+          "hidden_multiplier": 4,
+          "num_experts": 4,
+          "top_k": 2,
+          "gate_scale": 2.0,
+          "router_normalization": "selected",
+          "inter_residual_gap": 2,
+          "aux_loss_weight": 0.1,
+          "down_init_gain": 0.01
+        },
+        "wukong_params": null
+      },
+      "runs": [
+        {
+          "seed": 42,
+          "metrics": {
+            "AUC": 0.8104460308503123,
+            "logloss": 0.44129936218601823
+          },
+          "phase": "paper_only_20261112",
+          "result_path": "paper_only_20261112/runs/tokenmixer_large_sparse_v2/criteo_x1/seed42/results.json",
+          "result_sha256": "da4c76f8d93ddf81d63e09ed5b7a0bb6602b6f9f537d00aa2fc2ba79ced4a486",
+          "checkpoint_sha256": "b839a7d5e9f41d05d52100c70cb95ae125d691b6e4db036991941de142058a9b",
+          "selected_epoch": 4
+        }
+      ]
+    }
+  ],
+  "checkpoints_verified_by_summarizer": false,
+  "source_evolution": "seed42 baselines use6266861, seeds43/44 use59a0dec; RankMixer adds a BCE autocast guard (no-op for these FP32 runs); reader and active recipes agree",
+  "interpretation": "public Criteo_x1; source versions retained; not parameter matched; no industrial-scaling or significance claim"
+}
