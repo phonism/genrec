@@ -1,0 +1,9 @@
+# Recipe transfer to match the public Adam/FP32 CTR comparison.
+# Task 161 launched with these exact CLI overrides before this convenience file.
+include 'config/tokenmixer_large/criteo_dense.gin'
+train.save_dir_root = 'out/expansion_20261113/runs/tokenmixer_large_adam/criteo_x1/seed{seed}'
+train.optimizer_name = 'adam'
+train.learning_rate = 0.001
+train.embedding_learning_rate = None
+train.amp = False
+train.reduce_lr_on_plateau = True

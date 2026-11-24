@@ -3,6 +3,7 @@ Common utilities for trainers.
 Provides shared functionality to reduce code duplication across trainers.
 """
 import json
+import hashlib
 import os
 import random
 import re
@@ -17,6 +18,15 @@ import torch
 import wandb
 from accelerate import Accelerator
 from accelerate.utils import InitProcessGroupKwargs
+
+
+def file_sha256(path: str) -> str:
+    """Hash an input/checkpoint without loading large datasets into memory."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass

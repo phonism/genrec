@@ -1,0 +1,15 @@
+# Public Criteo_x1 adaptation; original Wukong Criteo paper uses Terabyte data.
+train.model_name = 'wukong'
+train.dataset_folder = 'dataset/criteo_x1/criteo_x1_7b681156'
+train.save_dir_root = 'out/expansion_20261113/runs/wukong/criteo_x1/seed{seed}'
+train.embedding_dim = 20
+train.num_blocks = 3
+train.wukong_params = {'fmb_tokens': 16, 'lcb_tokens': 16, 'rank': 24, 'fmb_hidden': [512, 512], 'head_hidden': [512, 512], 'projection': 'attentive', 'projection_tokens': 4, 'projection_hidden': 128}
+train.optimizer_name = 'adam'
+train.learning_rate = 0.001
+train.batch_size = 4096
+train.eval_batch_size = 4096
+train.epochs = 100
+train.patience = 2
+train.amp = False
+train.embedding_regularizer = 1e-5

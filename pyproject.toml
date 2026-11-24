@@ -58,6 +58,10 @@ rpg = [
     # optional because faiss-cpu wheels are not available for every platform.
     "faiss-cpu==1.10.0",
 ]
+ranking = [
+    "pyarrow>=14.0.0",
+    "scikit-learn>=1.3.0",
+]
 full = [
     "faiss-cpu==1.10.0",
     "triton>=3.0.0",
@@ -75,6 +79,9 @@ Issues = "https://github.com/phonism/genrec/issues"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["genrec*"]
+
+[tool.setuptools]
+license-files = ["LICENSE", "licenses/*.txt"]
 
 [tool.black]
 line-length = 100

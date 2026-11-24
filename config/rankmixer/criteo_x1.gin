@@ -1,0 +1,18 @@
+# Public Criteo baseline adaptation; this is not industrial RankMixer-100M/1B.
+train.model_name = 'rankmixer'
+train.dataset_folder = 'dataset/criteo_x1/criteo_x1_7b681156'
+train.save_dir_root = 'out/framework/rankmixer/criteo_x1/seed{seed}'
+train.token_num = 15
+train.token_dim = 30
+train.num_blocks = 2
+train.ffn_hidden = 30
+train.embedding_dim = 20
+train.tokenizer_hidden = 500
+train.tokenizer_dropout = 0.1
+train.embedding_regularizer = 1e-5
+train.learning_rate = 1e-3
+train.batch_size = 4096
+train.eval_batch_size = 4096
+train.epochs = 100
+train.patience = 2
+train.amp = False

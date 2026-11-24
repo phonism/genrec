@@ -15,21 +15,23 @@ Generative Models:
     - NoteLLM: Qwen2-based LLM for note recommendation
 """
 
-from genrec.models.rqvae import RqVae, QuantizeForwardMode
-from genrec.models.tiger import Tiger
-from genrec.models.sasrec import SASRec
-from genrec.models.hstu import HSTU
-from genrec.models.lcrec import LCRec
-from genrec.models.cobra import Cobra
-from genrec.models.gram import GRAM
+from importlib import import_module
 
-__all__ = [
-    "RqVae",
-    "QuantizeForwardMode",
-    "Tiger",
-    "SASRec",
-    "HSTU",
-    "LCRec",
-    "Cobra",
-    "GRAM",
-]
+# A small CTR/sequence model must not require every LLM/tokenizer dependency.
+_EXPORTS = {
+    "RqVae": "rqvae", "QuantizeForwardMode": "rqvae", "Tiger": "tiger",
+    "SASRec": "sasrec", "HSTU": "hstu", "LCRec": "lcrec", "Cobra": "cobra",
+    "GRAM": "gram", "FuXiAlpha": "fuxi_alpha", "RankMixer": "rankmixer",
+    "RankElastor": "rankmixer",
+    "TokenMixerLarge": "tokenmixer_large",
+    "FuXiBeta": "fuxi_beta", "FuXiGamma": "fuxi_gamma", "Wukong": "wukong",
+}
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f"{__name__}.{_EXPORTS[name]}"), name)
+    globals()[name] = value
+    return value

@@ -1,0 +1,27 @@
+# Public two-layer base, fixed epoch 100 (101 zero-indexed epochs).
+# Reuse the hashed native preprocessing CSV and processed movies catalogue.
+train.dataset_path = 'dataset/ml-1m/sasrec_format.csv'
+train.catalog_path = 'dataset/ml-1m/movies.csv'
+train.save_dir_root = 'out/framework/fuxi_alpha/ml1m/seed{seed}'
+train.evaluation_protocol = 'native_fixed_final_epoch'
+train.epochs = 101
+train.batch_size = 128
+train.eval_batch_size = 128
+train.learning_rate = 1e-3
+train.weight_decay = 0
+train.max_seq_len = 200
+# The source train_fn uses gr_output_length=10, then appends +1 for the target.
+train.max_output_len = 11
+train.embed_dim = 50
+train.num_blocks = 2
+train.num_heads = 1
+train.dqk = 50
+train.dv = 50
+train.dropout = 0.2
+train.ffn_multiply = 1
+train.ffn_single_stage = False
+train.num_negatives = 128
+train.temperature = 0.05
+# Public training uses an FP32 encoder and BF16 CUDA loss interactions.
+train.interaction_bf16 = True
+train.amp = False

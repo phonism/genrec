@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "model": "TokenMixer-Large",
+  "paper": "https://arxiv.org/abs/2602.06563v2",
+  "paper_version": "v2, 2026-02-10",
+  "code_status_checked_utc": "2026-11-12",
+  "code_status": "No author training/model release found in the paper links and targeted searches; unofficial repositories exist. Absence is a search finding, not a proof.",
+  "implementation_origin": "Independent reconstruction of paper equations/text/figures. Reuses the existing MIT-attributed GenRec feature embedding adapter only. No external TokenMixer-Large code imported or vendored.",
+  "paper_artifacts": {
+    "html_sha256": "de970a450df77b3ec758307ba6a22c3a50b9861003832ee45e4ead88a0692887",
+    "pdf_sha256": "62b61c910ab7b34b970ecf00353ea0431a5f15ea7f8bcbc66d335fc0cba6a887"
+  },
+  "mapping": [
+    {
+      "component": "mix/revert",
+      "paper": "Eq 9-15 and Figure 1",
+      "implementation": "reshape (B,T,D) to (B,H,T*D/H), transpose; exact inverse restores (B,T,D); H=8 differs from T=16"
+    },
+    {
+      "component": "residual/norm",
+      "paper": "Figure 1; section 3.3.3 and Appendix A.4",
+      "implementation": "x += revert(head_swiglu(mix(RMSNorm(x)))); x += token_swiglu(RMSNorm(x))",
+      "ambiguity": "Printed Eq 12/16 show Post-Norm. Follow Figure 1 and prose Pre-Norm explicitly; no claim of author numerical parity."
+    },
+    {
+      "component": "group/global tokens",
+      "paper": "Eq 1-4",
+      "implementation": "15 deterministic balanced groups of anonymous Criteo fields plus a separate all-field global MLP; bias-free projections",
+      "adaptation": "Criteo does not expose industrial semantic groups or sequence aggregators; balanced field-order grouping is a disclosed replacement."
+    },
+    {
+      "component": "SwiGLU",
+      "paper": "Eq 17-18; Appendix A.4",
+      "implementation": "isolated up/gate/down weights per token or mixed head; SiLU gate, no linear biases"
+    },
+    {
+      "component": "sparse experts",
+      "paper": "Eq 19-21; Appendix A.2",
+      "implementation": "E=4 partitions dense hidden nD into nD/E each; one shared expert always active, one of three routed experts selected (top_k=2 includes shared); selected rows alone reach routed FFNs; no load-balance loss"
+    },
+    {
+      "component": "gate normalization",
+      "paper": "v2 section 3.4.1 explicitly constrains selected gates to sum one",
+      "implementation": "selected logits softmax, alpha=E/top_k=2",
+      "mathematical_consequence": "With exactly one routed expert selected its normalized weight is one, yielding zero gate gradient. This is tested and reported, not patched by an undisclosed estimator. router_normalization=all is separately available as an explicit ablation."
+    },
+    {
+      "component": "small down init",
+      "paper": "section 3.4.4 and Table 14",
+      "implementation": "Xavier uniform gain=0.01 on down matrices; up/gate gain=1",
+      "ambiguity": "Appendix A.7 mentions Xavier normal and a variance-scale formula. Chosen standard-deviation gain follows section 3.4.4 and Table 14, not silent interchange of variance and stddev."
+    },
+    {
+      "component": "inter residual",
+      "paper": "section 3.3.4 and Figure 2",
+      "implementation": "add an anchor every 2 blocks, reset anchor at each addition, exclude final block"
+    },
+    {
+      "component": "joint auxiliary loss",
+      "paper": "section 3.3.4 and Figure 2",
+      "implementation": "auxiliary heads at intermediate residual boundaries; BCE of cumulatively summed shallow/deep logits, averaged and weighted 0.1; no stop-gradient",
+      "assumptions": "Exact tower architecture, weight, detach semantics and aggregation not specified. Global-token linear heads, mean reduction and weight 0.1 are explicit choices."
+    },
+    {
+      "component": "optimizer",
+      "paper": "section 4.1.3",
+      "implementation": "Adagrad dense lr=.01, categorical embedding lr=.05; single-host synchronous public pilot",
+      "adaptation": "Paper uses distributed asynchronous sparse updates on private streaming exposures; PyTorch Adagrad defaults are recorded rather than inferred as author values."
+    },
+    {
+      "component": "precision",
+      "paper": "section 3.5.2",
+      "implementation": "BF16 autocast, FP32 optimizer state; no FP8 serving/kernel/Token Parallel claim"
+    }
+  ],
+  "public_experiment": {
+    "dataset": "same frozen Criteo_x1 train/valid/test and training-fitted vocab as the framework ranking track",
+    "embedding_dim": 20,
+    "token_num": 16,
+    "token_dim": 32,
+    "num_blocks": 4,
+    "num_heads": 8,
+    "hidden_multiplier": 4,
+    "batch_size": 4096,
+    "max_epochs": 100,
+    "selection": "validation logloss, patience=2",
+    "regularization": "embedding L2 coefficient 1e-5 and clip norm 10 inherited from the public CTR protocol; original paper values undisclosed",
+    "controls": [
+      "existing RankMixer Adagrad/BF16 public control"
+    ],
+    "pilot_cells": [
+      "tokenmixer_large_dense",
+      "tokenmixer_large_sparse_v2",
+      "rankmixer_adagrad_control"
+    ],
+    "seeds": [
+      42
+    ]
+  },
+  "claim_boundary": "Reduced public-data algorithm reconstruction, not a reproduction of private 500M-15B curves, distributed throughput, FP8 speedups or online business lift."
+}

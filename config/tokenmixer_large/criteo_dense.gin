@@ -1,0 +1,23 @@
+# Independent paper reconstruction; reduced public Criteo_x1 adaptation.
+# Detailed paper choices/deviations: config/reproduction/tokenmixer_large_paper_mapping_20261112.json
+train.model_name = 'tokenmixer_large'
+train.dataset_folder = 'dataset/criteo_x1/criteo_x1_7b681156'
+train.save_dir_root = 'out/paper_only_20261112/runs/tokenmixer_large_dense/criteo_x1/seed{seed}'
+train.embedding_dim = 20
+train.token_num = 16
+train.token_dim = 32
+train.num_blocks = 4
+train.tokenizer_hidden = 128
+train.tokenizer_dropout = 0.0
+train.tokenmixer_params = {'num_heads': 8, 'hidden_multiplier': 4, 'num_experts': 0, 'inter_residual_gap': 2, 'aux_loss_weight': 0.1, 'down_init_gain': 0.01}
+train.optimizer_name = 'adagrad'
+train.learning_rate = 0.01
+train.embedding_learning_rate = 0.05
+train.embedding_regularizer = 1e-5
+train.batch_size = 4096
+train.eval_batch_size = 4096
+train.epochs = 100
+train.patience = 2
+train.reduce_lr_on_plateau = False
+train.amp = True
+train.mixed_precision_type = 'bf16'

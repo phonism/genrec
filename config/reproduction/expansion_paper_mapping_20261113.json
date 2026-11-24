@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "audited_on": "2026-11-13",
+  "purpose": "GenRec public-data model expansion; not a claim of private industrial scaling or exact bitwise training parity",
+  "sources": {
+    "fuxi_alpha": {
+      "paper": "https://arxiv.org/abs/2502.03036v1",
+      "repository": "https://github.com/USTC-StarTeam/FuXi-alpha",
+      "revision": "69b46a9ddff8f6fa40c057a02b9f86e7bf38983e",
+      "origin": "independent padded PyTorch implementation; external source used only as numerical/data oracle",
+      "paper_ml1m_base": {
+        "Recall@10": 0.3254,
+        "NDCG@10": 0.1835
+      }
+    },
+    "fuxi_beta": {
+      "paper": "https://arxiv.org/abs/2508.10615v1",
+      "repository": "https://github.com/USTC-StarTeam/FuXi-beta",
+      "revision": "4fc73bc6b3a4d66d6a37e4178d567ca83edb7a73",
+      "model_blob": "8c0df0d6d5b86091358dd199d9acefb59775640a",
+      "origin": "independent reconstruction; actual upstream FuXiBeta/FBGEMM/loss used only as numerical oracle",
+      "mechanisms": [
+        "no QK channel",
+        "per-head position then signed-clamped power-time channels",
+        "multistage gated FFN"
+      ],
+      "paper_ml1m_own_table2": {
+        "Recall@10": 0.3231,
+        "NDCG@10": 0.1848,
+        "Recall@50": 0.5866,
+        "NDCG@50": 0.2432,
+        "MRR": 0.1578
+      }
+    },
+    "fuxi_gamma": {
+      "paper": "https://arxiv.org/abs/2512.12740v1",
+      "repository": "https://github.com/Yeedzhi/FuXi-gamma",
+      "revision": "b434e5daab49cc973740af7b4d219f7133b9d84b",
+      "model_blob": "7b42bf791387aa9ec810159ec0b7a6125a19ff3b",
+      "archive_sha256": "1a3a856279ed33cd583dc520bc5625c6170e03cc1b4f375410f38996ee906301",
+      "origin": "independent reconstruction of the released dense causal base",
+      "mechanisms": [
+        "absolute exponential-power temporal bias",
+        "global time then position channels",
+        "learned RMSNorm gains and separate SwiGLU FFN",
+        "fixed gamma=0.8 in default source"
+      ],
+      "not_implemented": [
+        "paper diagonal-sparse/custom kernels",
+        "industrial efficiency/scaling"
+      ],
+      "paper_ml1m_own_table2": {
+        "Recall@10": 0.3255,
+        "NDCG@10": 0.185,
+        "Recall@50": 0.5928,
+        "NDCG@50": 0.2443,
+        "MRR": 0.1576
+      }
+    },
+    "wukong": {
+      "paper": "https://arxiv.org/abs/2403.02545v4",
+      "origin": "independent paper reconstruction; existing MIT-attributed GenRec feature adapter reused",
+      "paper_sections": [
+        "3.3-3.6",
+        "Appendix A"
+      ],
+      "mechanisms": [
+        "FMB associative low-rank X(X^T Y)",
+        "input-conditioned attentive Y with explicit reconstruction choices",
+        "LCB linear feature compression",
+        "residual projection and post LayerNorm"
+      ],
+      "paper_criteo_recipe": {
+        "dataset": "Criteo Terabyte, approximately 4B records",
+        "embedding_dim": 128,
+        "global_batch": 131072,
+        "epochs": 1,
+        "precision": "FP32",
+        "dense_optimizer": "Adam, lr0.001",
+        "embedding_optimizer": "rowwise Adagrad, lr0.1",
+        "search": "3000+ configurations; ranges include 1-4 blocks, FMB/LCB output8 or16, rank24"
+      },
+      "public_config": {
+        "dataset": "frozen Criteo_x1 exposure parquet; vocabulary fitted only on train",
+        "embedding_dim": 20,
+        "num_blocks": 3,
+        "fmb_tokens": 16,
+        "lcb_tokens": 16,
+        "rank": 24,
+        "fmb_hidden": [
+          512,
+          512
+        ],
+        "head_hidden": [
+          512,
+          512
+        ],
+        "projection": "attentive",
+        "projection_tokens": 4,
+        "projection_hidden": 128,
+        "optimizer": "Adam all parameters",
+        "learning_rate": 0.001,
+        "batch_size": 4096,
+        "max_epochs": 100,
+        "selection": "validation LogLoss, patience2",
+        "precision": "FP32",
+        "embedding_l2": 0.00001
+      },
+      "assumptions": [
+        "attentive Y: linear feature compression to4 tokens, ReLU MLP 4D->128->fields*rank; exact source construction undisclosed in paper",
+        "post LayerNorm normalized over all output fields and embedding dimensions",
+        "ReLU head, Xavier-normal dense initialization and embedding std1e-4 are public adaptation choices",
+        "no matched Terabyte data or original mixed-optimizer training; no direct headline paper-AUC replication claim"
+      ],
+      "parameters": {
+        "total": 45227933,
+        "categorical_embedding": 41726580,
+        "non_embedding": 3501353
+      }
+    }
+  },
+  "sequential_recipe": {
+    "dataset": "frozen original ML1M CSV/catalogue, raw IDs and catalogue order retained",
+    "train_users": 6040,
+    "test_users": 6040,
+    "max_seq_len": 200,
+    "source_gr_output_length": 10,
+    "source_target_padding": 1,
+    "max_output_len": 11,
+    "padded_length": 211,
+    "position_embedding_shape": [
+      211,
+      50
+    ],
+    "relative_position_shape": [
+      421
+    ],
+    "embed_dim": 50,
+    "num_blocks": 2,
+    "num_heads": 1,
+    "dqk": 50,
+    "dv": 50,
+    "dropout": 0.2,
+    "ffn_multiply": 1,
+    "batch_size": 128,
+    "epochs": 101,
+    "selection": "fixed final epoch100, no validation selection",
+    "optimizer": "AdamW",
+    "learning_rate": 0.001,
+    "betas": [
+      0.9,
+      0.98
+    ],
+    "weight_decay": 0,
+    "num_negatives": 128,
+    "temperature": 0.05,
+    "precision": "FP32 encoder, BF16 CUDA loss interactions, TF32 enabled",
+    "evaluation": "full catalogue; remove history; source next-target timestamp; top2500 MRR with fallback rank2501",
+    "loader_difference": "GenRec shuffle and4 workers versus upstream DDP sampler and8 workers/prefetch128; RNG stream not identical",
+    "parameters": {
+      "fuxi_alpha": 269400,
+      "fuxi_beta": 249146,
+      "fuxi_gamma": 249548
+    },
+    "input_sha256": {
+      "csv": "553cd81cc15d101c1cb21da6130f14725827d69f18e661df840040bb3caa8956",
+      "catalogue": "efdbb1859c29c6699bc544e0e27b6d69c452216268b1dd41eaaef7a755e3349e"
+    }
+  },
+  "padding_erratum": {
+    "legacy_roots": [
+      "out/framework_20261112/runs/fuxi_alpha",
+      "out/expansion_20261113/runs/fuxi_beta",
+      "out/expansion_20261113/runs/fuxi_gamma"
+    ],
+    "legacy_padding": 210,
+    "legacy_relative_position_shape": [
+      419
+    ],
+    "effect": "not configuration-identical to source; retain records but exclude from aligned paper comparisons",
+    "corrected_root": "out/expansion_20261113_aligned",
+    "corrected_source_bundle_sha256": "d8dab71b654af4d1c0037239425d30502694566b90107760b324cb5d5e81027f"
+  },
+  "numerical_validation": {
+    "task_id": 170,
+    "devices": [
+      "CPU",
+      "CUDA"
+    ],
+    "cases": [
+      "tiny two-head, lengths4/2",
+      "full base shape, lengths200/117; all parameter shapes checked",
+      "all6040 train and6040 test rows through actual upstream features helper"
+    ],
+    "cpu_and_tiny_cuda": "strict elementwise output/loss/gradient/AdamW comparisons",
+    "full_cuda": "output/loss allclose; per-parameter gradient relative-L2 <=1e-3 due padded/jagged roundoff and BF16 rounding; AdamW deltas recorded, not an equality pass",
+    "material_observation": "full CUDA beta first AdamW step differs by max0.0019745822; do not describe full-shape CUDA optimizer updates as equal",
+    "upstream_source_imported_in_training": false
+  },
+  "tokenmixer_adam_fp32": {
+    "model": "TokenMixer-Large dense",
+    "task_id": 161,
+    "base_config": "config/tokenmixer_large/criteo_dense.gin",
+    "cli_overrides": {
+      "train.optimizer_name": "adam",
+      "train.learning_rate": 0.001,
+      "train.embedding_learning_rate": null,
+      "train.amp": false,
+      "train.reduce_lr_on_plateau": true
+    },
+    "convenience_config": "config/tokenmixer_large/criteo_dense_adam_fp32.gin",
+    "config_added_after_launch": true,
+    "comparison": "same public recipe as prior Adam/FP32 RankMixer; model capacities/tokenization/heads differ",
+    "interpretation": "recipe transfer, not single-factor optimizer ablation"
+  },
+  "result_roots": [
+    "results/expansion_20261113",
+    "results/expansion_20261113_aligned"
+  ],
+  "main_matrix_unchanged": 216
+}
