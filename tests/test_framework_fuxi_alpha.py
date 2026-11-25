@@ -1,11 +1,13 @@
 """Causality, target/candidate contracts for the padded FuXi-alpha port."""
 import csv
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 from genrec.data.sequential_csv import SequentialCSVDataset
 from genrec.models.fuxi_alpha import FuXiAlpha
+from genrec.trainers.fuxi_alpha_trainer import evaluate
 
 
 def _csv(path):
@@ -29,6 +31,36 @@ def test_csv_native_train_omits_test_and_keeps_shifted_targets(tmp_path):
     assert test["target_items"].item() == 6
     with pytest.raises(ValueError, match="no validation"):
         SequentialCSVDataset(path, "valid", 4, 2)
+
+
+def test_leave_one_out_keeps_short_user_only_in_evaluable_splits(tmp_path):
+    path = tmp_path / "users.csv"
+    with path.open("w") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(["sequence_item_ids", "sequence_timestamps"])
+        writer.writerows([["1,2,3", "10,20,30"], ["4,5,6,7", "40,50,60,70"]])
+
+    options = {"max_seq_len": 3, "max_output_len": 1, "evaluation_protocol": "leave_one_out"}
+    train = SequentialCSVDataset(path, "train", **options)
+    assert len(train) == 1
+    assert train[0]["targets"].tolist() == [5, 0, 0, 0]
+    for phase, expected_target in [("valid", 2), ("test", 3)]:
+        dataset = SequentialCSVDataset(path, phase, **options)
+        assert len(dataset) == 2
+        assert dataset[0]["target_items"].item() == expected_target
+
+
+def test_history_filter_excludes_repeated_target_when_catalogue_is_small():
+    model = FuXiAlpha(3, max_seq_len=2, max_output_len=1, embed_dim=4, num_blocks=1)
+    batch = {
+        "input_ids": torch.tensor([[1, 2, 0], [1, 2, 0]]),
+        "timestamps": torch.tensor([[10, 20, 30], [10, 20, 30]]),
+        "target_items": torch.tensor([1, 3]),
+    }
+    cpu = SimpleNamespace(device=torch.device("cpu"), gather_for_metrics=lambda values: values)
+    metrics = evaluate(model, [batch], cpu, torch.tensor([1, 2, 3]))
+    assert metrics["Recall@1"] == metrics["Recall@10"] == metrics["NDCG@10"] == 0.5
+    assert metrics["MRR"] == pytest.approx((1 + 1 / 2501) / 2)
 
 
 def test_fuxi_preserves_causality_padding_and_batch_independence():

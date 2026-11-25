@@ -41,7 +41,9 @@ def evaluate(model, loader, accelerator, candidate_ids, top_ks=(1, 10, 50)):
         mask = torch.zeros(len(logits), logits.shape[-1], dtype=torch.bool, device=logits.device)
         mask.scatter_(1, seen, True)
         scores = scores.masked_fill(mask.index_select(-1, candidates), float("-inf"))
-        ranked = candidates[scores.topk(maxk, dim=-1).indices]
+        top = scores.topk(maxk, dim=-1)
+        # When too few unseen items remain, topk also returns masked positions.
+        ranked = candidates[top.indices].masked_fill(torch.isneginf(top.values), 0)
         ranked, targets = accelerator.gather_for_metrics((ranked, batch["target_items"]))
         matches = ranked.eq(targets[:, None])
         for k in top_ks:

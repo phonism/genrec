@@ -52,6 +52,8 @@ class SequentialCSVDataset(Dataset):
                 holdout = (2 if phase == "train" else 1 if phase == "valid" else 0) \
                     if evaluation_protocol == "leave_one_out" else (1 if phase == "train" else 0)
                 selected_items = items[:-holdout] if holdout else items
+                if len(selected_items) < 2:
+                    continue
                 selected_times = times[:-holdout] if holdout else times
                 self.rows.append((selected_items[-max_seq_len-1:], selected_times[-max_seq_len-1:]))
                 if max_rows is not None and len(self.rows) >= max_rows:
